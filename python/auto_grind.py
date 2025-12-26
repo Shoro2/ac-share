@@ -119,7 +119,7 @@ def run():
                 
                 elif tick % 5 == 0: 
                     print("[SUCHE] Scanne Umgebung...")
-                    env.sock.sendall(f"{env.my_name}:target_nearest:0".encode('utf-8'))
+                    env.sock.sendall(f"{env.my_name}:target_nearest:0\n".encode('utf-8'))
                 
                 else:
                     # Bewegung (Salami-Taktik)
@@ -133,7 +133,7 @@ def run():
                         move_target = {"x": temp_x, "y": temp_y, "z": target_wp['z']}
                     
                     cmd = f"{env.my_name}:move_to:{move_target['x']:.2f}:{move_target['y']:.2f}:{move_target['z']:.2f}"
-                    env.sock.sendall(cmd.encode('utf-8'))
+                    env.sock.sendall(f"{cmd}\n".encode('utf-8'))
                     
                     # Update Cache (sonst blockiert es)
                     env._get_state_from_server()
