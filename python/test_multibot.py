@@ -24,12 +24,23 @@ def run_bot_controller():
         print("Server nicht erreichbar!", flush=True)
         return
 
+    sock.settimeout(2.0)
     buffer = ""
+    last_status = 0.0
 
     while True:
         try:
-            data = sock.recv(8192)
-            if not data: break
+            try:
+                data = sock.recv(8192)
+            except socket.timeout:
+                now = time.time()
+                if now - last_status >= 2.0:
+                    print("Warte auf Serverdaten...", flush=True)
+                    last_status = now
+                continue
+            if not data:
+                print("Verbindung getrennt.", flush=True)
+                break
             
             # JSON Stream parsen (newline-delimited JSON)
             buffer += data.decode('utf-8', errors='ignore')
@@ -49,6 +60,10 @@ def run_bot_controller():
 
             # --- MULTI-BOT LOGIK ---
             players = state.get('players', [])
+            if time.time() - last_status >= 2.0:
+                names = [p.get('name') for p in players if p.get('name')]
+                print(f"Empfangen: {len(players)} Player -> {names}", flush=True)
+                last_status = time.time()
             
             bots_by_name = {p.get('name'): p for p in players}
             missing = [name for name in BOT_NAMES if name not in bots_by_name]
