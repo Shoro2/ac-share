@@ -280,14 +280,26 @@ void AIServerThread() {
             LOG_INFO("module", ">>> CLIENT VERBUNDEN! <<<");
             try {
                 char data_[8192];
+                auto lastSend = std::chrono::steady_clock::now();
                 while (true) {
+                    std::string msg;
                     {
                         std::lock_guard<std::mutex> lock(g_Mutex);
                         if (g_HasNewState) {
-                            std::string msg = g_CurrentJsonState + "\n";
-                            boost::asio::write(socket, boost::asio::buffer(msg));
+                            msg = g_CurrentJsonState + "\n";
                             g_HasNewState = false;
                         }
+                    }
+                    if (msg.empty()) {
+                        auto now = std::chrono::steady_clock::now();
+                        if (now - lastSend >= std::chrono::milliseconds(500)) {
+                            std::lock_guard<std::mutex> lock(g_Mutex);
+                            msg = g_CurrentJsonState + "\n";
+                        }
+                    }
+                    if (!msg.empty()) {
+                        boost::asio::write(socket, boost::asio::buffer(msg));
+                        lastSend = std::chrono::steady_clock::now();
                     }
                     if (socket.available() > 0) {
                         boost::system::error_code error;
