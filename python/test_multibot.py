@@ -15,13 +15,13 @@ ALL_BOTS_TEST_ACTION = True
 TEST_ACTION = "target_nearest:0"
 
 def run_bot_controller():
-    print(f">>> Verbinde zu Server... Suche nach {BOT_NAMES} <<<")
+    print(f">>> Verbinde zu Server... Suche nach {BOT_NAMES} <<<", flush=True)
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((HOST, PORT))
     except:
-        print("Server nicht erreichbar!")
+        print("Server nicht erreichbar!", flush=True)
         return
 
     while True:
@@ -52,7 +52,7 @@ def run_bot_controller():
             bots_by_name = {p.get('name'): p for p in players}
             missing = [name for name in BOT_NAMES if name not in bots_by_name]
             if missing:
-                print(f"Warte auf Bots: {missing}... (Gefunden: {[p['name'] for p in players]})")
+                print(f"Warte auf Bots: {missing}... (Gefunden: {[p['name'] for p in players]})", flush=True)
                 time.sleep(1)
                 continue
 
@@ -76,16 +76,16 @@ def run_bot_controller():
                 cmd = ""
 
                 if hp_pct < 0.5:
-                    print(f"[{name}] Kritisch! Heile mich...")
+                    print(f"[{name}] Kritisch! Heile mich...", flush=True)
                     cmd = f"cast:{SPELL_HEAL}"
 
                 elif target_alive:
-                    print(f"[{name}] Kämpfe gegen Ziel!")
+                    print(f"[{name}] Kämpfe gegen Ziel!", flush=True)
                     cmd = f"cast:{SPELL_SMITE}"
 
                 else:
                     # Idle Mode: Suche Ziel
-                    print(f"[{name}] Suche Ziel...")
+                    print(f"[{name}] Suche Ziel...", flush=True)
                     cmd = "target_nearest:0"
 
                 # Befehl senden: "Name:Befehl"
@@ -95,10 +95,10 @@ def run_bot_controller():
             time.sleep(0.5) # Reaktionszeit
 
         except KeyboardInterrupt:
-            print("Beendet.")
+            print("Beendet.", flush=True)
             break
         except Exception as e:
-            print(f"Fehler: {e}")
+            print(f"Fehler: {e}", flush=True)
             time.sleep(1)
 
 if __name__ == "__main__":
