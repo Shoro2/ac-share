@@ -126,7 +126,9 @@ public:
         res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_TALENTS, stmt);
 
         // Weitere (weniger kritisch, aber gut für Vollständigkeit):
-        // LoadQuery(CHAR_SEL_CHARACTER_HOMEBIND, PLAYER_LOGIN_QUERY_LOAD_HOME_BIND);
+        stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_HOMEBIND);
+        stmt->SetData(0, lowGuid);
+        res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_HOME_BIND, stmt);
         // LoadQuery(CHAR_SEL_CHARACTER_SPELLCOOLDOWNS, PLAYER_LOGIN_QUERY_LOAD_SPELL_COOLDOWNS);
 
         /*
