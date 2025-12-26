@@ -280,6 +280,7 @@ void AIServerThread() {
             LOG_INFO("module", ">>> CLIENT VERBUNDEN! <<<");
             try {
                 char data_[8192];
+                std::string incomingBuffer;
                 auto lastSend = std::chrono::steady_clock::now();
                 {
                     std::string initial;
@@ -313,16 +314,22 @@ void AIServerThread() {
                         boost::system::error_code error;
                         size_t length = socket.read_some(boost::asio::buffer(data_), error);
                         if (error == boost::asio::error::eof) break;
-                        std::string receivedData(data_, length);
-                        size_t p1 = receivedData.find(':');
-                        size_t p2 = receivedData.find(':', p1 + 1);
-                        if (p1 != std::string::npos && p2 != std::string::npos) {
-                            AICommand cmd;
-                            cmd.playerName = receivedData.substr(0, p1);
-                            cmd.actionType = receivedData.substr(p1 + 1, p2 - p1 - 1);
-                            cmd.value = receivedData.substr(p2 + 1);
-                            std::lock_guard<std::mutex> lock(g_Mutex);
-                            g_CommandQueue.push(cmd);
+                        incomingBuffer.append(data_, length);
+                        size_t newlinePos = 0;
+                        while ((newlinePos = incomingBuffer.find('\n')) != std::string::npos) {
+                            std::string line = incomingBuffer.substr(0, newlinePos);
+                            incomingBuffer.erase(0, newlinePos + 1);
+                            if (line.empty()) continue;
+                            size_t p1 = line.find(':');
+                            size_t p2 = line.find(':', p1 + 1);
+                            if (p1 != std::string::npos && p2 != std::string::npos) {
+                                AICommand cmd;
+                                cmd.playerName = line.substr(0, p1);
+                                cmd.actionType = line.substr(p1 + 1, p2 - p1 - 1);
+                                cmd.value = line.substr(p2 + 1);
+                                std::lock_guard<std::mutex> lock(g_Mutex);
+                                g_CommandQueue.push(cmd);
+                            }
                         }
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -341,6 +348,23 @@ private:
     uint32 _slowTimer;
     uint32 _faceTimer;
     std::string _cachedNearbyMobsJson;
+    void CollectSessions(std::vector<WorldSession*>& sessions) {
+        auto const& liveSessions = sWorldSessionMgr->GetAllSessions();
+        sessions.reserve(liveSessions.size() + g_BotSessions.size());
+        for (auto const& pair : liveSessions) {
+            if (pair.second) {
+                sessions.push_back(pair.second);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+            for (auto const& pair : g_BotSessions) {
+                if (pair.second) {
+                    sessions.push_back(pair.second);
+                }
+            }
+        }
+    }
 public:
     AIControllerWorldScript() : WorldScript("AIControllerWorldScript"), _fastTimer(0), _slowTimer(0), _faceTimer(0), _cachedNearbyMobsJson("[]") {}
     void OnStartup() override { std::thread(AIServerThread).detach(); }
@@ -386,6 +410,22 @@ public:
                     float z = player->GetPositionZ();
                     player->UpdateGroundPositionZ(x, y, z);
                     player->GetMotionMaster()->MovePoint(1, x, y, z);
+                }
+                else if (cmd.actionType == "target_nearest") {
+                    float range = 30.0f;
+                    if (!cmd.value.empty()) {
+                        try {
+                            float parsed = std::stof(cmd.value);
+                            if (parsed > 0.0f) range = parsed;
+                        } catch (std::exception const&) {
+                        }
+                    }
+                    Unit* target = player->SelectNearbyTarget(nullptr, range);
+                    if (target && player->IsValidAttackTarget(target)) {
+                        player->SetSelection(target->GetGUID());
+                        player->SetTarget(target->GetGUID());
+                        player->SetFacingToObject(target);
+                    }
                 }
                 else if (cmd.actionType == "cast") {
                     uint32 spellId = std::stoi(cmd.value);
@@ -512,9 +552,9 @@ public:
             std::stringstream ss;
             ss << "{ \"players\": [";
             bool first = true;
-            auto const& sessions = sWorldSessionMgr->GetAllSessions();
-            for (auto const& pair : sessions) {
-                WorldSession* session = pair.second;
+            std::vector<WorldSession*> sessions;
+            CollectSessions(sessions);
+            for (WorldSession* session : sessions) {
                 if (!session) continue;
                 Player* p = session->GetPlayer();
                 if (!p) continue;
@@ -561,10 +601,11 @@ public:
 
         if (_slowTimer >= 2000) {
             _slowTimer = 0;
-            auto const& sessions = sWorldSessionMgr->GetAllSessions();
+            std::vector<WorldSession*> sessions;
+            CollectSessions(sessions);
             if (!sessions.empty()) {
-                for (auto const& pair : sessions) {
-                    Player* p = pair.second->GetPlayer();
+                for (WorldSession* session : sessions) {
+                    Player* p = session ? session->GetPlayer() : nullptr;
                     if (p) {
                         CreatureCollector collector(p);
                         Cell::VisitObjects(p, collector, 50.0f);

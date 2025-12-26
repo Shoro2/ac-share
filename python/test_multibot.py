@@ -75,7 +75,7 @@ def run_bot_controller():
             if ALL_BOTS_TEST_ACTION:
                 for name in BOT_NAMES:
                     full_msg = f"{name}:{TEST_ACTION}"
-                    sock.sendall(full_msg.encode('utf-8'))
+                    sock.sendall(f"{full_msg}\n".encode('utf-8'))
                 time.sleep(0.5)
                 continue
 
@@ -107,7 +107,7 @@ def run_bot_controller():
                 # Befehl senden: "Name:Befehl"
                 if cmd:
                     full_msg = f"{name}:{cmd}"
-                    sock.sendall(full_msg.encode('utf-8'))
+                    sock.sendall(f"{full_msg}\n".encode('utf-8'))
             time.sleep(0.5) # Reaktionszeit
 
         except KeyboardInterrupt:
