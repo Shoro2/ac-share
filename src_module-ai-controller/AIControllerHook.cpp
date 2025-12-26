@@ -16,6 +16,7 @@
 #include <string>
 #include <queue>
 #include <sstream>
+#include <unordered_map>
 #include "GameTime.h" 
 
 #include "GridNotifiers.h"
@@ -30,6 +31,7 @@
 #include "PreparedStatement.h"
 #include "QueryHolder.h"
 #include "DatabaseWorkerPool.h"
+#include "AsyncCallbackProcessor.h"
 
 // WICHTIG: Zuerst MySQLConnection, dann CharacterDatabase
 #include "MySQLConnection.h"
@@ -166,6 +168,9 @@ bool g_LeveledUp = false;
 long long g_LootCopper = 0;
 long long g_LootScore = 0;
 bool g_EquippedUpgrade = false;
+AsyncCallbackProcessor<SQLQueryHolderCallback> g_QueryHolderProcessor;
+std::unordered_map<uint32, WorldSession*> g_BotSessions;
+std::mutex g_BotSessionsMutex;
 
 // --- HELPER ---
 
@@ -332,6 +337,8 @@ public:
                 }
             }
         }
+
+        g_QueryHolderProcessor.ProcessReadyCallbacks();
 
         {
             std::lock_guard<std::mutex> lock(g_Mutex);
@@ -623,6 +630,16 @@ public:
                 return;
             }
 
+            {
+                std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+                if (g_BotSessions.find(accountId) != g_BotSessions.end()) {
+                    LOG_ERROR("module", "ABORT: Bot-Session für Account {} existiert bereits.", accountId);
+                    ChatHandler(player->GetSession()).SendSysMessage("Fehler: Bot bereits aktiv.");
+                    msg = "";
+                    return;
+                }
+            }
+
             // --- ASYNCHRONE LADESTRATEGIE (Core-Login-Flow) ---
             LOG_INFO("module", "DEBUG STEP 3: Starte asynchronen Login...");
 
@@ -642,12 +659,6 @@ public:
                 0
             );
 
-            // TRICK: Setze InQueue=true, um den Idle-Timeout (Kick) zu verhindern, da wir keinen Socket haben.
-            botSession->SetInQueue(true);
-
-            // WICHTIG: Session MUSS im Manager sein
-            sWorldSessionMgr->AddSession(botSession);
-
             // 2. Holder erstellen
             auto holder = std::make_shared<BotLoginQueryHolder>(accountId, guid);
 
@@ -655,7 +666,7 @@ public:
             if (!holder->Initialize()) {
                 LOG_ERROR("module", "FAIL: Konnte LoginQueryHolder nicht initialisieren.");
                 ChatHandler(player->GetSession()).SendSysMessage("Interner DB-Fehler (Init).");
-                sWorldSessionMgr->KickSession(accountId);
+                delete botSession;
                 msg = "";
                 return;
             }
@@ -668,10 +679,21 @@ public:
             float posZ = player->GetPositionZ();
             float orient = player->GetOrientation();
 
-            botSession->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete(
+            {
+                std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+                g_BotSessions[accountId] = botSession;
+            }
+
+            g_QueryHolderProcessor.AddCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete(
                 [accountId, guid, botName, mapId, posX, posY, posZ, orient](SQLQueryHolderBase const& holderBase)
                 {
-                    WorldSession* session = sWorldSessionMgr->FindSession(accountId);
+                    WorldSession* session = nullptr;
+                    {
+                        std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+                        auto it = g_BotSessions.find(accountId);
+                        if (it != g_BotSessions.end())
+                            session = it->second;
+                    }
                     if (!session)
                     {
                         LOG_ERROR("module", "Bot-Login: Session für Account {} nicht gefunden.", accountId);
@@ -685,7 +707,13 @@ public:
                     {
                         LOG_ERROR("module", "FAIL: Player konnte nicht geladen werden.");
                         delete botPlayer;
-                        sWorldSessionMgr->KickSession(accountId);
+                        std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+                        auto it = g_BotSessions.find(accountId);
+                        if (it != g_BotSessions.end())
+                        {
+                            delete it->second;
+                            g_BotSessions.erase(it);
+                        }
                         return;
                     }
 
@@ -701,7 +729,6 @@ public:
                     botPlayer->SendInitialPacketsAfterAddToMap();
 
                     botPlayer->TeleportTo(mapId, posX, posY, posZ, orient);
-                    session->SetInQueue(false);
 
                     LOG_INFO("module", "DEBUG STEP 6: Bot '{}' erfolgreich gespawnt.", botName);
                 });
