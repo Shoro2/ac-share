@@ -7,11 +7,15 @@ from wow_env import SPELL_SMITE, SPELL_HEAL # Nutze Spells aus deiner Env
 HOST = '127.0.0.1'
 PORT = 5000
 
-# Name deines Bots (muss exakt so heißen wie im Spiel!)
-BOT_NAME = "BotA" 
+# Bot-Namen (müssen exakt so heißen wie im Spiel!)
+BOT_NAMES = ["Bota", "Botb", "Botc", "Botd", "Bote"]
+
+# Testaktion für alle Bots gleichzeitig
+ALL_BOTS_TEST_ACTION = True
+TEST_ACTION = "target_nearest:0"
 
 def run_bot_controller():
-    print(f">>> Verbinde zu Server... Suche nach '{BOT_NAME}' <<<")
+    print(f">>> Verbinde zu Server... Suche nach {BOT_NAMES} <<<")
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -45,46 +49,49 @@ def run_bot_controller():
             # --- MULTI-BOT LOGIK ---
             players = state.get('players', [])
             
-            # Suchen wir unseren Bot in der Liste
-            my_bot = None
-            for p in players:
-                if p['name'] == BOT_NAME:
-                    my_bot = p
-                    break
-            
-            if not my_bot:
-                print(f"Warte auf Bot '{BOT_NAME}'... (Gefunden: {[p['name'] for p in players]})")
+            bots_by_name = {p.get('name'): p for p in players}
+            missing = [name for name in BOT_NAMES if name not in bots_by_name]
+            if missing:
+                print(f"Warte auf Bots: {missing}... (Gefunden: {[p['name'] for p in players]})")
                 time.sleep(1)
                 continue
 
-            # --- BOT GEFUNDEN: STEUERUNG ---
-            # Einfache Test-Logik: Wenn Ziel da -> Angriff, sonst -> Folgen/Warten
-            
-            target_guid = my_bot.get('target_guid', '0') # Oder aus target_status ableiten
-            target_alive = (my_bot['target_status'] == 'alive')
-            in_combat = (my_bot['combat'] == 'true')
-            hp_pct = my_bot['hp'] / max(1, my_bot['max_hp'])
-            
-            cmd = ""
-            
-            if hp_pct < 0.5:
-                print(f"[{BOT_NAME}] Kritisch! Heile mich...")
-                cmd = f"cast:{SPELL_HEAL}"
-                
-            elif target_alive:
-                print(f"[{BOT_NAME}] Kämpfe gegen Ziel!")
-                cmd = f"cast:{SPELL_SMITE}"
-                
-            else:
-                # Idle Mode: Suche Ziel
-                print(f"[{BOT_NAME}] Suche Ziel...")
-                cmd = "target_nearest:0"
+            if ALL_BOTS_TEST_ACTION:
+                for name in BOT_NAMES:
+                    full_msg = f"{name}:{TEST_ACTION}"
+                    sock.sendall(full_msg.encode('utf-8'))
+                time.sleep(0.5)
+                continue
 
-            # Befehl senden: "Name:Befehl"
-            if cmd:
-                full_msg = f"{BOT_NAME}:{cmd}"
-                sock.sendall(full_msg.encode('utf-8'))
+            for name in BOT_NAMES:
+                my_bot = bots_by_name[name]
 
+                # --- BOT GEFUNDEN: STEUERUNG ---
+                # Einfache Test-Logik: Wenn Ziel da -> Angriff, sonst -> Folgen/Warten
+                target_guid = my_bot.get('target_guid', '0')  # Oder aus target_status ableiten
+                target_alive = (my_bot['target_status'] == 'alive')
+                in_combat = (my_bot['combat'] == 'true')
+                hp_pct = my_bot['hp'] / max(1, my_bot['max_hp'])
+
+                cmd = ""
+
+                if hp_pct < 0.5:
+                    print(f"[{name}] Kritisch! Heile mich...")
+                    cmd = f"cast:{SPELL_HEAL}"
+
+                elif target_alive:
+                    print(f"[{name}] Kämpfe gegen Ziel!")
+                    cmd = f"cast:{SPELL_SMITE}"
+
+                else:
+                    # Idle Mode: Suche Ziel
+                    print(f"[{name}] Suche Ziel...")
+                    cmd = "target_nearest:0"
+
+                # Befehl senden: "Name:Befehl"
+                if cmd:
+                    full_msg = f"{name}:{cmd}"
+                    sock.sendall(full_msg.encode('utf-8'))
             time.sleep(0.5) # Reaktionszeit
 
         except KeyboardInterrupt:
