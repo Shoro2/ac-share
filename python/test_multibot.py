@@ -8,7 +8,7 @@ HOST = '127.0.0.1'
 PORT = 5000
 
 # Bot-Namen (müssen exakt so heißen wie im Spiel!)
-BOT_NAMES = ["Bota", "Botb", "Botc", "Botd", "Bote"]
+BOT_NAMES = ["Autoai", "Bota", "Botb", "Botc", "Botd", "Bote"]
 
 # Testaktion für alle Bots gleichzeitig
 ALL_BOTS_TEST_ACTION = True
