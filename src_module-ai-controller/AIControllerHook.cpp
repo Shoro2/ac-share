@@ -348,6 +348,23 @@ private:
     uint32 _slowTimer;
     uint32 _faceTimer;
     std::string _cachedNearbyMobsJson;
+    void CollectSessions(std::vector<WorldSession*>& sessions) {
+        auto const& liveSessions = sWorldSessionMgr->GetAllSessions();
+        sessions.reserve(liveSessions.size() + g_BotSessions.size());
+        for (auto const& pair : liveSessions) {
+            if (pair.second) {
+                sessions.push_back(pair.second);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+            for (auto const& pair : g_BotSessions) {
+                if (pair.second) {
+                    sessions.push_back(pair.second);
+                }
+            }
+        }
+    }
 public:
     AIControllerWorldScript() : WorldScript("AIControllerWorldScript"), _fastTimer(0), _slowTimer(0), _faceTimer(0), _cachedNearbyMobsJson("[]") {}
     void OnStartup() override { std::thread(AIServerThread).detach(); }
@@ -535,9 +552,9 @@ public:
             std::stringstream ss;
             ss << "{ \"players\": [";
             bool first = true;
-            auto const& sessions = sWorldSessionMgr->GetAllSessions();
-            for (auto const& pair : sessions) {
-                WorldSession* session = pair.second;
+            std::vector<WorldSession*> sessions;
+            CollectSessions(sessions);
+            for (WorldSession* session : sessions) {
                 if (!session) continue;
                 Player* p = session->GetPlayer();
                 if (!p) continue;
@@ -584,10 +601,11 @@ public:
 
         if (_slowTimer >= 2000) {
             _slowTimer = 0;
-            auto const& sessions = sWorldSessionMgr->GetAllSessions();
+            std::vector<WorldSession*> sessions;
+            CollectSessions(sessions);
             if (!sessions.empty()) {
-                for (auto const& pair : sessions) {
-                    Player* p = pair.second->GetPlayer();
+                for (WorldSession* session : sessions) {
+                    Player* p = session ? session->GetPlayer() : nullptr;
                     if (p) {
                         CreatureCollector collector(p);
                         Cell::VisitObjects(p, collector, 50.0f);
