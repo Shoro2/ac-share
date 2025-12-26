@@ -153,7 +153,7 @@ class WoWEnv(gym.Env):
                     override_action = 8 # SELL
                 else:
                     cmd_move = f"move_to:{best_vendor['x']:.2f}:{best_vendor['y']:.2f}:{best_vendor['z']:.2f}"
-                    try: self.sock.sendall(f"{self.my_name}:{cmd_move}".encode('utf-8'))
+                    try: self.sock.sendall(f"{self.my_name}:{cmd_move}\n".encode('utf-8'))
                     except: pass
                     override_action = 1 
             
@@ -181,7 +181,7 @@ class WoWEnv(gym.Env):
                     if aggro_mob_guid:
                         # Wir zwingen den Bot, diesen Mob ins Visier zu nehmen
                         # Wir senden Target GUID Command direkt hier, weil ActionSpace das nicht hergibt
-                        try: self.sock.sendall(f"{self.my_name}:target_guid:{aggro_mob_guid}".encode('utf-8'))
+                        try: self.sock.sendall(f"{self.my_name}:target_guid:{aggro_mob_guid}\n".encode('utf-8'))
                         except: pass
                         override_action = 0 # Warten bis Target gesetzt ist
                         # print(">>> AGGRO DETECTED! Wechsle Ziel... <<<")
@@ -247,7 +247,7 @@ class WoWEnv(gym.Env):
                 if loot_guid in self.npc_memory: del self.npc_memory[loot_guid]
         
         if cmd:
-            try: self.sock.sendall(f"{self.my_name}:{cmd}".encode('utf-8'))
+            try: self.sock.sendall(f"{self.my_name}:{cmd}\n".encode('utf-8'))
             except: pass
 
         time.sleep(0.3)
@@ -356,7 +356,7 @@ class WoWEnv(gym.Env):
         # Versuche Reset-Befehl zu senden
         if self.my_name:
             try:
-                self.sock.sendall(f"{self.my_name}:reset:0".encode('utf-8'))
+                self.sock.sendall(f"{self.my_name}:reset:0\n".encode('utf-8'))
             except: pass
         
         # WARTE AUF DATEN (Zwingend!)
