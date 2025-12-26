@@ -585,19 +585,18 @@ public:
 
     void OnPlayerBeforeSendChatMessage(Player* player, uint32& type, uint32& lang, std::string& msg) override {
         std::string commandPrefix = "#spawn";
+        std::string commandSpawnAll = "#spawnbots";
 
-        if (msg.length() >= commandPrefix.length() && msg.substr(0, commandPrefix.length()) == commandPrefix) {
-
-            LOG_INFO("module", "AI-DEBUG: Chat von {}: '{}'", player->GetName(), msg);
-
-            if (msg.length() <= commandPrefix.length() + 1) {
-                ChatHandler(player->GetSession()).SendSysMessage("Benutzung: #spawn <BotName>");
-                msg = "";
-                return;
+        auto spawnBotByName = [player, &msg](std::string const& botName) -> bool {
+            if (botName.empty()) {
+                ChatHandler(player->GetSession()).SendSysMessage("Bot-Name fehlt.");
+                return false;
             }
 
-            std::string botName = msg.substr(commandPrefix.length() + 1);
-            if (!botName.empty() && botName.back() == ' ') botName.pop_back();
+            if (ObjectAccessor::FindPlayerByName(botName)) {
+                ChatHandler(player->GetSession()).SendSysMessage("Bot ist bereits online.");
+                return false;
+            }
 
             LOG_INFO("module", "AI-DEBUG: Versuche Bot zu spawnen: '{}'", botName);
 
@@ -606,14 +605,7 @@ public:
             ObjectGuid guid = sCharacterCache->GetCharacterGuidByName(botName);
             if (!guid) {
                 ChatHandler(player->GetSession()).SendSysMessage("Charakter nicht gefunden.");
-                msg = "";
-                return;
-            }
-
-            if (ObjectAccessor::FindPlayerByName(botName)) {
-                ChatHandler(player->GetSession()).SendSysMessage("Bot ist bereits online.");
-                msg = "";
-                return;
+                return false;
             }
 
             LOG_INFO("module", "DEBUG STEP 1: Hole AccountID...");
@@ -622,15 +614,13 @@ public:
 
             if (accountId == 0) {
                 ChatHandler(player->GetSession()).SendSysMessage("Fehler: Ungültige AccountID.");
-                msg = "";
-                return;
+                return false;
             }
 
             if (sWorldSessionMgr->FindSession(accountId)) {
                 LOG_ERROR("module", "ABORT: Account {} ist bereits eingeloggt!", accountId);
                 ChatHandler(player->GetSession()).SendSysMessage("Fehler: Account bereits eingeloggt.");
-                msg = "";
-                return;
+                return false;
             }
 
             {
@@ -638,8 +628,7 @@ public:
                 if (g_BotSessions.find(accountId) != g_BotSessions.end()) {
                     LOG_ERROR("module", "ABORT: Bot-Session für Account {} existiert bereits.", accountId);
                     ChatHandler(player->GetSession()).SendSysMessage("Fehler: Bot bereits aktiv.");
-                    msg = "";
-                    return;
+                    return false;
                 }
             }
 
@@ -670,17 +659,10 @@ public:
                 LOG_ERROR("module", "FAIL: Konnte LoginQueryHolder nicht initialisieren.");
                 ChatHandler(player->GetSession()).SendSysMessage("Interner DB-Fehler (Init).");
                 delete botSession;
-                msg = "";
-                return;
+                return false;
             }
 
             LOG_INFO("module", "DEBUG STEP 4: DB-Queries gestartet...");
-
-            uint32 mapId = player->GetMapId();
-            float posX = player->GetPositionX();
-            float posY = player->GetPositionY();
-            float posZ = player->GetPositionZ();
-            float orient = player->GetOrientation();
 
             {
                 std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
@@ -688,7 +670,7 @@ public:
             }
 
             g_QueryHolderProcessor.AddCallback(CharacterDatabase.DelayQueryHolder(holder)).AfterComplete(
-                [accountId, guid, botName, mapId, posX, posY, posZ, orient](SQLQueryHolderBase const& holderBase)
+                [accountId, guid, botName](SQLQueryHolderBase const& holderBase)
                 {
                     WorldSession* session = nullptr;
                     {
@@ -762,6 +744,33 @@ public:
                 });
 
             msg = "";
+            return true;
+        };
+
+        if (msg.length() >= commandSpawnAll.length() && msg.substr(0, commandSpawnAll.length()) == commandSpawnAll) {
+            LOG_INFO("module", "AI-DEBUG: Chat von {}: '{}'", player->GetName(), msg);
+            std::vector<std::string> botNames = { "Bota", "Botb", "Botc", "Botd", "Bote" };
+            for (std::string const& botName : botNames) {
+                spawnBotByName(botName);
+            }
+            msg = "";
+            return;
+        }
+
+        if (msg.length() >= commandPrefix.length() && msg.substr(0, commandPrefix.length()) == commandPrefix) {
+
+            LOG_INFO("module", "AI-DEBUG: Chat von {}: '{}'", player->GetName(), msg);
+
+            if (msg.length() <= commandPrefix.length() + 1) {
+                ChatHandler(player->GetSession()).SendSysMessage("Benutzung: #spawn <BotName>");
+                msg = "";
+                return;
+            }
+
+            std::string botName = msg.substr(commandPrefix.length() + 1);
+            if (!botName.empty() && botName.back() == ' ') botName.pop_back();
+
+            spawnBotByName(botName);
         }
     }
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override {
