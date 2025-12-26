@@ -281,6 +281,14 @@ void AIServerThread() {
             try {
                 char data_[8192];
                 auto lastSend = std::chrono::steady_clock::now();
+                {
+                    std::string initial;
+                    {
+                        std::lock_guard<std::mutex> lock(g_Mutex);
+                        initial = g_CurrentJsonState + "\n";
+                    }
+                    boost::asio::write(socket, boost::asio::buffer(initial));
+                }
                 while (true) {
                     std::string msg;
                     {
