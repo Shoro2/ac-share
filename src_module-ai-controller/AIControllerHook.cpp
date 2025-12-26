@@ -32,6 +32,7 @@
 #include "QueryHolder.h"
 #include "DatabaseWorkerPool.h"
 #include "AsyncCallbackProcessor.h"
+#include "ObjectMgr.h"
 
 // WICHTIG: Zuerst MySQLConnection, dann CharacterDatabase
 #include "MySQLConnection.h"
@@ -722,11 +723,30 @@ public:
                     session->SetPlayer(botPlayer);
 
                     botPlayer->GetMotionMaster()->Initialize();
-                    botPlayer->SetMap(botPlayer->GetMap());
-                    botPlayer->AddToWorld();
-
                     botPlayer->SendInitialPacketsBeforeAddToMap();
+
+                    ObjectAccessor::AddObject(botPlayer);
+
+                    if (!botPlayer->GetMap()->AddPlayerToMap(botPlayer) || !botPlayer->CheckInstanceLoginValid())
+                    {
+                        AreaTriggerTeleport const* at = sObjectMgr->GetGoBackTrigger(botPlayer->GetMapId());
+                        if (at)
+                        {
+                            botPlayer->TeleportTo(at->target_mapId, at->target_X, at->target_Y, at->target_Z, botPlayer->GetOrientation());
+                        }
+                        else
+                        {
+                            botPlayer->TeleportTo(botPlayer->m_homebindMapId, botPlayer->m_homebindX, botPlayer->m_homebindY, botPlayer->m_homebindZ, botPlayer->GetOrientation());
+                        }
+
+                        botPlayer->GetSession()->SendNameQueryOpcode(botPlayer->GetGUID());
+                    }
+
                     botPlayer->SendInitialPacketsAfterAddToMap();
+
+                    CharacterDatabasePreparedStatement* onlineStmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_ONLINE);
+                    onlineStmt->SetData(0, botPlayer->GetGUID().GetCounter());
+                    CharacterDatabase.Execute(onlineStmt);
 
                     botPlayer->TeleportTo(mapId, posX, posY, posZ, orient);
 
