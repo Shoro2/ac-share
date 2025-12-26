@@ -12,6 +12,7 @@
 #include <boost/asio.hpp>
 #include <thread>
 #include <mutex>
+#include <shared_mutex>
 #include <vector>
 #include <string>
 #include <queue>
@@ -348,21 +349,15 @@ private:
     uint32 _slowTimer;
     uint32 _faceTimer;
     std::string _cachedNearbyMobsJson;
-    void CollectSessions(std::vector<WorldSession*>& sessions) {
-        auto const& liveSessions = sWorldSessionMgr->GetAllSessions();
-        sessions.reserve(liveSessions.size() + g_BotSessions.size());
-        for (auto const& pair : liveSessions) {
-            if (pair.second) {
-                sessions.push_back(pair.second);
+    void CollectOnlinePlayers(std::vector<Player*>& players) {
+        std::shared_lock lock(*HashMapHolder<Player>::GetLock());
+        players.reserve(ObjectAccessor::GetPlayers().size());
+        for (auto const& it : ObjectAccessor::GetPlayers()) {
+            Player* player = it.second;
+            if (!player || !player->IsInWorld()) {
+                continue;
             }
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
-            for (auto const& pair : g_BotSessions) {
-                if (pair.second) {
-                    sessions.push_back(pair.second);
-                }
-            }
+            players.push_back(player);
         }
     }
 public:
@@ -552,11 +547,9 @@ public:
             std::stringstream ss;
             ss << "{ \"players\": [";
             bool first = true;
-            std::vector<WorldSession*> sessions;
-            CollectSessions(sessions);
-            for (WorldSession* session : sessions) {
-                if (!session) continue;
-                Player* p = session->GetPlayer();
+            std::vector<Player*> players;
+            CollectOnlinePlayers(players);
+            for (Player* p : players) {
                 if (!p) continue;
                 if (!first) ss << ", ";
                 first = false;
@@ -601,11 +594,11 @@ public:
 
         if (_slowTimer >= 2000) {
             _slowTimer = 0;
-            std::vector<WorldSession*> sessions;
-            CollectSessions(sessions);
-            if (!sessions.empty()) {
-                for (WorldSession* session : sessions) {
-                    Player* p = session ? session->GetPlayer() : nullptr;
+            std::vector<Player*> players;
+            CollectOnlinePlayers(players);
+            if (!players.empty()) {
+                for (Player* p : players) {
+                    if (!p) continue;
                     if (p) {
                         CreatureCollector collector(p);
                         Cell::VisitObjects(p, collector, 50.0f);
