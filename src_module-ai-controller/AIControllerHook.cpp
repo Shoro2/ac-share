@@ -126,7 +126,9 @@ public:
         res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_TALENTS, stmt);
 
         // Weitere (weniger kritisch, aber gut für Vollständigkeit):
-        // LoadQuery(CHAR_SEL_CHARACTER_HOMEBIND, PLAYER_LOGIN_QUERY_LOAD_HOME_BIND);
+        stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_HOMEBIND);
+        stmt->SetData(0, lowGuid);
+        res &= SetPreparedQuery(PLAYER_LOGIN_QUERY_LOAD_HOME_BIND, stmt);
         // LoadQuery(CHAR_SEL_CHARACTER_SPELLCOOLDOWNS, PLAYER_LOGIN_QUERY_LOAD_SPELL_COOLDOWNS);
 
         /*
@@ -748,7 +750,13 @@ public:
                     onlineStmt->SetData(0, botPlayer->GetGUID().GetCounter());
                     CharacterDatabase.Execute(onlineStmt);
 
-                    botPlayer->TeleportTo(mapId, posX, posY, posZ, orient);
+                    constexpr uint32 kSpawnMapId = 0;
+                    constexpr float kSpawnX = -8921.037f;
+                    constexpr float kSpawnY = -120.484985f;
+                    constexpr float kSpawnZ = 82.02542f;
+                    constexpr float kSpawnO = 3.299f;
+
+                    botPlayer->TeleportTo(kSpawnMapId, kSpawnX, kSpawnY, kSpawnZ, kSpawnO);
 
                     LOG_INFO("module", "DEBUG STEP 6: Bot '{}' erfolgreich gespawnt.", botName);
                 });
