@@ -24,27 +24,28 @@ def run_bot_controller():
         print("Server nicht erreichbar!", flush=True)
         return
 
+    buffer = ""
+
     while True:
         try:
             data = sock.recv(8192)
             if not data: break
             
-            # JSON Stream parsen
-            text_chunk = data.decode('utf-8')
-            lines = text_chunk.split("\n")
-            
-            # Wir suchen die letzte vollständige JSON-Zeile
-            last_valid_json = None
-            for line in reversed(lines):
-                if line.strip().startswith("{") and line.strip().endswith("}"):
-                    last_valid_json = line
-                    break
-            
-            if not last_valid_json: continue
+            # JSON Stream parsen (newline-delimited JSON)
+            buffer += data.decode('utf-8', errors='ignore')
+            state = None
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
+                if not (line.startswith("{") and line.endswith("}")):
+                    continue
+                try:
+                    state = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-            try:
-                state = json.loads(last_valid_json)
-            except: continue
+            if state is None:
+                continue
 
             # --- MULTI-BOT LOGIK ---
             players = state.get('players', [])
