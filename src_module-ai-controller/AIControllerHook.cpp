@@ -367,8 +367,8 @@ public:
     void OnUpdate(uint32 diff) override {
         _fastTimer += diff; _slowTimer += diff; _faceTimer += diff;
 
-        if (_fastTimer >= 150) {
-            _fastTimer = 0;
+        if (_faceTimer >= 150) {
+            _faceTimer = 0;
             auto const& sessions = sWorldSessionMgr->GetAllSessions();
             for (auto const& pair : sessions) {
                 Player* p = pair.second->GetPlayer();
