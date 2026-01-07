@@ -28,8 +28,8 @@ class WoWEnv(gym.Env):
         self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(10,), dtype=np.float32)
 
         self.last_state = None
-        self.my_name = ""
         self.bot_name = bot_name
+        self.my_name = bot_name or ""
         self._recv_buffer = ""
         
         self.npc_memory = {} 
@@ -365,9 +365,10 @@ class WoWEnv(gym.Env):
         print(">>> RESETTING ENVIRONMENT... <<<")
         
         # Versuche Reset-Befehl zu senden
-        if self.my_name:
+        name_to_use = self.my_name or self.bot_name
+        if name_to_use:
             try:
-                self.sock.sendall(f"{self.my_name}:reset:0\n".encode('utf-8'))
+                self.sock.sendall(f"{name_to_use}:reset:0\n".encode('utf-8'))
             except: pass
         
         # WARTE AUF DATEN (Zwingend!)
