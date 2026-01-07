@@ -204,6 +204,24 @@ int GetItemScore(ItemTemplate const* proto) {
     return score;
 }
 
+static bool IsBotControlledPlayer(Player* p)
+{
+    if (!p)
+        return false;
+
+    WorldSession* sess = p->GetSession();
+    if (!sess)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_BotSessionsMutex);
+    for (auto const& it : g_BotSessions)
+        if (it.second == sess)
+            return true;
+
+    return false;
+}
+
+
 // --- PER-PLAYER EVENT HELPERS ---
 static inline uint64 AIEventKey(Player* player)
 {
@@ -532,7 +550,7 @@ public:
                 g_CommandQueue.pop();
                 Player* player = ObjectAccessor::FindPlayerByName(cmd.playerName);
                 if (!player) continue;
-
+                if (!IsBotControlledPlayer(player)) continue;
                 if (cmd.actionType == "say") player->Say(cmd.value, LANG_UNIVERSAL);
                 else if (cmd.actionType == "stop") { player->GetMotionMaster()->Clear(); player->GetMotionMaster()->MoveIdle(); }
                 else if (cmd.actionType == "turn_left" || cmd.actionType == "turn_right") {

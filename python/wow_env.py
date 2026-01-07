@@ -10,6 +10,7 @@ import os
 SPELL_SMITE = 585
 SPELL_HEAL = 2050
 DEFAULT_MEMORY_FILE = "npc_memory.json"
+DEBUG_EVENTS = False
 
 class WoWEnv(gym.Env):
     def __init__(self, host='127.0.0.1', port=5000, bot_name=None):
@@ -128,6 +129,52 @@ class WoWEnv(gym.Env):
                 min_dist = dist
                 best_mob = mob
         return best_mob
+
+    def _build_obs(self, data):
+        max_hp = max(1, data['max_hp'])
+        hp_pct = data['hp'] / max_hp
+        mana_pct = data['power'] / max(1, data['max_power'])
+
+        t_hp, t_exists, dist_norm, angle_norm = 0.0, 0.0, 0.0, 0.0
+        if data.get('target_status') == 'alive':
+            t_hp = data.get('target_hp', 0) / 100.0
+            t_exists = 1.0
+            dx = data['tx'] - data['x']
+            dy = data['ty'] - data['y']
+            dist = math.sqrt(dx*dx + dy*dy)
+            dist_norm = min(dist, 40.0) / 40.0
+            target_angle = math.atan2(dy, dx)
+            rel = target_angle - data['o']
+            while rel > math.pi: rel -= 2*math.pi
+            while rel < -math.pi: rel += 2*math.pi
+            angle_norm = rel / math.pi
+
+        is_casting = 1.0 if data.get('casting') == 'true' else 0.0
+        in_combat = 1.0 if data.get('combat') == 'true' else 0.0
+        slots_norm = data.get('free_slots', 0) / 20.0
+
+        return np.array([hp_pct, mana_pct, t_hp, t_exists, in_combat, dist_norm, angle_norm, is_casting, 0.0, slots_norm], dtype=np.float32)
+
+    def _initial_heading_kick(self):
+        # deterministisch pro Bot: verteilt sie fächerförmig
+        if not self.my_name:
+            return
+        mapping = {
+            "Autoai": 0,
+            "Bota": 2,
+            "Botb": 4,
+            "Botc": 6,
+            "Botd": 8,
+            "Bote": 10,
+        }
+        steps = mapping.get(self.my_name, 0)
+
+        # 1 Step = 0.5 rad (~28.6°) im C++ turn_left
+        for _ in range(steps):
+            try:
+                self.sock.sendall(f"{self.my_name}:turn_left:0\n".encode("utf-8"))
+            except:
+                break
 
     def step(self, action):
         self._manage_blacklist()
@@ -290,9 +337,18 @@ class WoWEnv(gym.Env):
             try: self.sock.sendall(f"{self.my_name}:{cmd}\n".encode('utf-8'))
             except: pass
 
-        time.sleep(0.3)
-        data = self._get_state_from_server()
-        if not data: return np.zeros(10), 0, True, False, {}
+        # Kein fixes sleep: wir warten lieber kurz auf den nächsten State
+        data = None
+        deadline = time.time() + 1.0
+        while data is None and time.time() < deadline:
+            data = self._get_state_from_server()
+            if data is None:
+                time.sleep(0.01)
+
+        if not data:
+            # kein harter Abbruch -> sonst ruckelt / bricht dauernd ab wenn mal 1 Tick fehlt
+            return np.zeros(10), -0.1, False, True, {"timeout": True}
+
 
         # --- MEMORY UPDATE ---
         current_mobs = data.get('nearby_mobs', [])
@@ -344,22 +400,26 @@ class WoWEnv(gym.Env):
         # 1. NEU: Upgrade Reward
         if data.get('equipped_upgrade') == 'true':
             reward += 100.0 # Bessere Rüstung ist super!
-            print(">>> UPGRADE EQUIPPED! +100 <<<")
+            if DEBUG_EVENTS:
+                print(">>> UPGRADE EQUIPPED! +100 <<<")
 
         if data.get('leveled_up') == 'true':
             reward += 2000.0
             terminated = True
         elif xp_gained > 0:
             reward += 100.0 + (xp_gained * 2.0)
-            print(f">>> KILL! XP: {xp_gained} <<<")
+            if DEBUG_EVENTS:
+                print(f">>> KILL! XP: {xp_gained} <<<")
             
         if loot_money > 0 or loot_score > 0:
             reward += (loot_money * 0.1) + (loot_score * 2.0)
-            print(f">>> LOOT! Copper: {loot_money}, ItemScore: {loot_score} <<<")
+            if DEBUG_EVENTS:
+                print(f">>> LOOT! Copper: {loot_money}, ItemScore: {loot_score} <<<")
 
         if self.last_state and free_slots_curr > self.last_state.get('free_slots', 0):
             reward += 50.0 
-            print(">>> SOLD ITEMS! <<<")
+            if DEBUG_EVENTS:
+                print(">>> SOLD ITEMS! <<<")
 
         if override_action == 5: 
             if t_exists > 0.5: reward += 0.5
@@ -423,10 +483,7 @@ class WoWEnv(gym.Env):
                 print("Warte auf Server-Antwort für Reset...")
                 time.sleep(1.0)
         self.last_state = data
-        
-        # Initial Observation
-        obs = np.zeros(10, dtype=np.float32)
-        # Wir können obs auch direkt aus data füllen, wenn wir wollen, 
-        # aber Nullen sind okay für den Start.
+        self._initial_heading_kick()
+        obs = self._build_obs(data)
         
         return obs, {}
