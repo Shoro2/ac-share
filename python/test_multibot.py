@@ -27,6 +27,7 @@ def run_bot_controller():
     sock.settimeout(2.0)
     buffer = ""
     last_status = 0.0
+    last_raw_status = 0.0
 
     while True:
         try:
@@ -60,6 +61,9 @@ def run_bot_controller():
 
             # --- MULTI-BOT LOGIK ---
             players = state.get('players', [])
+            if not players and time.time() - last_raw_status >= 2.0:
+                print("DEBUG raw JSON vom Server:", line, flush=True)
+                last_raw_status = time.time()
             if time.time() - last_status >= 2.0:
                 names = [p.get('name') for p in players if p.get('name')]
                 print(f"Empfangen: {len(players)} Player -> {names}", flush=True)
