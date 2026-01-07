@@ -18,6 +18,7 @@ class WoWEnv(gym.Env):
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((host, port))
             self.sock.setblocking(True)
+            self.sock.settimeout(2.0)
             print(">>> WoW Env v11 (Aggro & Gear) verbunden! <<<")
         except Exception as e:
             print(f"VERBINDUNGSFEHLER: {e}")
@@ -28,8 +29,8 @@ class WoWEnv(gym.Env):
         self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(10,), dtype=np.float32)
 
         self.last_state = None
+        self.my_name = ""
         self.bot_name = bot_name
-        self.my_name = bot_name or ""
         self._recv_buffer = ""
         
         self.npc_memory = {} 
@@ -75,11 +76,13 @@ class WoWEnv(gym.Env):
                                     break
                         if player is None:
                             if self.bot_name:
-                                continue
+                                return None
                             player = data['players'][0]
                         self.my_name = player['name']
                         return player
                     except: continue
+            except socket.timeout:
+                return None
             except Exception: continue
         return None
 
