@@ -53,7 +53,7 @@ class WoWEnv(gym.Env):
                 json.dump(self.npc_memory, f, indent=4)
         except: pass
 
-    def _get_state_from_server(self):
+    def _get_state_from_server(self, allow_any_player=False):
         while True:
             try:
                 data = self.sock.recv(8192) 
@@ -75,7 +75,7 @@ class WoWEnv(gym.Env):
                                     player = candidate
                                     break
                         if player is None:
-                            if self.bot_name:
+                            if self.bot_name and not allow_any_player:
                                 return None
                             player = data['players'][0]
                         self.my_name = player['name']
@@ -211,18 +211,24 @@ class WoWEnv(gym.Env):
 
         # --- COMMAND SENDEN ---
         cmd = ""
+        if not self.last_state:
+            override_action = 0
         if override_action == 8: # SELL
-            v_guid = None
-            min_v = 9999.0
-            me_pos = {'x': self.last_state['x'], 'y': self.last_state['y'], 'z': self.last_state['z']}
-            for guid, mob in self.npc_memory.items():
-                if mob.get('vendor', 0) == 1:
-                    d = math.sqrt((mob['x']-me_pos['x'])**2 + (mob['y']-me_pos['y'])**2)
-                    if d < min_v:
-                        min_v = d
-                        v_guid = guid
-            if v_guid and min_v < 6.0: cmd = f"sell_grey:{v_guid}"
-            else: override_action = 0
+            if not self.last_state:
+                override_action = 0
+                cmd = ""
+            else:
+                v_guid = None
+                min_v = 9999.0
+                me_pos = {'x': self.last_state['x'], 'y': self.last_state['y'], 'z': self.last_state['z']}
+                for guid, mob in self.npc_memory.items():
+                    if mob.get('vendor', 0) == 1:
+                        d = math.sqrt((mob['x']-me_pos['x'])**2 + (mob['y']-me_pos['y'])**2)
+                        if d < min_v:
+                            min_v = d
+                            v_guid = guid
+                if v_guid and min_v < 6.0: cmd = f"sell_grey:{v_guid}"
+                else: override_action = 0
 
         elif override_action == 1: cmd = "move_forward:0"
         elif override_action == 2: cmd = "turn_left:0"
@@ -376,9 +382,14 @@ class WoWEnv(gym.Env):
         
         # WARTE AUF DATEN (Zwingend!)
         data = None
+        start_time = time.time()
         while data is None:
             data = self._get_state_from_server()
             if data is None:
+                if time.time() - start_time > 10.0:
+                    print("Reset Timeout: keine Bot-Daten, versuche Fallback-Spieler.")
+                    data = self._get_state_from_server(allow_any_player=True)
+                    break
                 print("Warte auf Server-Antwort für Reset...")
                 time.sleep(1.0)
         
