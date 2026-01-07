@@ -78,6 +78,8 @@ class WoWEnv(gym.Env):
                             if self.bot_name and not allow_any_player:
                                 return None
                             player = data['players'][0]
+                            if allow_any_player:
+                                self.bot_name = player['name']
                         self.my_name = player['name']
                         return player
                     except: continue
@@ -383,13 +385,16 @@ class WoWEnv(gym.Env):
         # WARTE AUF DATEN (Zwingend!)
         data = None
         start_time = time.time()
+        allow_any_player = False
+        fallback_logged = False
         while data is None:
-            data = self._get_state_from_server()
+            data = self._get_state_from_server(allow_any_player=allow_any_player)
             if data is None:
                 if time.time() - start_time > 10.0:
-                    print("Reset Timeout: keine Bot-Daten, versuche Fallback-Spieler.")
-                    data = self._get_state_from_server(allow_any_player=True)
-                    break
+                    if not fallback_logged:
+                        print("Reset Timeout: keine Bot-Daten, versuche Fallback-Spieler.")
+                        fallback_logged = True
+                    allow_any_player = True
                 print("Warte auf Server-Antwort für Reset...")
                 time.sleep(1.0)
         
