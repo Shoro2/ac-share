@@ -1,234 +1,309 @@
-Purpose
-This repository is a working snapshot of a local AzerothCore setup plus an in-process “AI controller” module and the Python side used to train and run an agent. The core idea is simple: the WoW server publishes the game state over a TCP socket, Python decides an action, and the server executes that action on a player (typically a server-side spawned bot).
+# ac-share
 
-Repository layout
-python/
-Contains the Gymnasium environment plus training and control scripts (Stable-Baselines3 PPO). It connects to the server module via TCP and implements observation building, reward shaping, action-to-command mapping, and some safety/override logic (looting, vendor trips, aggro retargeting).
+This repository is a self-contained snapshot of a local AzerothCore-based WoW server plus a custom in-process module and the Python side used to train and run an agent.
 
-src_azeroth_core/
-A full AzerothCore source snapshot from the local server this project was developed against. It is included so the module code can be understood in context (types, APIs, prepared statements, etc.) and so you can build against a known baseline.
+Core idea: the server publishes game state over a local TCP socket, Python decides what to do next, and the server executes that action for a server-side spawned “bot” character.
 
-src_module-ai-controller/
-The AzerothCore module source that:
+## Repository layout
 
-Spawns server-side “bot players” via a chat command (no real client connection required).
+- `python/`
+  Python control + training code:
+  - A Gymnasium environment (`wow_env.py`) that connects to the server socket
+  - Stable-Baselines3 PPO training (`train.py`)
+  - Model runner (`run_model.py`)
+  - Hybrid “route grind” runner (`auto_grind.py`)
+  - Utilities (`get_gps.py`, `check_env.py`, `test_multibot.py`)
+  - Training outputs (`logs/`, `models/`) and a persistent NPC memory file (`npc_memory.json`)
 
-Runs a TCP server on port 5000.
+- `src_azeroth_core/`
+  Full AzerothCore source tree of the local server this project was developed against. It is included so the module and hook code can be read and built against a known baseline.
 
-Streams newline-delimited JSON state to the Python side.
+- `src_module-ai-controller/`
+  C++ sources for the AzerothCore module that:
+  - spawns bot characters via chat commands
+  - runs a TCP server (default port 5000)
+  - streams newline-delimited JSON state to Python
+  - receives newline-delimited commands from Python and applies them in-game
 
-Accepts newline-delimited commands from Python and applies them in-game (movement, targeting, casting, looting, selling).
+## High-level architecture
 
-High-level data flow
+1. `worldserver` loads the AI controller module.
+2. On startup, the module starts a TCP server thread on port 5000.
+3. A Python script connects to `127.0.0.1:5000` and reads state snapshots (newline-delimited JSON).
+4. Python converts the state into a fixed-size observation vector.
+5. Python chooses an action (PPO policy or scripted override) and sends a command line back.
+6. The module parses commands and executes movement/targeting/casting/looting/selling for the selected bot character.
+7. XP, loot, upgrades, death, etc. are reflected in subsequent state snapshots and used as rewards/termination signals.
 
-Worldserver loads the AI controller module.
+## Bot spawning (server-side players)
 
-On server startup, the module starts a TCP server (default port 5000).
+The module supports spawning characters without a real client connection (it creates a `WorldSession`, loads the player from the character database, adds it to the world map, and marks it online).
 
-A Python script connects to 127.0.0.1:5000 and continuously reads state snapshots.
+### Chat commands
 
-Python converts the server state into a fixed-size observation vector for reinforcement learning.
+- `#spawn <BotName>`
+  Spawns a single bot character by name.
 
-Python chooses an action (either from a learned PPO policy or from scripted logic) and sends a command line to the server.
+- `#spawnbots`
+  Spawns a hardcoded list of bot names:
+  `Bota`, `Botb`, `Botc`, `Botd`, `Bote`
 
-The server parses the command and executes the requested in-game action for the named player.
+Important: the character(s) must already exist in the character database with matching names.
 
-Server-side events (XP gain, loot, equipment upgrades, death) are reflected back into the next state snapshot and become rewards/termination signals in Python.
+## TCP protocol
 
-AI socket protocol (server <-> python)
-Transport
-Plain TCP. One client connection is handled at a time.
+### Transport
 
-Server to client messages
-The server sends newline-delimited JSON. Each line is one JSON object. The module sends the “current” state immediately after a client connects, then continues sending either when a new state is produced or as a keepalive roughly every 500 ms.
+- Plain TCP
+- Default: `127.0.0.1:5000`
+- One client connection is handled at a time
+- Messages are newline-delimited
 
-Top-level schema
-{ "players": [ ... ] }
+### Server -> Python (state stream)
 
-Player object fields currently produced by the module
-name: character name (string)
-hp, max_hp: current and maximum health (integers)
-power, max_power: current and maximum resource (integers)
-level: player level (integer)
-x, y, z: player position (floats)
-o: orientation (float)
-combat: "true" or "false" (string, not boolean)
-casting: "true" or "false" (string, not boolean)
-free_slots: free bag slots (integer)
-equipped_upgrade: "true" or "false" (string) set when the module auto-equips a better item after looting
-target_status: "alive", "dead", or "none" (string)
-target_hp: target health (integer)
-tx, ty, tz: target position (floats; 0 if no target)
-xp_gained: XP gained since last report (integer, aggregated)
-loot_copper: money gained since last report (integer, aggregated; copper units)
-loot_score: count-like loot signal since last report (integer; currently increments per looted item)
-leveled_up: "true" or "false" (string) set when the player levels (see leveling note below)
-nearby_mobs: JSON array of nearby creatures (see below)
+The server sends one JSON object per line:
 
-nearby_mobs entry fields
-guid: creature GUID raw value as a string
-name: creature name (string)
-level: creature level (integer)
-attackable: 1 or 0 (integer)
-vendor: 1 or 0 (integer)
-target: GUID raw value of the creature’s current target as a string (or "0")
-hp: creature health (integer)
-x, y, z: creature position (floats)
+- Top-level:
+  - `{ "players": [ ... ] }`
 
-Client to server messages
-The client sends newline-delimited command lines:
-playerName:actionType:value
+- Player object fields:
+  - `name` (string)
+  - `hp`, `max_hp` (int)
+  - `power`, `max_power` (int)
+  - `level` (int)
+  - `x`, `y`, `z` (float)
+  - `o` (float) orientation
+  - `combat` (string `"true"` / `"false"`, not a JSON boolean)
+  - `casting` (string `"true"` / `"false"`, not a JSON boolean)
+  - `free_slots` (int)
+  - `equipped_upgrade` (string `"true"` / `"false"`)
+  - `target_status` (string: `"alive"`, `"dead"`, `"none"`)
+  - `target_hp` (int)
+  - `xp_gained` (int, aggregated since last publish)
+  - `loot_copper` (int, aggregated since last publish)
+  - `loot_score` (int, aggregated since last publish)
+  - `leveled_up` (string `"true"` / `"false"`)
+  - `tx`, `ty`, `tz` (float target position; 0 when no target)
+  - `nearby_mobs` (array)
 
-actionType values implemented in the module
-say
-stop
-turn_left
-turn_right
-move_forward
-move_to
-target_nearest
-target_guid
-cast
-loot_guid
-sell_grey
-reset
+- `nearby_mobs` entry fields:
+  - `guid` (string, raw GUID value)
+  - `name` (string)
+  - `level` (int)
+  - `attackable` (int 1/0)
+  - `vendor` (int 1/0)
+  - `target` (string, raw GUID value of the creature’s current target, or `"0"`)
+  - `hp` (int)
+  - `x`, `y`, `z` (float)
 
-Command semantics
-say:value
-Makes the player say the given text.
+Notes:
+- The server publishes updates using an internal timer and also sends a keepalive snapshot roughly every 500 ms when nothing new was produced.
+- XP/loot/upgrade/level flags are collected from hooks and then reset after being reported.
 
-stop
-Clears movement and idles.
+### Python -> Server (commands)
 
-turn_left / turn_right
-Adjusts orientation by a fixed step.
+Python sends one command per line using this grammar:
 
-move_forward
-Moves a short step forward by computing a point 3 units ahead and issuing a MovePoint.
+`<playerName>:<actionType>:<value>\n`
 
-move_to:value
-value must be formatted as x:y:z (floats). The module ground-adjusts Z and issues a MovePoint to that position.
+`value` is required syntactically but is `"0"` or empty for actions that do not need one.
 
-target_nearest:value
-value is an optional range float (defaults to 30). Selects a nearby valid attack target and sets selection/target.
+Implemented `actionType` values:
 
-target_guid:value
-value is the raw GUID value (string containing an integer). Sets selection/target to the referenced unit if found.
+- `say:<text>`
+  Makes the player say `<text>`.
 
-cast:value
-value is a spellId integer. The module tries to choose a target based on spell id and current selection and calls CastSpell.
+- `stop:0`
+  Stops movement and idles.
 
-loot_guid:value
-value is a creature GUID raw value. If the creature is dead and within 10 units, the module loots money, loots items it can store, may auto-equip upgrades, and clears the corpse loot flags.
+- `turn_left:0` / `turn_right:0`
+  Rotates orientation by a fixed step.
 
-sell_grey:value
-Despite the name, this currently destroys and “sells” every item with a SellPrice > 0 (except Hearthstone itemId 6948), from bags and backpack, and adds the computed money to the player. It requires a vendor creature within 15 units and uses the vendor GUID as value.
+- `move_forward:0`
+  Moves a short step forward by computing a point ~3 units ahead and issuing a `MovePoint`.
 
-reset
-Stops combat, resurrects if needed, heals to full, refills power, clears cooldowns/auras, and teleports the player to their homebind position.
+- `move_to:<x>:<y>:<z>`
+  Moves to the given coordinates (the server adjusts Z against ground).
 
-Bot spawning (server-side players)
-The module implements chat commands handled in OnPlayerBeforeSendChatMessage:
-#spawn <BotName>
-Spawns a single bot character by name.
-#spawnbots
-Spawns a hardcoded list of bot names: Bota, Botb, Botc, Botd, Bote.
+- `target_nearest:<range>`
+  Selects a nearby valid target within `range` (defaults to ~30 if parsing fails).
 
-How spawning works internally
-The module looks up the character GUID by name, resolves its account id, creates a WorldSession without a real socket, loads the Player from the character database using an async query holder, adds the Player to ObjectAccessor and the world map, marks the character online in the database, and finally teleports the bot to a fixed spawn point.
+- `target_guid:<rawGuid>`
+  Selects the referenced unit/creature by GUID.
 
-Fixed spawn point currently hardcoded
-Map 0, X -8921.037, Y -120.484985, Z 82.02542, O 3.299
+- `cast:<spellId>`
+  Casts the spell. For Smite (`585`), the module tries to ensure a hostile target; otherwise it tends to fall back to self.
 
-Python environment and training
-Core environment
-python/wow_env.py implements a Gymnasium Env (WoWEnv) that connects to the AI socket and turns the server JSON into a 10-float observation vector. It also maps a discrete action id into one of the server commands above.
+- `loot_guid:<rawGuid>`
+  If the creature is dead and within ~10 units:
+  loots money, attempts to take items, increments loot counters, and may auto-equip an upgrade.
 
-Action space
-Discrete(9), values 0..8:
-0 no-op
-1 move_forward
-2 turn_left
-3 turn_right
-4 target (implemented by selecting a specific guid from nearby_mobs and sending target_guid)
-5 cast Smite (spellId 585)
-6 cast Heal (spellId 2050)
-7 loot (chooses a nearby dead mob and sends loot_guid)
-8 sell (chooses nearest remembered vendor and sends sell_grey)
+- `sell_grey:<vendorGuid>`
+  Requires a vendor creature within ~15 units and then removes sellable items from inventory and adds the computed money to the player.
+  Despite the name, the current logic sells/destroys items based on `SellPrice > 0` (with a special-case exclusion for Hearthstone itemId `6948`).
 
-Observation vector (shape 10)
-Index 0: hp_pct (0..1)
-Index 1: mana/resource pct (0..1)
-Index 2: target hp scaled (target_hp / 100.0)
-Index 3: target exists flag (1 if target alive else 0)
-Index 4: in_combat flag (1/0)
-Index 5: target distance normalized (clamped to 40m and scaled to 0..1)
-Index 6: relative angle to target normalized (-1..1)
-Index 7: is_casting flag (1/0)
-Index 8: reserved constant 0.0 in this snapshot
-Index 9: free slots normalized (free_slots / 20.0)
+- `reset:0`
+  Combat stop, clear movement, heal to full, refill power, clear cooldowns/auras, and teleport to homebind.
 
-Reward shaping (high-level)
-Base step penalty plus exploration reward when discovering new mobs into memory.
-Large positive reward when an equipment upgrade is auto-equipped by the server.
-Large reward for XP gain and an even larger reward for “leveled_up”.
-Loot rewards based on copper gained and number of looted items.
-Penalty for dying or for running out of mana/resources.
+## Python RL environment (Gymnasium + PPO)
 
-NPC memory and blacklist
-wow_env.py keeps a persistent npc_memory.json mapping creature guid to last seen info. Dead or already processed mobs are blacklisted for 15 minutes to reduce repeated looting attempts and oscillations.
+### Environment
 
-Important behavior: action overrides
-wow_env.py is not a pure “take action and observe” loop. It can override the model’s chosen action for practical reasons:
-It will force vendor travel/selling when inventory is nearly full.
-It can auto-retarget a mob if the player is in combat but currently lacks a valid alive target (aggro recovery).
-It blocks actions while casting and applies some guardrails around looting and healing.
-This makes training more stable, but it also means the learned policy is trained in a partly scripted environment.
+`python/wow_env.py` implements `WoWEnv(gym.Env)`.
 
-Training script
-python/train.py trains a PPO policy (Stable-Baselines3) against WoWEnv and saves to python/models/PPO/.
+- Connects to the TCP server
+- Assumes it controls exactly one “main” player (see “Known limitations” below)
+- Converts state to an observation vector
+- Converts discrete actions to socket commands
+- Adds practical override logic (vendor trips, aggro recovery, etc.)
 
-Running an already trained model
-python/run_model.py loads a saved PPO policy and runs it in an infinite loop with env.reset() on episode termination.
+### Action space
 
-Hybrid “auto grind” runner
-python/auto_grind.py combines scripted travel (a waypoint route and memory-based roaming) with RL-based combat decisions. It uses move_to for navigation and periodically issues target_nearest scans.
+`Discrete(9)` with the following mapping:
 
-Multi-bot control
-python/test_multibot.py demonstrates sending commands for multiple bot names over one socket. This is a separate controller approach and does not use WoWEnv’s “players[0]” assumption.
+- `0`: no-op
+- `1`: `move_forward`
+- `2`: `turn_left`
+- `3`: `turn_right`
+- `4`: target a mob (selects the nearest valid `nearby_mobs` GUID and sends `target_guid`)
+- `5`: cast Smite (`spellId 585`)
+- `6`: cast Heal (`spellId 2050`)
+- `7`: loot a nearby dead creature (`loot_guid`)
+- `8`: sell to a vendor from memory (`sell_grey`)
 
-How to use this project (typical workflow)
-Step 1: Build and run your AzerothCore worldserver with the AI controller module enabled.
-Step 2: Create the bot characters in the character database (names must match what you spawn).
-Step 3: Log in with a GM character and use #spawn <BotName> (or #spawnbots).
-Step 4: Log out the GM character if you want Python to control only the bot without ambiguity.
-Step 5: Start Python:
-For training: run python/train.py
-For inference: run python/run_model.py or python/auto_grind.py
+### Observation vector
 
-Notes and limitations in this snapshot
-State streaming timer bug
-In AIControllerHook.cpp, the same timer variable is reset at 150 ms for facing updates and later checked for a 400 ms state publish interval. As written, the 400 ms state publish block will never execute because the timer is reset earlier. If you see the Python side stuck with empty or stale state, split the timers (one for facing updates, one for JSON publishing) or remove the early reset.
+`Box(shape=(10,), dtype=float32)`
 
-Player ordering and “players[0]”
-WoWEnv reads only the first entry in the players array and treats it as “me”. Object iteration order is not guaranteed. For reliable training, keep only one player online (the bot), or modify wow_env.py to select a specific player by name.
+Current layout:
 
-nearby_mobs cache is computed for one player
-The module updates nearby_mobs by scanning around the first online player it finds and reuses that cached list for all players in the JSON. This works best when exactly one bot is online.
+0. `hp_pct` (0..1)
+1. `mana_pct` / resource percent (0..1)
+2. `target_hp_scaled` (`target_hp / 100.0`)
+3. `target_exists` (1 if target alive else 0)
+4. `in_combat` (1/0)
+5. `target_distance_norm` (clamped to 40 and scaled to 0..1)
+6. `relative_angle_norm` (target angle relative to facing, normalized to -1..1)
+7. `is_casting` (1/0)
+8. reserved constant `0.0` (placeholder)
+9. `free_slots_norm` (`free_slots / 20.0`)
 
-No authentication and no encryption
-The TCP socket is plain text and unauthenticated. Do not expose port 5000 to untrusted networks.
+### Reward shaping and termination
 
-“sell_grey” does not only sell grey items
-The server-side sell routine deletes any item with a SellPrice > 0 (except Hearthstone). If you want true “grey only”, filter by item quality.
+Reward is a shaped signal on top of a small step penalty. Highlights:
 
-Forced leveling behavior
-OnPlayerLevelChanged forces the character back to level 1 when reaching level 2 and clears XP. This is useful for keeping training in a low-level sandbox but will break normal gameplay if used on real players.
+- Small constant step penalty: `-0.01`
+- Exploration/discovery: +0.5 when a previously unseen mob GUID is added to memory
+- Equipment upgrade: +100 when the server reports `equipped_upgrade == "true"`
+- XP gain: +100 + (2 * xp_gained)
+- Level-up: +2000 and terminate (see level-reset behavior in the module)
+- Loot: +(0.1 * loot_copper) + (2.0 * loot_score)
+- Selling: +50 when free slots increased compared to the previous state
+- Termination:
+  - death (`hp == 0`): -100 and terminate
+  - near-empty mana/resource (`mana_pct < 0.05`): -10 and terminate
 
-Files committed that are usually local artifacts
-python/logs/ and python/models/ contain training outputs and a saved policy snapshot. python/pycache/ is also present. You may want to remove these from version control depending on how you share the project.
+### Practical override logic (important)
 
-What this project is and is not
-This is an experimental research/engineering setup to control a WoW character through an RL environment. It is not an anti-cheat evasion project and it is not meant for use on public servers. It assumes a controlled local environment where you own the server and database.
+`wow_env.py` is not “pure RL”. It overrides actions to keep the bot functional:
 
-If you adapt this project, the two places you will touch most are AIControllerHook.cpp (state/commands/events) and python/wow_env.py (observation/reward/action mapping).
+- Vendor mode:
+  - If `free_slots < 2` and not in combat, the bot navigates to the nearest vendor remembered in `npc_memory.json` using `move_to`, then triggers `sell_grey` when close enough.
+  - Action `8` is blocked unless vendor mode is active.
+
+- Aggro recovery:
+  - If in combat but no alive target, the env searches `nearby_mobs` for an attackable mob that currently has a target (`target != "0"`) and forces a `target_guid` command directly.
+
+- Casting guardrails:
+  - Movement/turning/casting/looting can be suppressed while casting to reduce self-interrupting behavior.
+
+- Loot logic:
+  - If the current target is dead, the env moves closer until within loot distance and then loots.
+
+- Healing guardrails:
+  - Healing is suppressed at high HP to reduce useless casting.
+
+This improves stability for training and demos, but it also means the learned policy is trained in a partially scripted environment.
+
+### NPC memory and blacklist
+
+- `npc_memory.json` stores the last known data for mobs encountered (including vendors).
+- Dead mobs are removed from memory and added to a timed blacklist.
+- A blacklist duration is used (15 minutes in code) to reduce repeated interaction attempts and oscillations.
+- Memory is saved periodically (every ~30 seconds).
+
+## Scripts
+
+- `python/train.py`
+  Trains PPO for a fixed number of timesteps (currently 10,000) and saves to `models/PPO/wow_bot_v1`.
+
+- `python/run_model.py`
+  Loads `models/PPO/wow_bot_v1` and runs inference in a loop, resetting on termination.
+
+- `python/auto_grind.py`
+  Hybrid runner:
+  - follows a hardcoded farm route (`FARM_ROUTE`) via `move_to`
+  - uses the trained policy for combat/loot decisions
+
+- `python/get_gps.py`
+  Utility to print your current in-game coordinates from the state stream (useful to build routes).
+
+- `python/test_multibot.py`
+  Demonstrates parsing the JSON stream and issuing commands for multiple bot names (separate control approach from `WoWEnv`).
+
+- `python/run_bot.py`
+  Scratch/experimental file. As committed, it is not valid Python and is not used by the main workflow.
+
+## Typical workflow
+
+1. Build and run `worldserver` from `src_azeroth_core/` (standard AzerothCore build process applies).
+2. Integrate/build the module sources from `src_module-ai-controller/` into your AzerothCore modules setup.
+3. Ensure the bot characters exist in your character DB.
+4. Log in with a GM character and use:
+   - `#spawn <BotName>` or
+   - `#spawnbots`
+5. Start Python:
+   - Training: `python/train.py`
+   - Inference: `python/run_model.py`
+   - Hybrid grind: `python/auto_grind.py`
+
+## Known limitations and sharp edges (read this before debugging for hours)
+
+- No security:
+  The TCP socket is plaintext and unauthenticated. Keep it on localhost. Do not expose port 5000 to untrusted networks.
+
+- One client connection:
+  The server thread accepts and serves one TCP client at a time.
+
+- Player selection in Python:
+  The environment effectively assumes “the controlled player” is the one it receives and tracks as `self.my_name` and state.
+  If multiple players/bots are online, you should explicitly select by name in Python instead of relying on list/order behavior.
+
+- `nearby_mobs` is cached per update and can reflect only one player’s surroundings:
+  The module builds `_cachedNearbyMobsJson` by scanning around a player and then reuses that cached list for all players in the JSON.
+
+- Timer bug in the module update loop:
+  `_fastTimer` is reset at ~150 ms for facing updates and then also used as the gate for the ~400 ms JSON publish path.
+  As written, the 400 ms publish block will never execute. If you see the Python side receiving `{}` or stale state forever, split the timers (use `_faceTimer` for facing, `_fastTimer` for publishing) or otherwise fix the reset logic.
+
+- Level behavior is intentionally “training sandbox” style:
+  On level change, the module sets the player back to level 1 when reaching level 2 and clears XP. This is useful for repeated low-level training loops, but it is not normal gameplay behavior.
+
+- Selling behavior is misnamed:
+  `sell_grey` currently deletes/sells items based on `SellPrice > 0` (except Hearthstone), not by “grey quality only”.
+  If you want true grey-only selling, filter by item quality.
+
+## Dependencies (Python side)
+
+You will need at least:
+- Python 3.x
+- `gymnasium`
+- `numpy`
+- `stable-baselines3`
+
+Optional but useful:
+- TensorBoard (for viewing `python/logs/`)
+
+## Scope
+
+This is an experimental local-server research/engineering setup intended for controlled environments you own. It is not intended for public servers.
