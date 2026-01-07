@@ -3,6 +3,7 @@ import traceback # NEU: Für Fehlerverfolgung
 print(">>> Importiere Module... <<<")
 try:
     from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import DummyVecEnv
     from wow_env import WoWEnv
     import os
 except Exception as e:
@@ -17,9 +18,11 @@ log_dir = "logs"
 if not os.path.exists(models_dir): os.makedirs(models_dir)
 if not os.path.exists(log_dir): os.makedirs(log_dir)
 
-print(">>> Lade Environment... <<<")
+BOT_NAMES = ["Autoai", "Bota", "Botb", "Botc", "Botd", "Bote"]
+
+print(">>> Lade Environments... <<<")
 try:
-    env = WoWEnv()
+    env = DummyVecEnv([lambda name=name: WoWEnv(bot_name=name) for name in BOT_NAMES])
 except Exception as e:
     print(f"ENV INIT FEHLER: {e}")
     traceback.print_exc()

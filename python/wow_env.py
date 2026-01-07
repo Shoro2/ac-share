@@ -12,7 +12,7 @@ SPELL_HEAL = 2050
 MEMORY_FILE = "npc_memory.json"
 
 class WoWEnv(gym.Env):
-    def __init__(self, host='127.0.0.1', port=5000):
+    def __init__(self, host='127.0.0.1', port=5000, bot_name=None):
         super(WoWEnv, self).__init__()
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -28,7 +28,9 @@ class WoWEnv(gym.Env):
         self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(10,), dtype=np.float32)
 
         self.last_state = None
-        self.my_name = ""
+        self.bot_name = bot_name
+        self.my_name = bot_name or ""
+        self._recv_buffer = ""
         
         self.npc_memory = {} 
         self.blacklist = {} 
@@ -51,21 +53,30 @@ class WoWEnv(gym.Env):
         except: pass
 
     def _get_state_from_server(self):
-        buffer = ""
         while True:
             try:
                 data = self.sock.recv(8192) 
                 if not data: break
-                buffer += data.decode('utf-8')
-                if "\n" in buffer:
-                    lines = buffer.split("\n")
+                self._recv_buffer += data.decode('utf-8')
+                if "\n" in self._recv_buffer:
+                    lines = self._recv_buffer.split("\n")
                     if len(lines) < 2: continue
                     raw_json = lines[-2]
+                    self._recv_buffer = lines[-1]
                     if not raw_json.strip(): continue
                     try:
                         data = json.loads(raw_json)
                         if not data['players']: continue
-                        player = data['players'][0]
+                        player = None
+                        if self.bot_name:
+                            for candidate in data['players']:
+                                if candidate.get('name') == self.bot_name:
+                                    player = candidate
+                                    break
+                        if player is None:
+                            if self.bot_name:
+                                continue
+                            player = data['players'][0]
                         self.my_name = player['name']
                         return player
                     except: continue
@@ -354,9 +365,10 @@ class WoWEnv(gym.Env):
         print(">>> RESETTING ENVIRONMENT... <<<")
         
         # Versuche Reset-Befehl zu senden
-        if self.my_name:
+        name_to_use = self.my_name or self.bot_name
+        if name_to_use:
             try:
-                self.sock.sendall(f"{self.my_name}:reset:0\n".encode('utf-8'))
+                self.sock.sendall(f"{name_to_use}:reset:0\n".encode('utf-8'))
             except: pass
         
         # WARTE AUF DATEN (Zwingend!)
