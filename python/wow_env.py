@@ -9,7 +9,7 @@ import os
 
 SPELL_SMITE = 585
 SPELL_HEAL = 2050
-MEMORY_FILE = "npc_memory.json"
+DEFAULT_MEMORY_FILE = "npc_memory.json"
 
 class WoWEnv(gym.Env):
     def __init__(self, host='127.0.0.1', port=5000, bot_name=None):
@@ -31,6 +31,10 @@ class WoWEnv(gym.Env):
         self.last_state = None
         self.my_name = ""
         self.bot_name = bot_name
+
+        # Pro Bot eigene Memory-Datei, damit parallele Envs sich nicht gegenseitig kaputt-schreiben
+        self.memory_file = None
+        self._set_memory_file(self.bot_name)
         self._recv_buffer = ""
         
         self.npc_memory = {} 
@@ -40,17 +44,27 @@ class WoWEnv(gym.Env):
         self.load_memory()
         self.last_save_time = time.time()
 
+
+    def _set_memory_file(self, bot_name):
+        # Lege die Datei neben wow_env.py ab (unabhängig vom aktuellen Working Directory)
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        safe = (bot_name or "default").replace(" ", "_")
+        self.memory_file = os.path.join(base_dir, f"npc_memory_{safe}.json")
     def load_memory(self):
-        if os.path.exists(MEMORY_FILE):
+        path = self.memory_file or DEFAULT_MEMORY_FILE
+        if os.path.exists(path):
             try:
-                with open(MEMORY_FILE, 'r') as f:
+                with open(path, 'r') as f:
                     self.npc_memory = json.load(f)
             except: self.npc_memory = {}
 
     def save_memory(self):
         try:
-            with open(MEMORY_FILE, 'w') as f:
+            path = self.memory_file or DEFAULT_MEMORY_FILE
+            tmp = path + ".tmp"
+            with open(tmp, 'w') as f:
                 json.dump(self.npc_memory, f, indent=4)
+            os.replace(tmp, path)
         except: pass
 
     def _get_state_from_server(self, allow_any_player=False):
@@ -74,12 +88,16 @@ class WoWEnv(gym.Env):
                                 if candidate.get('name') == self.bot_name:
                                     player = candidate
                                     break
-                        if player is None:
-                            if self.bot_name and not allow_any_player:
+                            # Wenn ein Bot-Name vorgegeben ist, KEIN Fallback auf andere Player!
+                            if player is None:
                                 return None
+                        else:
+                            # Kein Bot-Name vorgegeben -> nimm den ersten Player und "adoptiere" ihn
                             player = data['players'][0]
-                            if allow_any_player:
-                                self.bot_name = player['name']
+                            self.bot_name = player.get('name', None)
+                            self._set_memory_file(self.bot_name)
+                            self.load_memory()
+
                         self.my_name = player['name']
                         return player
                     except: continue
@@ -385,19 +403,25 @@ class WoWEnv(gym.Env):
         # WARTE AUF DATEN (Zwingend!)
         data = None
         start_time = time.time()
-        allow_any_player = False
+        allow_any_player = (self.bot_name is None)
         fallback_logged = False
+        max_wait = 60.0 if self.bot_name else 10.0
+
         while data is None:
             data = self._get_state_from_server(allow_any_player=allow_any_player)
             if data is None:
-                if time.time() - start_time > 10.0:
+                waited = time.time() - start_time
+                # Wenn ein Bot-Name vorgegeben ist: niemals auf andere Player ausweichen.
+                if self.bot_name and waited > max_wait:
+                    raise RuntimeError(f"Reset Timeout: keine Daten für Bot '{self.bot_name}'. Ist der Bot online?")
+                # Ohne Bot-Name: optionaler Fallback (wie vorher)
+                if (not self.bot_name) and waited > 10.0:
                     if not fallback_logged:
                         print("Reset Timeout: keine Bot-Daten, versuche Fallback-Spieler.")
                         fallback_logged = True
                     allow_any_player = True
                 print("Warte auf Server-Antwort für Reset...")
                 time.sleep(1.0)
-        
         self.last_state = data
         
         # Initial Observation

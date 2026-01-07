@@ -19,7 +19,7 @@
 #include <sstream>
 #include <unordered_map>
 #include "GameTime.h" 
-
+#include <atomic>
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "CellImpl.h"
@@ -164,14 +164,25 @@ struct AICommand {
 std::mutex g_Mutex;
 std::string g_CurrentJsonState = "{}";
 bool g_HasNewState = false;
+std::atomic<uint64_t> g_StateVersion{ 0 };
 std::queue<AICommand> g_CommandQueue;
 
+struct AIPlayerEvents
+{
+    long long xp_gained = 0;
+    long long loot_copper = 0;
+    long long loot_score = 0;
+    bool leveled_up = false;
+    bool equipped_upgrade = false;
+
+    bool IsEmpty() const
+    {
+        return xp_gained == 0 && loot_copper == 0 && loot_score == 0 && !leveled_up && !equipped_upgrade;
+    }
+};
+
 std::mutex g_EventMutex;
-long long g_XPGained = 0;
-bool g_LeveledUp = false;
-long long g_LootCopper = 0;
-long long g_LootScore = 0;
-bool g_EquippedUpgrade = false;
+std::unordered_map<uint64, AIPlayerEvents> g_PlayerEvents;
 AsyncCallbackProcessor<SQLQueryHolderCallback> g_QueryHolderProcessor;
 std::unordered_map<uint32, WorldSession*> g_BotSessions;
 std::mutex g_BotSessionsMutex;
@@ -191,6 +202,76 @@ int GetItemScore(ItemTemplate const* proto) {
         score += proto->ItemStat[i].ItemStatValue * 2;
     }
     return score;
+}
+
+// --- PER-PLAYER EVENT HELPERS ---
+static inline uint64 AIEventKey(Player* player)
+{
+    return player ? player->GetGUID().GetRawValue() : 0ULL;
+}
+
+static void AddXPGained(Player* player, uint32 amount)
+{
+    if (!player || amount == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_EventMutex);
+    g_PlayerEvents[AIEventKey(player)].xp_gained += amount;
+}
+
+static void AddLootCopper(Player* player, uint32 amount)
+{
+    if (!player || amount == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_EventMutex);
+    g_PlayerEvents[AIEventKey(player)].loot_copper += amount;
+}
+
+static void AddLootScore(Player* player, uint32 amount)
+{
+    if (!player || amount == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_EventMutex);
+    g_PlayerEvents[AIEventKey(player)].loot_score += amount;
+}
+
+static void SetLeveledUp(Player* player)
+{
+    if (!player)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_EventMutex);
+    g_PlayerEvents[AIEventKey(player)].leveled_up = true;
+}
+
+static void SetEquippedUpgrade(Player* player)
+{
+    if (!player)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_EventMutex);
+    g_PlayerEvents[AIEventKey(player)].equipped_upgrade = true;
+}
+
+// Atomisch: Events für genau diesen Player holen und dabei resetten.
+static AIPlayerEvents ConsumePlayerEvents(Player* player)
+{
+    AIPlayerEvents out;
+    if (!player)
+        return out;
+
+    uint64 key = AIEventKey(player);
+    std::lock_guard<std::mutex> lock(g_EventMutex);
+
+    auto it = g_PlayerEvents.find(key);
+    if (it == g_PlayerEvents.end())
+        return out;
+
+    out = it->second;
+    g_PlayerEvents.erase(it);
+    return out;
 }
 
 void TryEquipIfBetter(Player* player, uint16 srcPos) {
@@ -225,7 +306,7 @@ void TryEquipIfBetter(Player* player, uint16 srcPos) {
         if (newScore > currentScore) {
             player->SwapItem(srcPos, destSlot);
             player->PlayDistanceSound(120, player);
-            { std::lock_guard<std::mutex> lock(g_EventMutex); g_EquippedUpgrade = true; }
+            SetEquippedUpgrade(player);
             LOG_INFO("module", "AI-GEAR: Upgrade angelegt! (Slot: {})", destSlot);
         }
     }
@@ -270,76 +351,138 @@ uint32 GetFreeBagSlots(Player* player) {
 }
 
 // --- SERVER THREAD ---
-void AIServerThread() {
-    try {
+//
+// Multi-Client: Thread pro Client (synchrones IO). Jeder Client bekommt den State-Stream
+// unabhängig (kein globales "g_HasNewState=false" mehr).
+//
+// State-Push wird über g_StateVersion getriggert: OnUpdate inkrementiert die Version,
+// jeder Client merkt sich seine letzte gesehene Version.
+//
+static void HandleAIClient(tcp::socket socket)
+{
+    try
+    {
+        LOG_INFO("module", ">>> CLIENT VERBUNDEN! <<<");
+
+        // optional: kleine Latenz-Optimierung
+        boost::system::error_code ec;
+        socket.set_option(tcp::no_delay(true), ec);
+
+        char data_[8192];
+        std::string incomingBuffer;
+
+        uint64_t lastVersion = 0;
+        auto lastSend = std::chrono::steady_clock::now();
+
+        // Initial-State sofort senden
+        {
+            std::string initial;
+            {
+                std::lock_guard<std::mutex> lock(g_Mutex);
+                initial = g_CurrentJsonState + "\n";
+            }
+            boost::asio::write(socket, boost::asio::buffer(initial));
+            lastVersion = g_StateVersion.load(std::memory_order_relaxed);
+            lastSend = std::chrono::steady_clock::now();
+        }
+
+        while (true)
+        {
+            // 1) State senden, wenn neue Version oder Keepalive (alle 500ms)
+            std::string msg;
+            uint64_t v = g_StateVersion.load(std::memory_order_relaxed);
+
+            if (v != lastVersion)
+            {
+                std::lock_guard<std::mutex> lock(g_Mutex);
+                msg = g_CurrentJsonState + "\n";
+                lastVersion = v;
+            }
+            else
+            {
+                auto now = std::chrono::steady_clock::now();
+                if (now - lastSend >= std::chrono::milliseconds(500))
+                {
+                    std::lock_guard<std::mutex> lock(g_Mutex);
+                    msg = g_CurrentJsonState + "\n";
+                }
+            }
+
+            if (!msg.empty())
+            {
+                boost::asio::write(socket, boost::asio::buffer(msg));
+                lastSend = std::chrono::steady_clock::now();
+            }
+
+            // 2) Eingehende Commands lesen (non-blocking-ish über available())
+            if (socket.available() > 0)
+            {
+                boost::system::error_code error;
+                size_t length = socket.read_some(boost::asio::buffer(data_), error);
+
+                if (error == boost::asio::error::eof)
+                    break; // client disconnected
+                if (error)
+                    throw boost::system::system_error(error);
+
+                incomingBuffer.append(data_, length);
+
+                size_t newlinePos = 0;
+                while ((newlinePos = incomingBuffer.find('\n')) != std::string::npos)
+                {
+                    std::string line = incomingBuffer.substr(0, newlinePos);
+                    incomingBuffer.erase(0, newlinePos + 1);
+                    if (line.empty())
+                        continue;
+
+                    // Format: playerName:actionType:value
+                    size_t p1 = line.find(':');
+                    size_t p2 = line.find(':', p1 + 1);
+                    if (p1 != std::string::npos && p2 != std::string::npos)
+                    {
+                        AICommand cmd;
+                        cmd.playerName = line.substr(0, p1);
+                        cmd.actionType = line.substr(p1 + 1, p2 - p1 - 1);
+                        cmd.value = line.substr(p2 + 1);
+
+                        std::lock_guard<std::mutex> lock(g_Mutex);
+                        g_CommandQueue.push(cmd);
+                    }
+                }
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("module", "Verbindung verloren: {}", e.what());
+    }
+
+    LOG_INFO("module", ">>> CLIENT GETRENNT <<<");
+}
+
+void AIServerThread()
+{
+    try
+    {
         boost::asio::io_context io_context;
         tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), 5000));
         LOG_INFO("module", ">>> AI-SOCKET: Lausche auf Port 5000... <<<");
-        while (true) {
+
+        while (true)
+        {
             tcp::socket socket(io_context);
             acceptor.accept(socket);
-            LOG_INFO("module", ">>> CLIENT VERBUNDEN! <<<");
-            try {
-                char data_[8192];
-                std::string incomingBuffer;
-                auto lastSend = std::chrono::steady_clock::now();
-                {
-                    std::string initial;
-                    {
-                        std::lock_guard<std::mutex> lock(g_Mutex);
-                        initial = g_CurrentJsonState + "\n";
-                    }
-                    boost::asio::write(socket, boost::asio::buffer(initial));
-                }
-                while (true) {
-                    std::string msg;
-                    {
-                        std::lock_guard<std::mutex> lock(g_Mutex);
-                        if (g_HasNewState) {
-                            msg = g_CurrentJsonState + "\n";
-                            g_HasNewState = false;
-                        }
-                    }
-                    if (msg.empty()) {
-                        auto now = std::chrono::steady_clock::now();
-                        if (now - lastSend >= std::chrono::milliseconds(500)) {
-                            std::lock_guard<std::mutex> lock(g_Mutex);
-                            msg = g_CurrentJsonState + "\n";
-                        }
-                    }
-                    if (!msg.empty()) {
-                        boost::asio::write(socket, boost::asio::buffer(msg));
-                        lastSend = std::chrono::steady_clock::now();
-                    }
-                    if (socket.available() > 0) {
-                        boost::system::error_code error;
-                        size_t length = socket.read_some(boost::asio::buffer(data_), error);
-                        if (error == boost::asio::error::eof) break;
-                        incomingBuffer.append(data_, length);
-                        size_t newlinePos = 0;
-                        while ((newlinePos = incomingBuffer.find('\n')) != std::string::npos) {
-                            std::string line = incomingBuffer.substr(0, newlinePos);
-                            incomingBuffer.erase(0, newlinePos + 1);
-                            if (line.empty()) continue;
-                            size_t p1 = line.find(':');
-                            size_t p2 = line.find(':', p1 + 1);
-                            if (p1 != std::string::npos && p2 != std::string::npos) {
-                                AICommand cmd;
-                                cmd.playerName = line.substr(0, p1);
-                                cmd.actionType = line.substr(p1 + 1, p2 - p1 - 1);
-                                cmd.value = line.substr(p2 + 1);
-                                std::lock_guard<std::mutex> lock(g_Mutex);
-                                g_CommandQueue.push(cmd);
-                            }
-                        }
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                }
-            }
-            catch (std::exception& e) { LOG_ERROR("module", "Verbindung verloren: {}", e.what()); }
+
+            // Thread pro Client
+            std::thread(&HandleAIClient, std::move(socket)).detach();
         }
     }
-    catch (std::exception& e) { LOG_ERROR("module", "Server Crash: {}", e.what()); }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("module", "Server Crash: {}", e.what());
+    }
 }
 
 // --- LOGIC ---
@@ -412,7 +555,8 @@ public:
                         try {
                             float parsed = std::stof(cmd.value);
                             if (parsed > 0.0f) range = parsed;
-                        } catch (std::exception const&) {
+                        }
+                        catch (std::exception const&) {
                         }
                     }
                     Unit* target = player->SelectNearbyTarget(nullptr, range);
@@ -472,7 +616,7 @@ public:
                                 loot->gold = 0; player->ModifyMoney(gold);
                                 player->UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_LOOT_MONEY, gold);
                                 WorldPacket data(SMSG_LOOT_MONEY_NOTIFY, 4 + 1); data << uint32(gold); data << uint8(1); player->GetSession()->SendPacket(&data);
-                                { std::lock_guard<std::mutex> lock(g_EventMutex); g_LootCopper += gold; }
+                                AddLootCopper(player, gold);
                             }
                             for (uint8 i = 0; i < loot->items.size(); ++i) {
                                 LootItem* item = loot->LootItemInSlot(i, player);
@@ -485,7 +629,7 @@ public:
                                         if (newItem) player->SendNewItem(newItem, 1, false, true);
                                         TryEquipIfBetter(player, dest[0].pos);
                                         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item->itemid);
-                                        if (proto) { std::lock_guard<std::mutex> lock(g_EventMutex); g_LootScore += 1; }
+                                        if (proto) { AddLootScore(player, 1); }
                                     }
                                 }
                             }
@@ -527,7 +671,7 @@ public:
                         if (totalMoney > 0) {
                             player->ModifyMoney(totalMoney);
                             player->PlayDistanceSound(120, player);
-                            { std::lock_guard<std::mutex> lock(g_EventMutex); g_LootCopper += totalMoney; }
+                            AddLootCopper(player, totalMoney);
                         }
                         player->SetSelection(ObjectGuid::Empty); player->SetTarget(ObjectGuid::Empty);
                     }
@@ -537,13 +681,6 @@ public:
 
         if (_fastTimer >= 400) {
             _fastTimer = 0;
-            long long xp = 0; long long lCopper = 0; long long lScore = 0; bool lvlUp = false; bool equipUp = false;
-            {
-                std::lock_guard<std::mutex> lock(g_EventMutex);
-                xp = g_XPGained; g_XPGained = 0; lvlUp = g_LeveledUp; g_LeveledUp = false;
-                lCopper = g_LootCopper; g_LootCopper = 0; lScore = g_LootScore; g_LootScore = 0;
-                equipUp = g_EquippedUpgrade; g_EquippedUpgrade = false;
-            }
             std::stringstream ss;
             ss << "{ \"players\": [";
             bool first = true;
@@ -567,7 +704,9 @@ public:
                 ss << "\"combat\": \"" << (p->IsInCombat() ? "true" : "false") << "\", ";
                 ss << "\"casting\": \"" << (p->HasUnitState(UNIT_STATE_CASTING) ? "true" : "false") << "\", ";
                 ss << "\"free_slots\": " << GetFreeBagSlots(p) << ", ";
-                ss << "\"equipped_upgrade\": \"" << (equipUp ? "true" : "false") << "\", ";
+                AIPlayerEvents ev = ConsumePlayerEvents(p);
+
+                ss << "\"equipped_upgrade\": \"" << (ev.equipped_upgrade ? "true" : "false") << "\", ";
                 Unit* target = p->GetSelectedUnit();
                 std::string tStatus = "none"; uint32 tHp = 0; float tx = 0, ty = 0, tz = 0;
                 if (target) {
@@ -577,10 +716,10 @@ public:
                 }
                 ss << "\"target_status\": \"" << tStatus << "\", ";
                 ss << "\"target_hp\": " << tHp << ", ";
-                ss << "\"xp_gained\": " << xp << ", ";
-                ss << "\"loot_copper\": " << lCopper << ", ";
-                ss << "\"loot_score\": " << lScore << ", ";
-                ss << "\"leveled_up\": \"" << (lvlUp ? "true" : "false") << "\", ";
+                ss << "\"xp_gained\": " << ev.xp_gained << ", ";
+                ss << "\"loot_copper\": " << ev.loot_copper << ", ";
+                ss << "\"loot_score\": " << ev.loot_score << ", ";
+                ss << "\"leveled_up\": \"" << (ev.leveled_up ? "true" : "false") << "\", ";
                 ss << "\"tx\": " << tx << ", ";
                 ss << "\"ty\": " << ty << ", ";
                 ss << "\"tz\": " << tz << ", ";
@@ -590,6 +729,8 @@ public:
             }
             ss << "] }";
             { std::lock_guard<std::mutex> lock(g_Mutex); g_CurrentJsonState = ss.str(); g_HasNewState = true; }
+            g_StateVersion.fetch_add(1, std::memory_order_relaxed);
+
         }
 
         if (_slowTimer >= 2000) {
@@ -799,7 +940,7 @@ public:
 
             msg = "";
             return true;
-        };
+            };
 
         if (msg.length() >= commandSpawnAll.length() && msg.substr(0, commandSpawnAll.length()) == commandSpawnAll) {
             LOG_INFO("module", "AI-DEBUG: Chat von {}: '{}'", player->GetName(), msg);
@@ -828,18 +969,17 @@ public:
         }
     }
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override {
-        std::lock_guard<std::mutex> lock(g_EventMutex);
-        g_XPGained += amount;
+        AddXPGained(player, amount);
     }
     void OnPlayerLevelChanged(Player* player, uint8 oldLevel) override {
         if (player->GetLevel() >= 2) {
-            { std::lock_guard<std::mutex> lock(g_EventMutex); g_LeveledUp = true; }
+            SetLeveledUp(player);
             player->SetLevel(1); player->SetUInt32Value(PLAYER_XP, 0); player->InitStatsForLevel(true);
             player->SetHealth(player->GetMaxHealth()); player->SetPower(player->getPowerType(), player->GetMaxPower(player->getPowerType()));
         }
     }
     void OnPlayerMoneyChanged(Player* player, int32& amount) override {
-        if (amount > 0) { std::lock_guard<std::mutex> lock(g_EventMutex); g_LootCopper += amount; }
+        if (amount > 0) { AddLootCopper(player, amount); }
     }
 };
 
