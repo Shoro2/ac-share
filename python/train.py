@@ -1,6 +1,7 @@
 import traceback
 import os
 import sys
+from datetime import datetime
 from multiprocessing import freeze_support
 
 print(">>> Importiere Module... <<<")
@@ -45,13 +46,15 @@ class GameplayMetricsCallback(BaseCallback):
             self._total_kills += stats["kills"]
             self._total_deaths += stats["death"]
 
-            self.logger.record("gameplay/ep_reward", stats["reward"])
-            self.logger.record("gameplay/ep_length", stats["length"])
-            self.logger.record("gameplay/ep_kills", stats["kills"])
-            self.logger.record("gameplay/ep_xp", stats["xp"])
-            self.logger.record("gameplay/ep_loot_copper", stats["loot"])
-            self.logger.record("gameplay/ep_damage_dealt", stats["damage_dealt"])
-            self.logger.record("gameplay/ep_death", stats["death"])
+            # record_mean: mittelt korrekt wenn mehrere Episoden pro Rollout enden
+            self.logger.record_mean("gameplay/ep_reward", stats["reward"])
+            self.logger.record_mean("gameplay/ep_length", stats["length"])
+            self.logger.record_mean("gameplay/ep_kills", stats["kills"])
+            self.logger.record_mean("gameplay/ep_xp", stats["xp"])
+            self.logger.record_mean("gameplay/ep_loot_copper", stats["loot"])
+            self.logger.record_mean("gameplay/ep_damage_dealt", stats["damage_dealt"])
+            self.logger.record_mean("gameplay/ep_death", stats["death"])
+            # Kumulative Zähler: record() (letzter Wert = aktuellster)
             self.logger.record("gameplay/total_episodes", self._episode_count)
             self.logger.record("gameplay/total_kills", self._total_kills)
             self.logger.record("gameplay/total_deaths", self._total_deaths)
@@ -108,11 +111,13 @@ def main():
     print(">>> TRAINING STARTET... (Drücke Strg+C zum Abbrechen) <<<")
     TIMESTEPS = 10000
     metrics_callback = GameplayMetricsCallback(verbose=1)
+    run_name = f"PPO_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    print(f">>> TensorBoard Run: {run_name} <<<")
 
     try:
         model.learn(
             total_timesteps=TIMESTEPS,
-            reset_num_timesteps=False,
+            tb_log_name=run_name,
             callback=metrics_callback,
         )
 
