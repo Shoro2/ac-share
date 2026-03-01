@@ -509,7 +509,7 @@ private:
     uint32 _fastTimer;
     uint32 _slowTimer;
     uint32 _faceTimer;
-    std::string _cachedNearbyMobsJson;
+    std::unordered_map<std::string, std::string> _cachedNearbyMobsPerPlayer;
     void CollectOnlinePlayers(std::vector<Player*>& players) {
         std::shared_lock lock(*HashMapHolder<Player>::GetLock());
         players.reserve(ObjectAccessor::GetPlayers().size());
@@ -522,7 +522,7 @@ private:
         }
     }
 public:
-    AIControllerWorldScript() : WorldScript("AIControllerWorldScript"), _fastTimer(0), _slowTimer(0), _faceTimer(0), _cachedNearbyMobsJson("[]") {}
+    AIControllerWorldScript() : WorldScript("AIControllerWorldScript"), _fastTimer(0), _slowTimer(0), _faceTimer(0) {}
     void OnStartup() override { std::thread(AIServerThread).detach(); }
 
     void OnUpdate(uint32 diff) override {
@@ -726,14 +726,16 @@ public:
 
                 ss << "\"equipped_upgrade\": \"" << (ev.equipped_upgrade ? "true" : "false") << "\", ";
                 Unit* target = p->GetSelectedUnit();
-                std::string tStatus = "none"; uint32 tHp = 0; float tx = 0, ty = 0, tz = 0;
+                std::string tStatus = "none"; uint32 tHp = 0; uint32 tLevel = 0; float tx = 0, ty = 0, tz = 0;
                 if (target) {
                     tStatus = target->IsAlive() ? "alive" : "dead";
                     tHp = target->GetHealth();
+                    tLevel = target->GetLevel();
                     tx = target->GetPositionX(); ty = target->GetPositionY(); tz = target->GetPositionZ();
                 }
                 ss << "\"target_status\": \"" << tStatus << "\", ";
                 ss << "\"target_hp\": " << tHp << ", ";
+                ss << "\"target_level\": " << tLevel << ", ";
                 ss << "\"xp_gained\": " << ev.xp_gained << ", ";
                 ss << "\"loot_copper\": " << ev.loot_copper << ", ";
                 ss << "\"loot_score\": " << ev.loot_score << ", ";
@@ -741,8 +743,10 @@ public:
                 ss << "\"tx\": " << tx << ", ";
                 ss << "\"ty\": " << ty << ", ";
                 ss << "\"tz\": " << tz << ", ";
-                if (_cachedNearbyMobsJson.empty()) _cachedNearbyMobsJson = "[]";
-                ss << "\"nearby_mobs\": " << _cachedNearbyMobsJson;
+                std::string playerName = p->GetName();
+                auto mobIt = _cachedNearbyMobsPerPlayer.find(playerName);
+                std::string playerMobsJson = (mobIt != _cachedNearbyMobsPerPlayer.end()) ? mobIt->second : "[]";
+                ss << "\"nearby_mobs\": " << playerMobsJson;
                 ss << "}";
             }
             ss << "] }";
@@ -755,39 +759,36 @@ public:
             _slowTimer = 0;
             std::vector<Player*> players;
             CollectOnlinePlayers(players);
-            if (!players.empty()) {
-                for (Player* p : players) {
-                    if (!p) continue;
-                    if (p) {
-                        CreatureCollector collector(p);
-                        Cell::VisitObjects(p, collector, 50.0f);
-                        std::stringstream mobSS;
-                        mobSS << "[";
-                        bool firstMob = true;
-                        for (Creature* c : collector.foundCreatures) {
-                            if (!firstMob) mobSS << ", ";
-                            mobSS << "{";
-                            mobSS << "\"guid\": \"" << c->GetGUID().GetRawValue() << "\", ";
-                            mobSS << "\"name\": \"" << c->GetName() << "\", ";
-                            mobSS << "\"level\": " << (int)c->GetLevel() << ", ";
-                            mobSS << "\"attackable\": " << (p->IsValidAttackTarget(c) ? "1" : "0") << ", ";
-                            mobSS << "\"vendor\": " << (c->IsVendor() ? "1" : "0") << ", ";
-                            uint64 targetGuid = 0;
-                            if (c->GetTarget()) targetGuid = c->GetTarget().GetRawValue();
-                            mobSS << "\"target\": \"" << targetGuid << "\", ";
-                            mobSS << "\"hp\": " << c->GetHealth() << ", ";
-                            mobSS << "\"x\": " << c->GetPositionX() << ", ";
-                            mobSS << "\"y\": " << c->GetPositionY() << ", ";
-                            mobSS << "\"z\": " << c->GetPositionZ();
-                            mobSS << "}";
-                            firstMob = false;
-                        }
-                        mobSS << "]";
-                        _cachedNearbyMobsJson = mobSS.str();
-                        break;
-                    }
+            std::unordered_map<std::string, std::string> newMobsPerPlayer;
+            for (Player* p : players) {
+                if (!p) continue;
+                CreatureCollector collector(p);
+                Cell::VisitObjects(p, collector, 50.0f);
+                std::stringstream mobSS;
+                mobSS << "[";
+                bool firstMob = true;
+                for (Creature* c : collector.foundCreatures) {
+                    if (!firstMob) mobSS << ", ";
+                    mobSS << "{";
+                    mobSS << "\"guid\": \"" << c->GetGUID().GetRawValue() << "\", ";
+                    mobSS << "\"name\": \"" << c->GetName() << "\", ";
+                    mobSS << "\"level\": " << (int)c->GetLevel() << ", ";
+                    mobSS << "\"attackable\": " << (p->IsValidAttackTarget(c) ? "1" : "0") << ", ";
+                    mobSS << "\"vendor\": " << (c->IsVendor() ? "1" : "0") << ", ";
+                    uint64 targetGuid = 0;
+                    if (c->GetTarget()) targetGuid = c->GetTarget().GetRawValue();
+                    mobSS << "\"target\": \"" << targetGuid << "\", ";
+                    mobSS << "\"hp\": " << c->GetHealth() << ", ";
+                    mobSS << "\"x\": " << c->GetPositionX() << ", ";
+                    mobSS << "\"y\": " << c->GetPositionY() << ", ";
+                    mobSS << "\"z\": " << c->GetPositionZ();
+                    mobSS << "}";
+                    firstMob = false;
                 }
+                mobSS << "]";
+                newMobsPerPlayer[p->GetName()] = mobSS.str();
             }
+            _cachedNearbyMobsPerPlayer = std::move(newMobsPerPlayer);
         }
     }
 };

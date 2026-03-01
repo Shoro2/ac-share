@@ -27,7 +27,7 @@ class WoWEnv(gym.Env):
 
         # Action Space: 8=SELL
         self.action_space = spaces.Discrete(9)
-        self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(10,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(15,), dtype=np.float32)
 
         self.last_state = None
         self.my_name = ""
@@ -130,6 +130,43 @@ class WoWEnv(gym.Env):
                 best_mob = mob
         return best_mob
 
+    def _compute_nearby_mob_features(self, data):
+        """Compute observation features from nearby_mobs list."""
+        nearby_mobs = data.get('nearby_mobs', [])
+        me_x, me_y = data['x'], data['y']
+        orientation = data['o']
+
+        num_alive = 0
+        num_attackers = 0
+        closest_dist = 40.0
+        closest_angle = 0.0
+
+        for mob in nearby_mobs:
+            if mob['hp'] <= 0:
+                continue
+            if mob.get('attackable', 0) == 0:
+                continue
+            num_alive += 1
+            if mob.get('target', '0') != '0':
+                num_attackers += 1
+            dx = mob['x'] - me_x
+            dy = mob['y'] - me_y
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist < closest_dist:
+                closest_dist = dist
+                mob_angle = math.atan2(dy, dx)
+                rel = mob_angle - orientation
+                while rel > math.pi: rel -= 2*math.pi
+                while rel < -math.pi: rel += 2*math.pi
+                closest_angle = rel
+
+        return (
+            min(num_alive, 10) / 10.0,
+            min(closest_dist, 40.0) / 40.0,
+            closest_angle / math.pi,
+            min(num_attackers, 5) / 5.0,
+        )
+
     def _build_obs(self, data):
         max_hp = max(1, data['max_hp'])
         hp_pct = data['hp'] / max_hp
@@ -153,7 +190,20 @@ class WoWEnv(gym.Env):
         in_combat = 1.0 if data.get('combat') == 'true' else 0.0
         slots_norm = data.get('free_slots', 0) / 20.0
 
-        return np.array([hp_pct, mana_pct, t_hp, t_exists, in_combat, dist_norm, angle_norm, is_casting, 0.0, slots_norm], dtype=np.float32)
+        # Nearby mob features
+        mob_count, closest_mob_dist, closest_mob_angle, num_attackers = self._compute_nearby_mob_features(data)
+
+        # Target and player level
+        target_level = data.get('target_level', 0) / 10.0
+        player_level = data.get('level', 1) / 10.0
+
+        return np.array([
+            hp_pct, mana_pct, t_hp, t_exists, in_combat,
+            dist_norm, angle_norm, is_casting,
+            mob_count, slots_norm,
+            closest_mob_dist, closest_mob_angle, num_attackers,
+            target_level, player_level
+        ], dtype=np.float32)
 
     def _initial_heading_kick(self):
         # deterministisch pro Bot: verteilt sie fächerförmig
@@ -347,7 +397,7 @@ class WoWEnv(gym.Env):
 
         if not data:
             # kein harter Abbruch -> sonst ruckelt / bricht dauernd ab wenn mal 1 Tick fehlt
-            return np.zeros(10), -0.1, False, True, {"timeout": True}
+            return np.zeros(15), -0.1, False, True, {"timeout": True}
 
 
         # --- MEMORY UPDATE ---
@@ -366,33 +416,28 @@ class WoWEnv(gym.Env):
                 discovery_reward += 0.5 
             else: self.npc_memory[guid] = mob
 
-        max_hp = max(1, data['max_hp'])
-        hp_pct = data['hp'] / max_hp
-        mana_pct = data['power'] / max(1, data['max_power'])
         xp_gained = data.get('xp_gained', 0)
         loot_money = data.get('loot_copper', 0)
         loot_score = data.get('loot_score', 0)
         free_slots_curr = data.get('free_slots', 0)
-        
-        t_hp, t_exists, dist_norm, angle_norm = 0.0, 0.0, 0.0, 0.0
-        if data['target_status'] == 'alive': 
-            t_hp = data['target_hp'] / 100.0
-            t_exists = 1.0
+        max_hp = max(1, data['max_hp'])
+        hp_pct = data['hp'] / max_hp
+        mana_pct = data['power'] / max(1, data['max_power'])
+
+        obs = self._build_obs(data)
+
+        # Derived values for reward computation
+        t_exists = 1.0 if data.get('target_status') == 'alive' else 0.0
+        in_combat_f = 1.0 if data.get('combat') == 'true' else 0.0
+        angle_norm = 0.0
+        if t_exists > 0.5:
             dx = data['tx'] - data['x']
             dy = data['ty'] - data['y']
-            dist = math.sqrt(dx*dx + dy*dy)
-            dist_norm = min(dist, 40.0) / 40.0
             target_angle = math.atan2(dy, dx)
             rel = target_angle - data['o']
             while rel > math.pi: rel -= 2*math.pi
             while rel < -math.pi: rel += 2*math.pi
             angle_norm = rel / math.pi
-
-        is_casting = 1.0 if data.get('casting') == 'true' else 0.0
-        in_combat = 1.0 if data['combat'] == 'true' else 0.0
-        slots_norm = free_slots_curr / 20.0 
-
-        obs = np.array([hp_pct, mana_pct, t_hp, t_exists, in_combat, dist_norm, angle_norm, is_casting, 0.0, slots_norm], dtype=np.float32)
 
         # --- REWARDS ---
         reward = -0.01 + discovery_reward
@@ -410,29 +455,29 @@ class WoWEnv(gym.Env):
             reward += 100.0 + (xp_gained * 2.0)
             if DEBUG_EVENTS:
                 print(f">>> KILL! XP: {xp_gained} <<<")
-            
+
         if loot_money > 0 or loot_score > 0:
             reward += (loot_money * 0.1) + (loot_score * 2.0)
             if DEBUG_EVENTS:
                 print(f">>> LOOT! Copper: {loot_money}, ItemScore: {loot_score} <<<")
 
         if self.last_state and free_slots_curr > self.last_state.get('free_slots', 0):
-            reward += 50.0 
+            reward += 50.0
             if DEBUG_EVENTS:
                 print(">>> SOLD ITEMS! <<<")
 
-        if override_action == 5: 
+        if override_action == 5:
             if t_exists > 0.5: reward += 0.5
             else: reward -= 0.1
 
-        elif override_action == 6: 
+        elif override_action == 6:
             # 2. NEU: Heil-Reward entfernt
-            if hp_pct > 0.8: 
+            if hp_pct > 0.8:
                 reward -= 0.5 # Nur Strafe bei Unsinn
-            
-        if in_combat and t_exists > 0.5:
-            if override_action in [1, 2, 3]: 
-                reward -= 0.5 
+
+        if in_combat_f and t_exists > 0.5:
+            if override_action in [1, 2, 3]:
+                reward -= 0.5
                 if abs(angle_norm) > 0.2 and override_action in [2, 3]:
                     reward += 0.6 
 
