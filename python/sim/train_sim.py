@@ -93,9 +93,14 @@ def main():
     print(">>> TRAINING STARTS... (Ctrl+C to interrupt) <<<")
 
     try:
-        model.learn(total_timesteps=args.steps, reset_num_timesteps=False)
+        # reset_num_timesteps=True (default) → SB3 erstellt PPO_1, PPO_2, ...
+        model.learn(total_timesteps=args.steps)
 
-        output_path = args.output or os.path.join(models_dir, "wow_bot_sim_v1")
+        # Modell-Versionierung: wow_bot_sim_v1, v2, v3, ...
+        version = 1
+        while os.path.exists(os.path.join(models_dir, f"wow_bot_sim_v{version}.zip")):
+            version += 1
+        output_path = args.output or os.path.join(models_dir, f"wow_bot_sim_v{version}")
         model.save(output_path)
         elapsed = time.time() - start_time
         fps = args.steps / elapsed
