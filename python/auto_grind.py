@@ -84,8 +84,10 @@ def run():
                 obs, reward, done, truncated, info = env.step(action)
                 
                 # Feedback (nur bei Cast)
-                if action == 5: print(f"[KAMPF] Zaubere... (HP: {raw_data['hp']})")
+                if action == 5: print(f"[KAMPF] Smite! (HP: {raw_data['hp']})")
                 if action == 6: print(f"[KAMPF] Heile mich... (HP: {raw_data['hp']})")
+                if action == 9: print(f"[KAMPF] SW:Pain! (HP: {raw_data['hp']})")
+                if action == 10: print(f"[KAMPF] PW:Shield! (HP: {raw_data['hp']})")
                 
                 if done:
                     print(">>> Kampf vorbei. Reset. <<<")

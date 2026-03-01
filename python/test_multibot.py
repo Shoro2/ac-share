@@ -2,7 +2,7 @@ import socket
 import json
 import time
 import math
-from wow_env import SPELL_SMITE, SPELL_HEAL # Nutze Spells aus deiner Env
+from wow_env import SPELL_SMITE, SPELL_HEAL, SPELL_SW_PAIN, SPELL_PW_SHIELD
 
 HOST = '127.0.0.1'
 PORT = 5000
@@ -95,16 +95,26 @@ def run_bot_controller():
 
                 cmd = ""
 
+                has_shield = (my_bot.get('has_shield') == 'true')
+                target_has_dot = (my_bot.get('target_has_sw_pain') == 'true')
+
                 if hp_pct < 0.5:
                     print(f"[{name}] Kritisch! Heile mich...", flush=True)
                     cmd = f"cast:{SPELL_HEAL}"
+
+                elif in_combat and not has_shield:
+                    print(f"[{name}] Schild hoch!", flush=True)
+                    cmd = f"cast:{SPELL_PW_SHIELD}"
+
+                elif target_alive and not target_has_dot:
+                    print(f"[{name}] SW:Pain auf Ziel!", flush=True)
+                    cmd = f"cast:{SPELL_SW_PAIN}"
 
                 elif target_alive:
                     print(f"[{name}] Kämpfe gegen Ziel!", flush=True)
                     cmd = f"cast:{SPELL_SMITE}"
 
                 else:
-                    # Idle Mode: Suche Ziel
                     print(f"[{name}] Suche Ziel...", flush=True)
                     cmd = "target_nearest:0"
 

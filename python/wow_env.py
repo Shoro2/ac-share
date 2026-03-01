@@ -9,6 +9,8 @@ import os
 
 SPELL_SMITE = 585
 SPELL_HEAL = 2050
+SPELL_SW_PAIN = 589
+SPELL_PW_SHIELD = 17
 DEFAULT_MEMORY_FILE = "npc_memory.json"
 DEBUG_EVENTS = False
 
@@ -25,9 +27,9 @@ class WoWEnv(gym.Env):
             print(f"VERBINDUNGSFEHLER: {e}")
             raise e
 
-        # Action Space: 8=SELL
-        self.action_space = spaces.Discrete(9)
-        self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(15,), dtype=np.float32)
+        # Action Space: 0=noop 1=forward 2=left 3=right 4=target 5=smite 6=heal 7=loot 8=sell 9=sw_pain 10=pw_shield
+        self.action_space = spaces.Discrete(11)
+        self.observation_space = spaces.Box(low=-1.0, high=float('inf'), shape=(17,), dtype=np.float32)
 
         self.last_state = None
         self.my_name = ""
@@ -197,12 +199,17 @@ class WoWEnv(gym.Env):
         target_level = data.get('target_level', 0) / 10.0
         player_level = data.get('level', 1) / 10.0
 
+        # Priest aura states
+        has_shield = 1.0 if data.get('has_shield') == 'true' else 0.0
+        target_has_sw_pain = 1.0 if data.get('target_has_sw_pain') == 'true' else 0.0
+
         return np.array([
             hp_pct, mana_pct, t_hp, t_exists, in_combat,
             dist_norm, angle_norm, is_casting,
             mob_count, slots_norm,
             closest_mob_dist, closest_mob_angle, num_attackers,
-            target_level, player_level
+            target_level, player_level,
+            has_shield, target_has_sw_pain
         ], dtype=np.float32)
 
     def _initial_heading_kick(self):
@@ -318,13 +325,17 @@ class WoWEnv(gym.Env):
                         # print(">>> AGGRO DETECTED! Wechsle Ziel... <<<")
 
                 # Restliche Regeln
-                elif is_casting and action in [1, 2, 3, 5, 6, 7]: override_action = 0 
+                elif is_casting and action in [1, 2, 3, 5, 6, 7, 9, 10]: override_action = 0
                 elif target_dead and dist_to_target < 3.0: override_action = 7 # Loot
                 elif target_dead and dist_to_target >= 3.0: override_action = 1 # Hin
                 elif target_alive and dist_to_target < 25.0:
-                    if action == 1: override_action = 0 
+                    if action == 1: override_action = 0
                 elif in_combat and target_alive and action == 4: override_action = 0
                 elif action == 6 and hp_pct > 0.85: override_action = 0
+                # PW:Shield: Block if already shielded
+                elif action == 10 and self.last_state.get('has_shield') == 'true': override_action = 0
+                # SW:Pain: Block if target already has DoT
+                elif action == 9 and self.last_state.get('target_has_sw_pain') == 'true': override_action = 0
 
         # --- COMMAND SENDEN ---
         cmd = ""
@@ -369,6 +380,8 @@ class WoWEnv(gym.Env):
 
         elif override_action == 5: cmd = f"cast:{SPELL_SMITE}"
         elif override_action == 6: cmd = f"cast:{SPELL_HEAL}"
+        elif override_action == 9: cmd = f"cast:{SPELL_SW_PAIN}"
+        elif override_action == 10: cmd = f"cast:{SPELL_PW_SHIELD}"
         elif override_action == 7: 
             loot_guid = None
             min_d = 6.0
@@ -397,7 +410,7 @@ class WoWEnv(gym.Env):
 
         if not data:
             # kein harter Abbruch -> sonst ruckelt / bricht dauernd ab wenn mal 1 Tick fehlt
-            return np.zeros(15), -0.1, False, True, {"timeout": True}
+            return np.zeros(17), -0.1, False, True, {"timeout": True}
 
 
         # --- MEMORY UPDATE ---
@@ -471,15 +484,31 @@ class WoWEnv(gym.Env):
             else: reward -= 0.1
 
         elif override_action == 6:
-            # 2. NEU: Heil-Reward entfernt
             if hp_pct > 0.8:
-                reward -= 0.5 # Nur Strafe bei Unsinn
+                reward -= 0.5
+
+        elif override_action == 9: # SW:Pain
+            if t_exists > 0.5:
+                if data.get('target_has_sw_pain') != 'true':
+                    reward += 1.0 # DoT applied fresh - efficient damage
+                else:
+                    reward -= 0.3 # Wasted re-application
+            else:
+                reward -= 0.1 # No target
+
+        elif override_action == 10: # PW:Shield
+            if in_combat_f and data.get('has_shield') != 'true':
+                reward += 0.8 # Good defensive play in combat
+            elif data.get('has_shield') == 'true':
+                reward -= 0.3 # Already shielded
+            else:
+                reward += 0.2 # Pre-shield before pull is okay
 
         if in_combat_f and t_exists > 0.5:
             if override_action in [1, 2, 3]:
                 reward -= 0.5
                 if abs(angle_norm) > 0.2 and override_action in [2, 3]:
-                    reward += 0.6 
+                    reward += 0.6
 
         terminated = False
         if data['hp'] == 0:
