@@ -47,6 +47,17 @@ class WoWEnv(gym.Env):
         self.load_memory()
         self.last_save_time = time.time()
 
+        # Episode-Tracking für TensorBoard-Metriken
+        self._ep_kills = 0
+        self._ep_xp = 0
+        self._ep_loot = 0
+        self._ep_reward = 0.0
+        self._ep_length = 0
+        self._ep_damage_dealt = 0.0
+
+        # State-Tracking für shaped Rewards (Approach + Damage)
+        self._prev_dist_to_target = None
+        self._prev_target_hp = None
 
     def _set_memory_file(self, bot_name):
         # Lege die Datei neben wow_env.py ab (unabhängig vom aktuellen Working Directory)
@@ -452,76 +463,143 @@ class WoWEnv(gym.Env):
             while rel < -math.pi: rel += 2*math.pi
             angle_norm = rel / math.pi
 
-        # --- REWARDS ---
-        reward = -0.01 + discovery_reward
-
-        # 1. NEU: Upgrade Reward
-        if data.get('equipped_upgrade') == 'true':
-            reward += 100.0 # Bessere Rüstung ist super!
-            if DEBUG_EVENTS:
-                print(">>> UPGRADE EQUIPPED! +100 <<<")
-
-        if data.get('leveled_up') == 'true':
-            reward += 2000.0
-            terminated = True
-        elif xp_gained > 0:
-            reward += 100.0 + (xp_gained * 2.0)
-            if DEBUG_EVENTS:
-                print(f">>> KILL! XP: {xp_gained} <<<")
-
-        if loot_money > 0 or loot_score > 0:
-            reward += (loot_money * 0.1) + (loot_score * 2.0)
-            if DEBUG_EVENTS:
-                print(f">>> LOOT! Copper: {loot_money}, ItemScore: {loot_score} <<<")
-
-        if self.last_state and free_slots_curr > self.last_state.get('free_slots', 0):
-            reward += 50.0
-            if DEBUG_EVENTS:
-                print(">>> SOLD ITEMS! <<<")
-
-        if override_action == 5:
-            if t_exists > 0.5: reward += 0.5
-            else: reward -= 0.1
-
-        elif override_action == 6:
-            if hp_pct > 0.8:
-                reward -= 0.5
-
-        elif override_action == 9: # SW:Pain
-            if t_exists > 0.5:
-                if data.get('target_has_sw_pain') != 'true':
-                    reward += 1.0 # DoT applied fresh - efficient damage
-                else:
-                    reward -= 0.3 # Wasted re-application
-            else:
-                reward -= 0.1 # No target
-
-        elif override_action == 10: # PW:Shield
-            if in_combat_f and data.get('has_shield') != 'true':
-                reward += 0.8 # Good defensive play in combat
-            elif data.get('has_shield') == 'true':
-                reward -= 0.3 # Already shielded
-            else:
-                reward += 0.2 # Pre-shield before pull is okay
-
-        if in_combat_f and t_exists > 0.5:
-            if override_action in [1, 2, 3]:
-                reward -= 0.5
-                if abs(angle_norm) > 0.2 and override_action in [2, 3]:
-                    reward += 0.6
-
+        # === REWARDS ===
+        # Design-Prinzip: Alle Werte in [-5, +15] Range,
+        # damit die Value-Function stabil lernen kann.
+        # Vorher: -100 bis +2000 → Value Loss explodiert.
+        # Jetzt: pro-Step [-1, +5], Terminal [-5, +15].
+        reward = 0.0
         terminated = False
+
+        # Aktuelle Distanz und Target-HP für shaped Rewards
+        curr_dist_to_target = 9999.0
+        curr_target_hp = 0.0
+        if t_exists > 0.5:
+            dx_t = data['tx'] - data['x']
+            dy_t = data['ty'] - data['y']
+            curr_dist_to_target = math.sqrt(dx_t*dx_t + dy_t*dy_t)
+            curr_target_hp = data.get('target_hp', 0)
+
+        in_combat_now = data.get('combat') == 'true'
+        is_casting_now = data.get('casting') == 'true'
+
+        # 1. Step-Penalty (Effizienz-Druck)
+        reward -= 0.01
+
+        # 2. Idle-Penalty (Noop ohne Casting = verschwendete Zeit)
+        if override_action == 0 and not is_casting_now:
+            reward -= 0.03
+
+        # 3. Discovery (neue Mobs entdeckt)
+        reward += discovery_reward * 0.5
+
+        # 4. Approach-Reward (näher ans Target = gut, potential-based)
+        if (t_exists > 0.5
+                and self._prev_dist_to_target is not None
+                and self._prev_dist_to_target < 100):
+            delta_dist = self._prev_dist_to_target - curr_dist_to_target
+            reward += np.clip(delta_dist * 0.05, -0.2, 0.3)
+
+        # 5. Damage-Reward (Schaden am Target verursacht)
+        if (t_exists > 0.5
+                and self._prev_target_hp is not None
+                and self._prev_target_hp > 0):
+            damage = self._prev_target_hp - curr_target_hp
+            if damage > 0:
+                reward += min(damage * 0.03, 1.0)
+                self._ep_damage_dealt += damage
+
+        # 6. Facing-Reward (im Kampf zum Target schauen)
+        if in_combat_now and t_exists > 0.5:
+            facing_quality = 1.0 - abs(angle_norm)
+            reward += facing_quality * 0.08
+
+        # 7. XP/Kill (runterskaliert von 100+xp*2 auf ~3-5)
+        if xp_gained > 0:
+            reward += 3.0 + min(xp_gained * 0.05, 2.0)
+            self._ep_kills += 1
+            self._ep_xp += xp_gained
+
+        # 8. Level-Up (Terminal, runterskaliert von 2000 auf 15)
+        if data.get('leveled_up') == 'true':
+            reward += 15.0
+            terminated = True
+
+        # 9. Equipment-Upgrade (runterskaliert von 100 auf 3)
+        if data.get('equipped_upgrade') == 'true':
+            reward += 3.0
+
+        # 10. Loot (runterskaliert, gedeckelt auf 3)
+        if loot_money > 0 or loot_score > 0:
+            loot_r = (loot_money * 0.01) + (loot_score * 0.2)
+            reward += min(loot_r, 3.0)
+            self._ep_loot += loot_money
+
+        # 11. Verkauf (Slots freigeräumt, runterskaliert von 50 auf 2)
+        if self.last_state and free_slots_curr > self.last_state.get('free_slots', 0):
+            reward += 2.0
+
+        # 12. Action-spezifische Rewards
+        if override_action == 5:  # Smite
+            if t_exists > 0.5:
+                reward += 0.3
+            else:
+                reward -= 0.1
+        elif override_action == 6:  # Heal
+            if hp_pct < 0.5:
+                reward += 0.5   # Heal bei niedrigem HP = gut
+            elif hp_pct > 0.8:
+                reward -= 0.3
+        elif override_action == 9:  # SW:Pain
+            if t_exists > 0.5 and data.get('target_has_sw_pain') != 'true':
+                reward += 0.5   # Frischer DoT = effizient
+            elif t_exists > 0.5:
+                reward -= 0.2   # Verschwendete Re-Application
+            else:
+                reward -= 0.1
+        elif override_action == 10:  # PW:Shield
+            if in_combat_now and data.get('has_shield') != 'true':
+                reward += 0.4   # Defensiv im Kampf = gut
+            elif data.get('has_shield') == 'true':
+                reward -= 0.2   # Schon aktiv
+
+        # 13. Bewegung im Kampf (Strafe, aber Drehen zum Target ist OK)
+        if in_combat_now and t_exists > 0.5:
+            if override_action in [1, 2, 3]:
+                reward -= 0.3
+                if abs(angle_norm) > 0.2 and override_action in [2, 3]:
+                    reward += 0.4
+
+        # 14. Terminal: Tod (runterskaliert von -100 auf -5)
         if data['hp'] == 0:
-            reward -= 100.0
+            reward = -5.0
             terminated = True
+        # 15. Terminal: OOM (runterskaliert von -10 auf -2)
         elif mana_pct < 0.05:
-            reward -= 10.0
+            reward -= 2.0
             terminated = True
-        else:
-            if not terminated: terminated = False
+
+        # --- State-Tracking aktualisieren ---
+        self._prev_dist_to_target = curr_dist_to_target if t_exists > 0.5 else None
+        self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
+        self._ep_reward += reward
+        self._ep_length += 1
+
+        # --- Episode-Stats bei Termination mitgeben ---
+        info = {}
+        if terminated:
+            info["episode_stats"] = {
+                "kills": self._ep_kills,
+                "xp": self._ep_xp,
+                "loot": self._ep_loot,
+                "reward": self._ep_reward,
+                "length": self._ep_length,
+                "damage_dealt": self._ep_damage_dealt,
+                "death": 1 if data['hp'] == 0 else 0,
+            }
 
         self.last_state = data
-        return obs, reward, terminated, False, {}
+        return obs, reward, terminated, False, info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -558,6 +636,17 @@ class WoWEnv(gym.Env):
                 time.sleep(1.0)
         self.last_state = data
         self._initial_heading_kick()
+
+        # Episode-Stats zurücksetzen
+        self._ep_kills = 0
+        self._ep_xp = 0
+        self._ep_loot = 0
+        self._ep_reward = 0.0
+        self._ep_length = 0
+        self._ep_damage_dealt = 0.0
+        self._prev_dist_to_target = None
+        self._prev_target_hp = None
+
         obs = self._build_obs(data)
-        
+
         return obs, {}
