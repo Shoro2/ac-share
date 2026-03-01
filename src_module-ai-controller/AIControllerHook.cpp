@@ -587,8 +587,10 @@ public:
                 else if (cmd.actionType == "cast") {
                     uint32 spellId = std::stoi(cmd.value);
                     Unit* target = player->GetSelectedUnit();
-                    if (spellId == 2050) target = player;
-                    else if (spellId == 585) {
+                    // Self-target spells: Lesser Heal (2050), Power Word: Shield (17)
+                    if (spellId == 2050 || spellId == 17) target = player;
+                    // Enemy-target spells: Smite (585), Shadow Word: Pain (589)
+                    else if (spellId == 585 || spellId == 589) {
                         if (!target || target == player) {
                             target = player->SelectNearbyTarget(nullptr, 30.0f);
                             if (target && !player->IsValidAttackTarget(target)) target = nullptr;
@@ -596,7 +598,8 @@ public:
                     }
                     else if (!target) target = player;
                     if (target) {
-                        if (!(spellId == 585 && target == player)) player->CastSpell(target, spellId, false);
+                        bool isOffensiveOnSelf = ((spellId == 585 || spellId == 589) && target == player);
+                        if (!isOffensiveOnSelf) player->CastSpell(target, spellId, false);
                     }
                 }
                 else if (cmd.actionType == "reset") {
@@ -733,6 +736,11 @@ public:
                     tLevel = target->GetLevel();
                     tx = target->GetPositionX(); ty = target->GetPositionY(); tz = target->GetPositionZ();
                 }
+                // Aura states for priest spells
+                bool hasShield = p->HasAura(17); // Power Word: Shield
+                bool targetHasSwPain = (target && target->HasAura(589)); // Shadow Word: Pain
+                ss << "\"has_shield\": \"" << (hasShield ? "true" : "false") << "\", ";
+                ss << "\"target_has_sw_pain\": \"" << (targetHasSwPain ? "true" : "false") << "\", ";
                 ss << "\"target_status\": \"" << tStatus << "\", ";
                 ss << "\"target_hp\": " << tHp << ", ";
                 ss << "\"target_level\": " << tLevel << ", ";
@@ -953,6 +961,15 @@ public:
                     constexpr float kSpawnO = 3.299f;
 
                     botPlayer->TeleportTo(kSpawnMapId, kSpawnX, kSpawnY, kSpawnZ, kSpawnO);
+
+                    // Teach priest spells if not already known
+                    constexpr uint32 priestSpells[] = { 585, 2050, 589, 17 }; // Smite, Lesser Heal, SW:Pain, PW:Shield
+                    for (uint32 spellId : priestSpells) {
+                        if (!botPlayer->HasSpell(spellId)) {
+                            botPlayer->learnSpell(spellId);
+                            LOG_INFO("module", "AI-DEBUG: Bot '{}' lernt Spell {}", botName, spellId);
+                        }
+                    }
 
                     LOG_INFO("module", "DEBUG STEP 6: Bot '{}' erfolgreich gespawnt.", botName);
                 });
