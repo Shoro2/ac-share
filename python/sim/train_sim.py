@@ -24,7 +24,76 @@ if PARENT_DIR not in sys.path:
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.callbacks import BaseCallback
+from torch.utils.tensorboard import SummaryWriter
 from sim.wow_sim_env import WoWSimEnv
+
+
+class GameplayMetricsCallback(BaseCallback):
+    """Loggt Gameplay-Metriken pro Episode direkt nach TensorBoard.
+
+    Nutzt einen eigenen SummaryWriter im selben Verzeichnis wie SB3,
+    damit die Werte garantiert sofort geschrieben werden.
+    Der SummaryWriter wird lazy erstellt sobald SB3 seinen Logger hat.
+    """
+
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self._writer = None
+        self._episode_count = 0
+        self._total_kills = 0
+        self._total_deaths = 0
+
+    def _on_step(self) -> bool:
+        # Lazy init: SummaryWriter im selben Ordner wie SB3's Logger
+        if self._writer is None:
+            log_dir = getattr(self.logger, 'dir', None)
+            if log_dir:
+                self._writer = SummaryWriter(log_dir=log_dir)
+                print(f"  [Gameplay-Callback] Schreibe nach: {log_dir}")
+
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            stats = info.get("episode_stats")
+            if stats is None:
+                continue
+
+            self._episode_count += 1
+            self._total_kills += stats["kills"]
+            self._total_deaths += stats["death"]
+            step = self.num_timesteps
+
+            if self._writer:
+                self._writer.add_scalar("gameplay/ep_reward", stats["reward"], step)
+                self._writer.add_scalar("gameplay/ep_length", stats["length"], step)
+                self._writer.add_scalar("gameplay/ep_kills", stats["kills"], step)
+                self._writer.add_scalar("gameplay/ep_xp", stats["xp"], step)
+                self._writer.add_scalar("gameplay/ep_loot_copper", stats["loot"], step)
+                self._writer.add_scalar("gameplay/ep_damage_dealt", stats["damage_dealt"], step)
+                self._writer.add_scalar("gameplay/ep_death", stats["death"], step)
+
+                self._writer.add_scalar("gameplay/total_episodes", self._episode_count, step)
+                self._writer.add_scalar("gameplay/total_kills", self._total_kills, step)
+                self._writer.add_scalar("gameplay/total_deaths", self._total_deaths, step)
+                self._writer.add_scalar(
+                    "gameplay/kill_death_ratio",
+                    self._total_kills / max(1, self._total_deaths),
+                    step,
+                )
+                self._writer.flush()
+
+            if self.verbose:
+                print(f"  [Episode {self._episode_count}] "
+                      f"reward={stats['reward']:.1f} kills={stats['kills']} "
+                      f"xp={stats['xp']} deaths={stats['death']} "
+                      f"len={stats['length']}")
+
+        return True
+
+    def _on_training_end(self) -> None:
+        if self._writer:
+            self._writer.close()
+            self._writer = None
 
 
 def make_env(bot_name: str, seed: int):
@@ -92,9 +161,11 @@ def main():
     start_time = time.time()
     print(">>> TRAINING STARTS... (Ctrl+C to interrupt) <<<")
 
+    metrics_callback = GameplayMetricsCallback(verbose=1)
+
     try:
         # reset_num_timesteps=True (default) → SB3 erstellt PPO_1, PPO_2, ...
-        model.learn(total_timesteps=args.steps)
+        model.learn(total_timesteps=args.steps, callback=metrics_callback)
 
         # Modell-Versionierung: wow_bot_sim_v1, v2, v3, ...
         version = 1
@@ -118,6 +189,9 @@ def main():
         traceback.print_exc()
 
     finally:
+        # Gameplay-Writer sicher schliessen (falls _on_training_end nicht lief)
+        if metrics_callback._writer:
+            metrics_callback._writer.close()
         try:
             env.close()
         except Exception:

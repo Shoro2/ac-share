@@ -43,6 +43,9 @@ class WoWSimEnv(gym.Env):
         self.last_state = None
         self._step_count = 0
         self._max_steps = 2000  # episode timeout
+        self._ep_reward = 0.0
+        self._ep_xp = 0
+        self._ep_loot = 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -52,6 +55,9 @@ class WoWSimEnv(gym.Env):
         if self._seed is not None:
             self._seed += 1  # vary each episode
         self._step_count = 0
+        self._ep_reward = 0.0
+        self._ep_xp = 0
+        self._ep_loot = 0
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
         return obs, {}
@@ -242,10 +248,28 @@ class WoWSimEnv(gym.Env):
 
         truncated = self._step_count >= self._max_steps
 
+        # Accumulate episode stats
+        self._ep_reward += reward
+        self._ep_xp += xp
+        self._ep_loot += copper
+
         # Build obs
         obs = self._build_obs(state)
         self.last_state = state
-        return obs, reward, terminated, truncated, {}
+
+        info = {}
+        if terminated or truncated:
+            info["episode_stats"] = {
+                "reward": self._ep_reward,
+                "length": self._step_count,
+                "kills": self.sim.kills,
+                "xp": self._ep_xp,
+                "loot": self._ep_loot,
+                "damage_dealt": self.sim.damage_dealt,
+                "death": 1 if self.sim.player.hp <= 0 else 0,
+            }
+
+        return obs, reward, terminated, truncated, info
 
     def _build_obs(self, data: dict) -> np.ndarray:
         """Build observation vector — exactly matches wow_env.py._build_obs."""

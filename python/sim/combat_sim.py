@@ -251,6 +251,8 @@ class CombatSimulation:
         self.mobs: list[Mob] = []
         self.target: Optional[Mob] = None
         self.tick_count: int = 0
+        self.damage_dealt: int = 0
+        self.kills: int = 0
         self._next_uid = 1
         self._spawn_mobs()
 
@@ -471,7 +473,9 @@ class CombatSimulation:
 
     def _damage_mob(self, mob: Mob, damage: int):
         """Apply damage to a mob, handle death."""
+        old_hp = mob.hp
         mob.hp = max(0, mob.hp - damage)
+        self.damage_dealt += old_hp - mob.hp
         if not mob.in_combat:
             mob.in_combat = True
             mob.target_player = True
@@ -480,6 +484,7 @@ class CombatSimulation:
             mob.in_combat = False
             mob.target_player = False
             mob.respawn_timer = self.RESPAWN_TICKS
+            self.kills += 1
             # XP reward
             self.player.xp_gained += mob.template.xp_reward
             # Check if player leaves combat
