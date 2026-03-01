@@ -237,8 +237,8 @@ def world_to_height_grid(x: float, y: float) -> tuple:
 
 
 def map_filename(map_id: int, tile_x: int, tile_y: int) -> str:
-    """Map-Dateiname: {mapId:03d}{tileY:02d}{tileX:02d}.map"""
-    return f"{map_id:03d}{tile_y:02d}{tile_x:02d}.map"
+    """Map-Dateiname: {mapId:03d}{tileX:02d}{tileY:02d}.map"""
+    return f"{map_id:03d}{tile_x:02d}{tile_y:02d}.map"
 
 
 def vmtree_filename(map_id: int) -> str:
@@ -246,8 +246,8 @@ def vmtree_filename(map_id: int) -> str:
 
 
 def vmtile_filename(map_id: int, tile_x: int, tile_y: int) -> str:
-    """VMTILE-Dateiname: {mapId:03d}_{tileX:02d}_{tileY:02d}.vmtile"""
-    return f"{map_id:03d}_{tile_x:02d}_{tile_y:02d}.vmtile"
+    """VMTILE-Dateiname: {mapId:03d}_{tileY:02d}_{tileX:02d}.vmtile"""
+    return f"{map_id:03d}_{tile_y:02d}_{tile_x:02d}.vmtile"
 
 
 def mmap_filename(map_id: int) -> str:
