@@ -53,10 +53,12 @@ def main():
     print(f">>> Starting sim training: {args.bots} bots, {args.steps} timesteps <<<")
     print(f">>> n_steps={args.n_steps}, batch_size={args.batch_size}, lr={args.lr} <<<")
 
+    start_method = "fork" if sys.platform != "win32" else "spawn"
+
     try:
         env = SubprocVecEnv(
             [make_env(name, seed=i * 1000) for i, name in enumerate(bot_names)],
-            start_method="fork",
+            start_method=start_method,
         )
     except Exception as e:
         print(f"ENV INIT ERROR: {e}")
