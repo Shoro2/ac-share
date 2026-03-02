@@ -85,6 +85,7 @@ class WoWSimEnv(gym.Env):
         self._prev_dist_to_target = None
         self._prev_target_hp = None
         self._ep_discoveries = 0
+        self._ep_approach_reward = 0.0
         self._last_nearby_guids = set()
 
     def reset(self, seed=None, options=None):
@@ -107,6 +108,7 @@ class WoWSimEnv(gym.Env):
         self._prev_dist_to_target = None
         self._prev_target_hp = None
         self._ep_discoveries = 0
+        self._ep_approach_reward = 0.0
         self._last_nearby_guids = set()
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
@@ -260,12 +262,16 @@ class WoWSimEnv(gym.Env):
             discovery_reward = new_count * 0.5
         reward += discovery_reward * 0.5
 
-        # 4. Approach-Reward (closer to target = good, potential-based)
+        # 4. Approach-Reward (closer to target — capped per episode)
         if (t_exists > 0.5
                 and self._prev_dist_to_target is not None
-                and self._prev_dist_to_target < 100):
+                and self._prev_dist_to_target < 100
+                and self._ep_approach_reward < 20.0):
             delta_dist = self._prev_dist_to_target - curr_dist_to_target
-            reward += float(np.clip(delta_dist * 0.05, -0.2, 0.3))
+            approach_r = float(np.clip(delta_dist * 0.05, -0.2, 0.3))
+            if approach_r > 0:
+                self._ep_approach_reward += approach_r
+            reward += approach_r
 
         # 5. Damage-Reward (damage dealt to target)
         if (t_exists > 0.5
