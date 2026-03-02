@@ -46,6 +46,10 @@ class WoWSimEnv(gym.Env):
         self._ep_reward = 0.0
         self._ep_xp = 0
         self._ep_loot = 0
+        self._ep_kills = 0
+        self._ep_damage_dealt = 0
+        self._prev_dist_to_target = None
+        self._prev_target_hp = None
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -58,6 +62,10 @@ class WoWSimEnv(gym.Env):
         self._ep_reward = 0.0
         self._ep_xp = 0
         self._ep_loot = 0
+        self._ep_kills = 0
+        self._ep_damage_dealt = 0
+        self._prev_dist_to_target = None
+        self._prev_target_hp = None
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
         return obs, {}
@@ -158,65 +166,25 @@ class WoWSimEnv(gym.Env):
         events = self.sim.consume_events()
         state = self.sim.get_state_dict()
 
-        # ─── Compute Rewards (matching wow_env.py exactly) ────────
-        reward = -0.01  # step penalty
+        # ─── Compute Rewards (synced with wow_env.py) ──────────────
+        reward = 0.0
 
-        # Discovery reward
-        if self.last_state:
-            old_nearby = {m['guid'] for m in self.last_state.get('nearby_mobs', [])}
-            for m in state.get('nearby_mobs', []):
-                if m['guid'] not in old_nearby and m['hp'] > 0:
-                    reward += 0.5
-
-        # Equipment upgrade
-        if events["equipped_upgrade"]:
-            reward += 100.0
-
-        # XP
-        xp = events["xp_gained"]
-        if xp > 0:
-            reward += 100.0 + (xp * 2.0)
-
-        # Loot
-        copper = events["loot_copper"]
-        score = events["loot_score"]
-        if copper > 0 or score > 0:
-            reward += (copper * 0.1) + (score * 2.0)
-
-        # Sold items (free_slots increased)
-        if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
-            reward += 50.0
-
-        # Cast rewards
         t_exists = 1.0 if state.get('target_status') == 'alive' else 0.0
-        in_combat_f = 1.0 if state.get('combat') == 'true' else 0.0
-        new_hp_pct = self.sim.player.hp / max(1, self.sim.player.max_hp)
+        in_combat_now = state.get('combat') == 'true'
+        is_casting_now = state.get('casting') == 'true'
+        hp_pct = self.sim.player.hp / max(1, self.sim.player.max_hp)
+        mana_pct = self.sim.player.mana / max(1, self.sim.player.max_mana)
 
-        if override_action == 5:  # Smite
-            if t_exists > 0.5:
-                reward += 0.5
-            else:
-                reward -= 0.1
-        elif override_action == 6:  # Heal
-            if new_hp_pct > 0.8:
-                reward -= 0.5
-        elif override_action == 9:  # SW:Pain
-            if t_exists > 0.5:
-                if state.get('target_has_sw_pain') != 'true':
-                    reward += 1.0
-                else:
-                    reward -= 0.3
-            else:
-                reward -= 0.1
-        elif override_action == 10:  # PW:Shield
-            if in_combat_f and state.get('has_shield') != 'true':
-                reward += 0.8
-            elif state.get('has_shield') == 'true':
-                reward -= 0.3
-            else:
-                reward += 0.2
+        # Current target tracking
+        curr_dist_to_target = None
+        curr_target_hp = 0
+        if t_exists > 0.5:
+            curr_dist_to_target = math.sqrt(
+                (state['tx'] - state['x']) ** 2 +
+                (state['ty'] - state['y']) ** 2)
+            curr_target_hp = state.get('target_hp', 0)
 
-        # Movement in combat penalty
+        # Relative angle to target
         angle_norm = 0.0
         if t_exists > 0.5:
             dx = state['tx'] - state['x']
@@ -229,24 +197,115 @@ class WoWSimEnv(gym.Env):
                 rel += 2 * math.pi
             angle_norm = rel / math.pi
 
-        if in_combat_f and t_exists > 0.5:
+        # 1. Step-Penalty
+        reward -= 0.01
+
+        # 2. Idle-Penalty (Noop without casting = wasted time)
+        if override_action == 0 and not is_casting_now:
+            reward -= 0.03
+
+        # 3. Discovery (new mobs found)
+        discovery_reward = 0.0
+        if self.last_state:
+            old_nearby = {m['guid'] for m in self.last_state.get('nearby_mobs', [])}
+            for m in state.get('nearby_mobs', []):
+                if m['guid'] not in old_nearby and m['hp'] > 0:
+                    discovery_reward += 0.5
+        reward += discovery_reward * 0.5
+
+        # 4. Approach-Reward (closer to target = good, potential-based)
+        if (t_exists > 0.5
+                and self._prev_dist_to_target is not None
+                and self._prev_dist_to_target < 100):
+            delta_dist = self._prev_dist_to_target - curr_dist_to_target
+            reward += float(np.clip(delta_dist * 0.05, -0.2, 0.3))
+
+        # 5. Damage-Reward (damage dealt to target)
+        if (t_exists > 0.5
+                and self._prev_target_hp is not None
+                and self._prev_target_hp > 0):
+            damage = self._prev_target_hp - curr_target_hp
+            if damage > 0:
+                reward += min(damage * 0.03, 1.0)
+                self._ep_damage_dealt += damage
+
+        # 6. Facing-Reward (face target in combat)
+        if in_combat_now and t_exists > 0.5:
+            facing_quality = 1.0 - abs(angle_norm)
+            reward += facing_quality * 0.08
+
+        # 7. XP/Kill
+        xp = events["xp_gained"]
+        if xp > 0:
+            reward += 3.0 + min(xp * 0.05, 2.0)
+            self._ep_kills += 1
+
+        # 8. Level-Up (terminal)
+        if events.get("leveled_up"):
+            reward += 15.0
+            # (not terminal in sim since we don't have level-up mechanic)
+
+        # 9. Equipment-Upgrade
+        if events["equipped_upgrade"]:
+            reward += 3.0
+
+        # 10. Loot (capped at 3.0)
+        copper = events["loot_copper"]
+        score = events["loot_score"]
+        if copper > 0 or score > 0:
+            loot_r = (copper * 0.01) + (score * 0.2)
+            reward += min(loot_r, 3.0)
+
+        # 11. Sold items (free_slots increased)
+        if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
+            reward += 2.0
+
+        # 12. Action-specific rewards
+        if override_action == 5:  # Smite
+            if t_exists > 0.5:
+                reward += 0.3
+            else:
+                reward -= 0.1
+        elif override_action == 6:  # Heal
+            if hp_pct < 0.5:
+                reward += 0.5
+            elif hp_pct > 0.8:
+                reward -= 0.3
+        elif override_action == 9:  # SW:Pain
+            if t_exists > 0.5 and state.get('target_has_sw_pain') != 'true':
+                reward += 0.5
+            elif t_exists > 0.5:
+                reward -= 0.2
+            else:
+                reward -= 0.1
+        elif override_action == 10:  # PW:Shield
+            if in_combat_now and state.get('has_shield') != 'true':
+                reward += 0.4
+            elif state.get('has_shield') == 'true':
+                reward -= 0.2
+
+        # 13. Movement in combat
+        if in_combat_now and t_exists > 0.5:
             if override_action in [1, 2, 3]:
-                reward -= 0.5
+                reward -= 0.3
                 if abs(angle_norm) > 0.2 and override_action in [2, 3]:
-                    reward += 0.6
+                    reward += 0.4
 
-        # Terminal conditions
+        # 14. Terminal: Death
         terminated = False
-        mana_pct = self.sim.player.mana / max(1, self.sim.player.max_mana)
-
         if self.sim.player.hp <= 0:
-            reward -= 100.0
+            reward = -5.0
             terminated = True
+        # 15. Terminal: OOM
         elif mana_pct < 0.05:
-            reward -= 10.0
+            reward -= 2.0
             terminated = True
 
         truncated = self._step_count >= self._max_steps
+
+        # State-Tracking
+        self._prev_dist_to_target = curr_dist_to_target if t_exists > 0.5 else None
+        self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
 
         # Accumulate episode stats
         self._ep_reward += reward
