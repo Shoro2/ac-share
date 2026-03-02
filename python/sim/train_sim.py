@@ -103,9 +103,11 @@ class GameplayMetricsCallback(BaseCallback):
             self._writer = None
 
 
-def make_env(bot_name: str, seed: int, data_root: str = None):
+def make_env(bot_name: str, seed: int, data_root: str = None,
+             creature_csv_dir: str = None):
     def _init():
-        return WoWSimEnv(bot_name=bot_name, seed=seed, data_root=data_root)
+        return WoWSimEnv(bot_name=bot_name, seed=seed, data_root=data_root,
+                         creature_csv_dir=creature_csv_dir)
     return _init
 
 
@@ -120,6 +122,9 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="Output model path")
     parser.add_argument("--data-root", type=str, default=None,
                         help="Path to Data/ directory (maps/, vmaps/) for 3D terrain")
+    parser.add_argument("--creature-data", type=str, default=None,
+                        help="Path to directory with creature.csv and creature_template.csv "
+                             "(enables full-world creature spawning via spatial chunks)")
     args = parser.parse_args()
 
     models_dir = os.path.join(PARENT_DIR, "models", "PPO")
@@ -129,16 +134,20 @@ def main():
 
     bot_names = [f"SimBot{i}" for i in range(args.bots)]
     data_root = args.data_root
+    creature_csv_dir = args.creature_data
     print(f">>> Starting sim training: {args.bots} bots, {args.steps} timesteps <<<")
     print(f">>> n_steps={args.n_steps}, batch_size={args.batch_size}, lr={args.lr} <<<")
     if data_root:
         print(f">>> 3D terrain enabled: {data_root} <<<")
+    if creature_csv_dir:
+        print(f">>> Full-world creatures enabled: {creature_csv_dir} <<<")
 
     start_method = "fork" if sys.platform != "win32" else "spawn"
 
     try:
         env = SubprocVecEnv(
-            [make_env(name, seed=i * 1000, data_root=data_root)
+            [make_env(name, seed=i * 1000, data_root=data_root,
+                      creature_csv_dir=creature_csv_dir)
              for i, name in enumerate(bot_names)],
             start_method=start_method,
         )

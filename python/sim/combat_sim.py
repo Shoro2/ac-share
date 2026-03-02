@@ -14,6 +14,7 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sim.terrain import SimTerrain
+    from sim.creature_db import CreatureDB
 
 
 # ─── Spell Definitions ───────────────────────────────────────────────
@@ -252,13 +253,18 @@ class CombatSimulation:
     # Exploration grid sizes (for area/zone discovery tracking)
     AREA_CELL_SIZE = 50.0     # ~50x50 units per area cell
     ZONE_CELL_SIZE = 200.0    # ~200x200 units per zone cell
+    # Chunk management (for creature_db mode)
+    CHUNK_SIZE = 100.0        # world-units per chunk (must match creature_db.CHUNK_SIZE)
+    CHUNK_RADIUS = 2          # activate 5×5 = 25 chunks around player
 
     def __init__(self, num_mobs: int = None, seed: Optional[int] = None,
-                 terrain: 'SimTerrain | None' = None, env3d=None):
+                 terrain: 'SimTerrain | None' = None, env3d=None,
+                 creature_db: 'CreatureDB | None' = None):
         self.rng = random.Random(seed)
         self.num_mobs = num_mobs  # None = all spawns
         self.terrain = terrain
         self.env3d = env3d        # WoW3DEnvironment for area/zone lookups
+        self.creature_db = creature_db
         self.map_id = 0           # Eastern Kingdoms
         self.player = Player()
         if self.terrain:
@@ -276,7 +282,14 @@ class CombatSimulation:
         self._new_areas: int = 0          # consumed on read
         self._new_zones: int = 0          # consumed on read
         self._new_maps: int = 0           # consumed on read
-        self._spawn_mobs()
+        # Chunk management (creature_db mode)
+        self._player_chunk: Optional[tuple] = None  # (map, cx, cy)
+        self._active_chunks: set[tuple] = set()
+        self._chunk_mobs: dict[tuple, list[Mob]] = {}
+        if self.creature_db:
+            self._update_chunks()
+        else:
+            self._spawn_mobs()
         self._update_exploration()  # register spawn position
 
     def _new_uid(self) -> int:
@@ -323,6 +336,8 @@ class CombatSimulation:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.target = None
         self.tick_count = 0
+        self.damage_dealt = 0
+        self.kills = 0
         self._next_uid = 1
         self.visited_areas.clear()
         self.visited_zones.clear()
@@ -330,7 +345,15 @@ class CombatSimulation:
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0
-        self._spawn_mobs()
+        # Reset chunk state
+        self._player_chunk = None
+        self._active_chunks.clear()
+        self._chunk_mobs.clear()
+        self.mobs.clear()
+        if self.creature_db:
+            self._update_chunks()
+        else:
+            self._spawn_mobs()
         self._update_exploration()
 
     def _update_exploration(self):
@@ -366,6 +389,94 @@ class CombatSimulation:
             if zone_key not in self.visited_zones:
                 self.visited_zones.add(zone_key)
                 self._new_zones += 1
+
+    # ─── Chunk Management (creature_db mode) ───────────────────────
+
+    def _update_chunks(self):
+        """Activate/deactivate chunks based on player position.
+
+        Only runs when creature_db is set. Checks if the player moved to a
+        new chunk and updates the active chunk set accordingly.
+        """
+        if not self.creature_db:
+            return
+
+        p = self.player
+        cs = self.CHUNK_SIZE
+        cx = int(p.x // cs) if p.x >= 0 else int(p.x // cs) - 1
+        cy = int(p.y // cs) if p.y >= 0 else int(p.y // cs) - 1
+        current_chunk = (self.map_id, cx, cy)
+
+        if current_chunk == self._player_chunk:
+            return  # player hasn't moved to a new chunk
+        self._player_chunk = current_chunk
+
+        # Determine which chunks should be active
+        r = self.CHUNK_RADIUS
+        needed: set[tuple] = set()
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                needed.add((self.map_id, cx + dx, cy + dy))
+
+        # Deactivate old chunks
+        for key in self._active_chunks - needed:
+            for mob in self._chunk_mobs.pop(key, []):
+                if self.target is mob:
+                    self.target = None
+
+        # Activate new chunks
+        for key in needed - self._active_chunks:
+            self._activate_chunk(key)
+
+        self._active_chunks = needed
+
+        # Rebuild mobs list from active chunks (mob objects persist)
+        self.mobs = []
+        for key in self._active_chunks:
+            self.mobs.extend(self._chunk_mobs.get(key, []))
+
+    def _activate_chunk(self, chunk_key: tuple):
+        """Spawn mobs for a newly activated chunk from creature_db."""
+        db = self.creature_db
+        spawns = db.spatial_index.get(chunk_key, [])
+        chunk_mobs: list[Mob] = []
+
+        for sp in spawns:
+            tmpl = db.templates.get(sp.entry)
+            if tmpl is None:
+                continue
+
+            level = self.rng.randint(tmpl.min_level, tmpl.max_level)
+            stats = db.get_mob_stats(tmpl, level)
+
+            mob_template = MobTemplate(
+                entry=tmpl.entry,
+                name=tmpl.name,
+                min_level=tmpl.min_level,
+                max_level=tmpl.max_level,
+                base_hp=stats['hp'],
+                min_damage=stats['min_damage'],
+                max_damage=stats['max_damage'],
+                attack_speed=tmpl.attack_speed_ticks,
+                detect_range=tmpl.detection_range,
+                min_gold=tmpl.min_gold,
+                max_gold=tmpl.max_gold,
+                xp_reward=stats['xp'],
+            )
+
+            z = self.terrain.get_height(sp.x, sp.y) if self.terrain else sp.z
+            mob = Mob(
+                uid=self._new_uid(),
+                template=mob_template,
+                hp=stats['hp'],
+                max_hp=stats['hp'],
+                level=level,
+                x=sp.x, y=sp.y, z=z,
+                spawn_x=sp.x, spawn_y=sp.y, spawn_z=z,
+            )
+            chunk_mobs.append(mob)
+
+        self._chunk_mobs[chunk_key] = chunk_mobs
 
     def _dist(self, x1: float, y1: float, x2: float, y2: float) -> float:
         dx = x2 - x1
@@ -591,6 +702,7 @@ class CombatSimulation:
         """Advance simulation by one tick (0.5 seconds)."""
         self.tick_count += 1
         p = self.player
+        self._update_chunks()
         self._update_exploration()
 
         # --- Cast completion ---
