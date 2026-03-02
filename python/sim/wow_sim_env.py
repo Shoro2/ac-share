@@ -51,13 +51,12 @@ class WoWSimEnv(gym.Env):
         if data_root:
             from sim.terrain import SimTerrain
             self._terrain = SimTerrain(data_root, quiet=True)
-            # Load WoW3DEnvironment for area/zone lookups
+            # Reuse the WoW3DEnvironment already loaded by SimTerrain
+            # (avoids loading 545K BIH-nodes + 27K VMAP spawns a second time)
             try:
-                from test_3d_env import WoW3DEnvironment
-                self._env3d = WoW3DEnvironment(data_root)
-                self._env3d.load_area_table()
-                # Load map tiles around spawn for area lookups (on-demand loading as fallback)
-                self._env3d.load_map_area(0, -8921.0, -120.0, radius_tiles=1)
+                self._env3d = self._terrain.env
+                if not self._env3d.area_table:
+                    self._env3d.load_area_table()
             except Exception as e:
                 print(f"  [WARN] Area lookup not available: {e}")
                 self._env3d = None
