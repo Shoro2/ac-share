@@ -43,6 +43,9 @@ class GameplayMetricsCallback(BaseCallback):
         self._episode_count = 0
         self._total_kills = 0
         self._total_deaths = 0
+        # Per-iteration FPS tracking (shows REAL speed, not cumulative avg)
+        self._last_iter_time = None
+        self._last_iter_steps = 0
 
     def _on_step(self) -> bool:
         # Lazy init: SummaryWriter im selben Ordner wie SB3's Logger
@@ -51,6 +54,20 @@ class GameplayMetricsCallback(BaseCallback):
             if log_dir:
                 self._writer = SummaryWriter(log_dir=log_dir)
                 print(f"  [Gameplay-Callback] Schreibe nach: {log_dir}")
+                self._last_iter_time = time.time()
+                self._last_iter_steps = 0
+
+        # Log real per-iteration FPS every 5120 steps (~4 iterations)
+        step = self.num_timesteps
+        if (self._writer and self._last_iter_time is not None
+                and step - self._last_iter_steps >= 5120):
+            now = time.time()
+            dt = now - self._last_iter_time
+            if dt > 0:
+                real_fps = (step - self._last_iter_steps) / dt
+                self._writer.add_scalar("perf/real_fps", real_fps, step)
+            self._last_iter_time = now
+            self._last_iter_steps = step
 
         infos = self.locals.get("infos", [])
         for info in infos:
@@ -61,7 +78,6 @@ class GameplayMetricsCallback(BaseCallback):
             self._episode_count += 1
             self._total_kills += stats["kills"]
             self._total_deaths += stats["death"]
-            step = self.num_timesteps
 
             if self._writer:
                 self._writer.add_scalar("gameplay/ep_reward", stats["reward"], step)
@@ -83,7 +99,9 @@ class GameplayMetricsCallback(BaseCallback):
                     self._total_kills / max(1, self._total_deaths),
                     step,
                 )
-                self._writer.flush()
+                # Flush only every 20 episodes (not every episode)
+                if self._episode_count % 20 == 0:
+                    self._writer.flush()
 
             if self.verbose:
                 areas = stats.get('areas_explored', 0)
