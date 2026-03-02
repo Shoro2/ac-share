@@ -260,6 +260,95 @@ def mmtile_filename(map_id: int, tile_x: int, tile_y: int) -> str:
     return f"{map_id:03d}{tile_x:02d}{tile_y:02d}.mmtile"
 
 
+# ─────────────────────── DBC Parser (AreaTable) ─────────────────
+
+@dataclass
+class AreaTableEntry:
+    """Ein Eintrag aus AreaTable.dbc"""
+    id: int            # Area-ID (Primary Key)
+    map_id: int        # Map (0=Eastern Kingdoms, 1=Kalimdor, ...)
+    zone: int          # Parent-Zone-ID (0 = ist selbst eine Zone)
+    explore_flag: int  # Exploration-Discovery-Flag
+    flags: int         # Area-Flags
+    area_level: int    # Empfohlenes Level
+    name: str          # Englischer Name
+
+
+def parse_area_table_dbc(filepath: str) -> dict:
+    """
+    Liest AreaTable.dbc und gibt ein Dict {area_id: AreaTableEntry} zurück.
+
+    DBC-Format: 'WDBC' Header (20 bytes) + Records + String-Table
+    AreaTable Format: niiiixxxxxissssssssssssssssxiiiiixxx
+      Field 0:  ID (uint32) - n
+      Field 1:  mapid (uint32) - i
+      Field 2:  zone (uint32) - i
+      Field 3:  exploreFlag (uint32) - i
+      Field 4:  flags (uint32) - i
+      Field 5-9: skip (5x uint32) - xxxxx
+      Field 10: area_level (int32) - i
+      Field 11-26: name strings (16x uint32 offsets) - ssssssssssssssss
+      Field 27: skip - x
+      Field 28-31: LiquidTypeOverride (4x uint32) - iiii
+      Field 32: skip - x
+      Field 33-35: skip (3x uint32) - xxx
+    """
+    if not os.path.exists(filepath):
+        print(f"  [DBC] Datei nicht gefunden: {filepath}")
+        return {}
+
+    with open(filepath, 'rb') as f:
+        data = f.read()
+
+    if len(data) < 20:
+        return {}
+
+    magic = data[0:4]
+    if magic != b'WDBC':
+        print(f"  [DBC] Falscher Magic: {magic}")
+        return {}
+
+    record_count, field_count, record_size, string_size = struct.unpack('<4I', data[4:20])
+    records_start = 20
+    string_table_start = records_start + record_count * record_size
+
+    def get_string(offset):
+        if offset == 0 or string_table_start + offset >= len(data):
+            return ""
+        end = data.index(b'\0', string_table_start + offset)
+        return data[string_table_start + offset:end].decode('utf-8', errors='replace')
+
+    result = {}
+    for i in range(record_count):
+        pos = records_start + i * record_size
+        # Alle Felder als uint32 lesen (record_size / 4 Felder)
+        n_fields = record_size // 4
+        fields = struct.unpack(f'<{n_fields}I', data[pos:pos + record_size])
+
+        area_id = fields[0]
+        map_id = fields[1]
+        zone = fields[2]
+        explore_flag = fields[3]
+        flags = fields[4]
+        # fields[5-9] skip
+        area_level = struct.unpack('<i', struct.pack('<I', fields[10]))[0]  # signed
+        # fields[11] = English name string offset
+        name = get_string(fields[11])
+
+        result[area_id] = AreaTableEntry(
+            id=area_id,
+            map_id=map_id,
+            zone=zone,
+            explore_flag=explore_flag,
+            flags=flags,
+            area_level=area_level,
+            name=name
+        )
+
+    print(f"  [DBC] AreaTable geladen: {len(result)} Einträge")
+    return result
+
+
 # ─────────────────────────── MAP Parser ──────────────────────────
 
 def parse_map_file(filepath: str, map_id: int = 0, tile_x: int = 0, tile_y: int = 0) -> Optional[MapTile]:
@@ -1025,10 +1114,12 @@ class WoW3DEnvironment:
         self.maps_dir = os.path.join(data_root, "maps")
         self.vmaps_dir = os.path.join(data_root, "vmaps")
         self.mmaps_dir = os.path.join(data_root, "mmaps")
+        self.dbc_dir = os.path.join(data_root, "dbc")
 
         self.loaded_tiles: dict = {}          # (map_id, tile_x, tile_y) -> MapTile
         self.loaded_vmtrees: dict = {}        # map_id -> VMapTree
         self.loaded_navmesh_params: dict = {} # map_id -> NavMeshParams
+        self.area_table: dict = {}            # area_id -> AreaTableEntry
         self.los_checker = LOSChecker()
         self.terrain_checker = None
 
@@ -1146,6 +1237,98 @@ class WoW3DEnvironment:
         if self.terrain_checker is None:
             return (False, "no_terrain_loaded", None)
         return self.terrain_checker.check_path_walkable(start, end)
+
+    # ─── Area/Zone-Lookup ─────────────────────────────────────
+
+    def load_area_table(self):
+        """Lädt AreaTable.dbc aus dem dbc/-Verzeichnis."""
+        dbc_path = os.path.join(self.dbc_dir, "AreaTable.dbc")
+        self.area_table = parse_area_table_dbc(dbc_path)
+        return len(self.area_table)
+
+    def get_area_id(self, map_id: int, x: float, y: float) -> int:
+        """
+        Bestimmt die Area-ID an den gegebenen Weltkoordinaten.
+        Nutzt die 16×16 Area-Map aus den .map-Dateien.
+
+        Returns: area_id (0 = unbekannt)
+        """
+        gx, gy = world_to_grid(x, y)
+        key = (map_id, gx, gy)
+        tile = self.loaded_tiles.get(key)
+
+        if tile is None:
+            # Tile nicht geladen — versuche es on-demand zu laden
+            tile = self.load_map_tile(map_id, gx, gy)
+            if tile is None:
+                return 0
+
+        if tile.area_map is None:
+            return tile.grid_area  # Einheitliche Area für das ganze Tile
+
+        # Weltkoordinaten → 16×16 Zelle innerhalb des Tiles
+        cell_x = int(16 * (32 - x / SIZE_OF_GRIDS)) & 15
+        cell_y = int(16 * (32 - y / SIZE_OF_GRIDS)) & 15
+        return tile.area_map[cell_x * 16 + cell_y]
+
+    def get_zone_id(self, map_id: int, x: float, y: float) -> int:
+        """
+        Bestimmt die Zone-ID an den gegebenen Weltkoordinaten.
+        Zone = Parent-Area (z.B. Elwynn Forest für Northshire Abbey).
+
+        Returns: zone_id (0 = unbekannt)
+        """
+        area_id = self.get_area_id(map_id, x, y)
+        if area_id == 0:
+            return 0
+
+        entry = self.area_table.get(area_id)
+        if entry is None:
+            return area_id  # Kein DBC-Eintrag → Area als Zone nehmen
+
+        if entry.zone != 0:
+            return entry.zone  # Hat Parent-Zone → die zurückgeben
+        return area_id  # Ist selbst eine Zone
+
+    def get_area_info(self, map_id: int, x: float, y: float) -> dict:
+        """
+        Gibt vollständige Area/Zone/Map-Info für die Koordinaten zurück.
+
+        Returns: {
+            'map_id': int,
+            'zone_id': int, 'zone_name': str,
+            'area_id': int, 'area_name': str,
+            'area_level': int
+        }
+        """
+        area_id = self.get_area_id(map_id, x, y)
+        zone_id = 0
+        area_name = "Unknown"
+        zone_name = "Unknown"
+        area_level = 0
+
+        if area_id > 0:
+            entry = self.area_table.get(area_id)
+            if entry:
+                area_name = entry.name
+                area_level = entry.area_level
+                if entry.zone != 0:
+                    zone_id = entry.zone
+                    zone_entry = self.area_table.get(zone_id)
+                    if zone_entry:
+                        zone_name = zone_entry.name
+                else:
+                    zone_id = area_id
+                    zone_name = area_name
+
+        return {
+            'map_id': map_id,
+            'zone_id': zone_id,
+            'zone_name': zone_name,
+            'area_id': area_id,
+            'area_name': area_name,
+            'area_level': area_level,
+        }
 
     # ─── Performance-optimierte Methoden ────────────────────────
 

@@ -253,9 +253,13 @@ class CombatSimulation:
     AREA_CELL_SIZE = 50.0     # ~50x50 units per area cell
     ZONE_CELL_SIZE = 200.0    # ~200x200 units per zone cell
 
-    def __init__(self, num_mobs: int = None, seed: Optional[int] = None):
+    def __init__(self, num_mobs: int = None, seed: Optional[int] = None,
+                 terrain: 'SimTerrain | None' = None, env3d=None):
         self.rng = random.Random(seed)
         self.num_mobs = num_mobs  # None = all spawns
+        self.terrain = terrain
+        self.env3d = env3d        # WoW3DEnvironment for area/zone lookups
+        self.map_id = 0           # Eastern Kingdoms
         self.player = Player()
         if self.terrain:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
@@ -265,11 +269,13 @@ class CombatSimulation:
         self.damage_dealt: int = 0
         self.kills: int = 0
         self._next_uid = 1
-        # Exploration tracking
-        self.visited_areas: set = set()   # (area_x, area_y) cells visited
-        self.visited_zones: set = set()   # (zone_x, zone_y) cells visited
+        # Exploration tracking (uses real WoW area IDs if env3d available, grid fallback otherwise)
+        self.visited_areas: set = set()   # set of area_id (or (x,y) cells as fallback)
+        self.visited_zones: set = set()   # set of zone_id (or (x,y) cells as fallback)
+        self.visited_maps: set = set()    # set of map_id
         self._new_areas: int = 0          # consumed on read
         self._new_zones: int = 0          # consumed on read
+        self._new_maps: int = 0           # consumed on read
         self._spawn_mobs()
         self._update_exploration()  # register spawn position
 
@@ -320,23 +326,46 @@ class CombatSimulation:
         self._next_uid = 1
         self.visited_areas.clear()
         self.visited_zones.clear()
+        self.visited_maps.clear()
         self._new_areas = 0
         self._new_zones = 0
+        self._new_maps = 0
         self._spawn_mobs()
         self._update_exploration()
 
     def _update_exploration(self):
-        """Track area/zone discovery based on player position."""
-        p = self.player
-        area_key = (int(p.x // self.AREA_CELL_SIZE), int(p.y // self.AREA_CELL_SIZE))
-        zone_key = (int(p.x // self.ZONE_CELL_SIZE), int(p.y // self.ZONE_CELL_SIZE))
+        """Track area/zone/map discovery based on player position.
 
-        if area_key not in self.visited_areas:
-            self.visited_areas.add(area_key)
-            self._new_areas += 1
-        if zone_key not in self.visited_zones:
-            self.visited_zones.add(zone_key)
-            self._new_zones += 1
+        Uses real WoW area IDs from AreaTable.dbc if env3d is available,
+        falls back to grid-based cells otherwise.
+        """
+        p = self.player
+
+        if self.env3d and self.env3d.area_table:
+            # Real WoW area/zone/map lookup
+            area_id = self.env3d.get_area_id(self.map_id, p.x, p.y)
+            zone_id = self.env3d.get_zone_id(self.map_id, p.x, p.y)
+
+            if area_id > 0 and area_id not in self.visited_areas:
+                self.visited_areas.add(area_id)
+                self._new_areas += 1
+            if zone_id > 0 and zone_id not in self.visited_zones:
+                self.visited_zones.add(zone_id)
+                self._new_zones += 1
+            if self.map_id not in self.visited_maps:
+                self.visited_maps.add(self.map_id)
+                self._new_maps += 1
+        else:
+            # Grid-based fallback (no 3D data)
+            area_key = (int(p.x // self.AREA_CELL_SIZE), int(p.y // self.AREA_CELL_SIZE))
+            zone_key = (int(p.x // self.ZONE_CELL_SIZE), int(p.y // self.ZONE_CELL_SIZE))
+
+            if area_key not in self.visited_areas:
+                self.visited_areas.add(area_key)
+                self._new_areas += 1
+            if zone_key not in self.visited_zones:
+                self.visited_zones.add(zone_key)
+                self._new_zones += 1
 
     def _dist(self, x1: float, y1: float, x2: float, y2: float) -> float:
         dx = x2 - x1
@@ -808,6 +837,7 @@ class CombatSimulation:
             "equipped_upgrade": p.equipped_upgrade,
             "new_areas": self._new_areas,
             "new_zones": self._new_zones,
+            "new_maps": self._new_maps,
         }
         p.xp_gained = 0
         p.loot_copper = 0
@@ -815,4 +845,5 @@ class CombatSimulation:
         p.equipped_upgrade = False
         self._new_areas = 0
         self._new_zones = 0
+        self._new_maps = 0
         return events

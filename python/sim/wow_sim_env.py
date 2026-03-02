@@ -29,7 +29,8 @@ class WoWSimEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, bot_name: str = "SimBot", num_mobs: int = None, seed: int = None):
+    def __init__(self, bot_name: str = "SimBot", num_mobs: int = None,
+                 seed: int = None, data_root: str = None):
         super().__init__()
 
         self.action_space = spaces.Discrete(11)
@@ -42,13 +43,25 @@ class WoWSimEnv(gym.Env):
         self._seed = seed
         self._data_root = data_root
 
-        # Load 3D terrain if data_root provided
+        # Load 3D terrain + area lookup if data_root provided
         self._terrain = None
+        self._env3d = None
         if data_root:
             from sim.terrain import SimTerrain
             self._terrain = SimTerrain(data_root, quiet=True)
+            # Load WoW3DEnvironment for area/zone lookups
+            try:
+                from test_3d_env import WoW3DEnvironment
+                self._env3d = WoW3DEnvironment(data_root)
+                self._env3d.load_area_table()
+                # Load map tiles around spawn for area lookups (on-demand loading as fallback)
+                self._env3d.load_map_area(0, -8921.0, -120.0, radius_tiles=1)
+            except Exception as e:
+                print(f"  [WARN] Area lookup not available: {e}")
+                self._env3d = None
 
-        self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed, terrain=self._terrain)
+        self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed,
+                                    terrain=self._terrain, env3d=self._env3d)
         self.last_state = None
         self._step_count = 0
         self._max_steps = 4000  # episode timeout
@@ -59,6 +72,7 @@ class WoWSimEnv(gym.Env):
         self._ep_damage_dealt = 0
         self._ep_areas = 0
         self._ep_zones = 0
+        self._ep_maps = 0
         self._prev_dist_to_target = None
         self._prev_target_hp = None
 
@@ -67,7 +81,7 @@ class WoWSimEnv(gym.Env):
         if seed is not None:
             self._seed = seed
         self.sim = CombatSimulation(num_mobs=self.num_mobs, seed=self._seed,
-                                    terrain=self._terrain)
+                                    terrain=self._terrain, env3d=self._env3d)
         if self._seed is not None:
             self._seed += 1  # vary each episode
         self._step_count = 0
@@ -78,6 +92,7 @@ class WoWSimEnv(gym.Env):
         self._ep_damage_dealt = 0
         self._ep_areas = 0
         self._ep_zones = 0
+        self._ep_maps = 0
         self._prev_dist_to_target = None
         self._prev_target_hp = None
         self.last_state = self.sim.get_state_dict()
@@ -274,15 +289,19 @@ class WoWSimEnv(gym.Env):
         if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
             reward += 2.0
 
-        # 11b. Exploration (new area/zone discovered)
+        # 11b. Exploration (new area/zone/map discovered)
         new_areas = events.get("new_areas", 0)
         new_zones = events.get("new_zones", 0)
+        new_maps = events.get("new_maps", 0)
         if new_areas > 0:
             reward += new_areas * 0.5
             self._ep_areas += new_areas
         if new_zones > 0:
             reward += new_zones * 2.0
             self._ep_zones += new_zones
+        if new_maps > 0:
+            reward += new_maps * 5.0
+            self._ep_maps += new_maps
 
         # 12. Action-specific rewards
         if override_action == 5:  # Smite
@@ -352,6 +371,7 @@ class WoWSimEnv(gym.Env):
                 "death": 1 if self.sim.player.hp <= 0 else 0,
                 "areas_explored": self._ep_areas,
                 "zones_explored": self._ep_zones,
+                "maps_explored": self._ep_maps,
             }
 
         return obs, reward, terminated, truncated, info
