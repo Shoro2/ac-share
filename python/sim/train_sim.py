@@ -90,6 +90,8 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_areas_explored", stats.get("areas_explored", 0), step)
                 self._writer.add_scalar("gameplay/ep_zones_explored", stats.get("zones_explored", 0), step)
                 self._writer.add_scalar("gameplay/ep_maps_explored", stats.get("maps_explored", 0), step)
+                self._writer.add_scalar("gameplay/ep_levels_gained", stats.get("levels_gained", 0), step)
+                self._writer.add_scalar("gameplay/ep_final_level", stats.get("final_level", 1), step)
 
                 # Exploration reward breakdown
                 self._writer.add_scalar("reward_breakdown/explore", stats.get("rw_explore", 0), step)

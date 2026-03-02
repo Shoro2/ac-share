@@ -84,6 +84,7 @@ class WoWSimEnv(gym.Env):
         self._ep_maps = 0
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
+        self._ep_levels_gained = 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -104,6 +105,7 @@ class WoWSimEnv(gym.Env):
         self._ep_maps = 0
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
+        self._ep_levels_gained = 0
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
         return obs, {}
@@ -240,8 +242,10 @@ class WoWSimEnv(gym.Env):
             self._ep_kills += 1
 
         # 5. Level-Up
-        if events.get("leveled_up"):
-            reward += 15.0
+        levels = events.get("levels_gained", 0)
+        if levels > 0:
+            reward += 15.0 * levels
+            self._ep_levels_gained += levels
 
         # 6. Equipment-Upgrade
         if events["equipped_upgrade"]:
@@ -316,6 +320,8 @@ class WoWSimEnv(gym.Env):
                 "zones_explored": self._ep_zones,
                 "maps_explored": self._ep_maps,
                 "rw_explore": self._ep_exploration_reward,
+                "levels_gained": self._ep_levels_gained,
+                "final_level": self.sim.player.level,
             }
 
         return obs, reward, terminated, truncated, info
