@@ -82,14 +82,8 @@ class WoWSimEnv(gym.Env):
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
-        self._prev_dist_to_target = None
         self._prev_target_hp = None
-        self._ep_discoveries = 0
-        self._ep_approach_reward = 0.0
-        self._ep_facing_reward = 0.0
         self._ep_exploration_reward = 0.0
-        self._ep_action_reward = 0.0
-        self._last_nearby_guids = set()
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -108,14 +102,8 @@ class WoWSimEnv(gym.Env):
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
-        self._prev_dist_to_target = None
         self._prev_target_hp = None
-        self._ep_discoveries = 0
-        self._ep_approach_reward = 0.0
-        self._ep_facing_reward = 0.0
         self._ep_exploration_reward = 0.0
-        self._ep_action_reward = 0.0
-        self._last_nearby_guids = set()
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
         return obs, {}
@@ -185,8 +173,7 @@ class WoWSimEnv(gym.Env):
             elif action == 9 and self.sim.target and self.sim.target.dot_remaining > 0:
                 override_action = 0  # block SW:Pain if already active
 
-        # ─── Execute Action (track success for reward gating) ────
-        action_ok = True  # whether the action actually succeeded
+        # ─── Execute Action ─────────────────────────────────────────
         if override_action == 0:
             self.sim.do_noop()
         elif override_action == 1:
@@ -198,17 +185,17 @@ class WoWSimEnv(gym.Env):
         elif override_action == 4:
             self.sim.do_target_nearest()
         elif override_action == 5:
-            action_ok = self.sim.do_cast_smite()
+            self.sim.do_cast_smite()
         elif override_action == 6:
-            action_ok = self.sim.do_cast_heal()
+            self.sim.do_cast_heal()
         elif override_action == 7:
-            action_ok = self.sim.do_loot()
+            self.sim.do_loot()
         elif override_action == 8:
-            action_ok = self.sim.do_sell()
+            self.sim.do_sell()
         elif override_action == 9:
-            action_ok = self.sim.do_cast_sw_pain()
+            self.sim.do_cast_sw_pain()
         elif override_action == 10:
-            action_ok = self.sim.do_cast_pw_shield()
+            self.sim.do_cast_pw_shield()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -217,70 +204,27 @@ class WoWSimEnv(gym.Env):
         events = self.sim.consume_events()
         state = self.sim.get_state_dict()
 
-        # ─── Compute Rewards (synced with wow_env.py) ──────────────
+        # ─── Compute Rewards (sparse design — only real outcomes) ────
         reward = 0.0
 
         t_exists = 1.0 if state.get('target_status') == 'alive' else 0.0
-        in_combat_now = state.get('combat') == 'true'
         is_casting_now = state.get('casting') == 'true'
         hp_pct = self.sim.player.hp / max(1, self.sim.player.max_hp)
         mana_pct = self.sim.player.mana / max(1, self.sim.player.max_mana)
 
         # Current target tracking
-        curr_dist_to_target = None
         curr_target_hp = 0
         if t_exists > 0.5:
-            curr_dist_to_target = math.sqrt(
-                (state['tx'] - state['x']) ** 2 +
-                (state['ty'] - state['y']) ** 2)
             curr_target_hp = state.get('target_hp', 0)
 
-        # Relative angle to target
-        angle_norm = 0.0
-        if t_exists > 0.5:
-            dx = state['tx'] - state['x']
-            dy = state['ty'] - state['y']
-            target_angle = math.atan2(dy, dx)
-            rel = target_angle - state['o']
-            while rel > math.pi:
-                rel -= 2 * math.pi
-            while rel < -math.pi:
-                rel += 2 * math.pi
-            angle_norm = rel / math.pi
-
-        # 1. Step-Penalty
+        # 1. Step-Penalty (time pressure — forces the bot to act)
         reward -= 0.01
 
         # 2. Idle-Penalty (Noop without casting = wasted time)
         if override_action == 0 and not is_casting_now:
             reward -= 0.03
 
-        # 3. Discovery (new mobs found — capped to prevent walk-farming)
-        discovery_reward = 0.0
-        if self.last_state and self._ep_discoveries < 50:
-            old_nearby = self._last_nearby_guids
-            new_count = 0
-            for m in state.get('nearby_mobs', []):
-                if m['guid'] not in old_nearby and m['hp'] > 0:
-                    new_count += 1
-                    if new_count >= 2:  # max 2 per step
-                        break
-            self._ep_discoveries += new_count
-            discovery_reward = new_count * 0.5
-        reward += discovery_reward * 0.5
-
-        # 4. Approach-Reward (closer to target — capped per episode)
-        if (t_exists > 0.5
-                and self._prev_dist_to_target is not None
-                and self._prev_dist_to_target < 100
-                and self._ep_approach_reward < 20.0):
-            delta_dist = self._prev_dist_to_target - curr_dist_to_target
-            approach_r = float(np.clip(delta_dist * 0.05, -0.2, 0.3))
-            if approach_r > 0:
-                self._ep_approach_reward += approach_r
-            reward += approach_r
-
-        # 5. Damage-Reward (damage dealt to target)
+        # 3. Damage-Reward (gradient toward kills — can't be faked)
         if (t_exists > 0.5
                 and self._prev_target_hp is not None
                 and self._prev_target_hp > 0):
@@ -289,40 +233,32 @@ class WoWSimEnv(gym.Env):
                 reward += min(damage * 0.03, 1.0)
                 self._ep_damage_dealt += damage
 
-        # 6. Facing-Reward (face target in combat — capped per episode)
-        if in_combat_now and t_exists > 0.5 and self._ep_facing_reward < 30.0:
-            facing_quality = 1.0 - abs(angle_norm)
-            facing_r = facing_quality * 0.08
-            self._ep_facing_reward += facing_r
-            reward += facing_r
-
-        # 7. XP/Kill
+        # 4. XP/Kill (primary reward signal)
         xp = events["xp_gained"]
         if xp > 0:
             reward += 3.0 + min(xp * 0.05, 2.0)
             self._ep_kills += 1
 
-        # 8. Level-Up (terminal)
+        # 5. Level-Up
         if events.get("leveled_up"):
             reward += 15.0
-            # (not terminal in sim since we don't have level-up mechanic)
 
-        # 9. Equipment-Upgrade
+        # 6. Equipment-Upgrade
         if events["equipped_upgrade"]:
             reward += 3.0
 
-        # 10. Loot (capped at 3.0)
+        # 7. Loot (capped at 3.0)
         copper = events["loot_copper"]
         score = events["loot_score"]
         if copper > 0 or score > 0:
             loot_r = (copper * 0.01) + (score * 0.2)
             reward += min(loot_r, 3.0)
 
-        # 11. Sold items (free_slots increased)
+        # 8. Sold items (free_slots increased)
         if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
             reward += 2.0
 
-        # 11b. Exploration (new area/zone/map discovered — strong incentive)
+        # 9. Exploration (new area/zone/map — naturally capped, can't be farmed)
         new_areas = events.get("new_areas", 0)
         new_zones = events.get("new_zones", 0)
         new_maps = events.get("new_maps", 0)
@@ -342,49 +278,12 @@ class WoWSimEnv(gym.Env):
             self._ep_maps += new_maps
             self._ep_exploration_reward += r
 
-        # 12. Action-specific rewards (ONLY when the action actually succeeded)
-        if override_action == 5:  # Smite
-            if action_ok and t_exists > 0.5:
-                reward += 0.3
-            elif not action_ok:
-                pass  # failed cast — no reward, no penalty
-            else:
-                reward -= 0.1  # smite without target
-        elif override_action == 6:  # Heal
-            if action_ok:
-                if hp_pct < 0.5:
-                    reward += 0.5
-                elif hp_pct > 0.8:
-                    reward -= 0.3
-        elif override_action == 9:  # SW:Pain
-            if action_ok and t_exists > 0.5:
-                reward += 0.5
-            elif not action_ok:
-                pass  # failed cast
-            elif t_exists > 0.5:
-                reward -= 0.2
-            else:
-                reward -= 0.1
-        elif override_action == 10:  # PW:Shield
-            if action_ok:
-                if in_combat_now:
-                    reward += 0.4
-            elif state.get('has_shield') == 'true':
-                reward -= 0.2  # still penalize selecting shield when active
-
-        # 13. Movement in combat
-        if in_combat_now and t_exists > 0.5:
-            if override_action in [1, 2, 3]:
-                reward -= 0.3
-                if abs(angle_norm) > 0.2 and override_action in [2, 3]:
-                    reward += 0.4
-
-        # 14. Terminal: Death (heavy penalty — bot must learn to avoid dying)
+        # 10. Terminal: Death (heavy penalty — bot must learn to avoid dying)
         terminated = False
         if self.sim.player.hp <= 0:
             reward = -30.0
             terminated = True
-        # 15. Terminal: OOM
+        # 11. Terminal: OOM
         elif mana_pct < 0.05:
             reward = -15.0
             terminated = True
@@ -392,7 +291,6 @@ class WoWSimEnv(gym.Env):
         truncated = self._step_count >= self._max_steps
 
         # State-Tracking
-        self._prev_dist_to_target = curr_dist_to_target if t_exists > 0.5 else None
         self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
 
         # Accumulate episode stats
@@ -403,7 +301,6 @@ class WoWSimEnv(gym.Env):
         # Build obs
         obs = self._build_obs(state)
         self.last_state = state
-        self._last_nearby_guids = {m['guid'] for m in state.get('nearby_mobs', [])}
 
         info = {}
         if terminated or truncated:
@@ -418,11 +315,7 @@ class WoWSimEnv(gym.Env):
                 "areas_explored": self._ep_areas,
                 "zones_explored": self._ep_zones,
                 "maps_explored": self._ep_maps,
-                # Reward breakdown for debugging
-                "rw_approach": self._ep_approach_reward,
-                "rw_facing": self._ep_facing_reward,
                 "rw_explore": self._ep_exploration_reward,
-                "rw_discovery": self._ep_discoveries,
             }
 
         return obs, reward, terminated, truncated, info
