@@ -19,11 +19,12 @@ ac-share/
 ├── .gitattributes
 ├── python/                      ← Python RL-Training, Inference & Utilities
 │   ├── sim/                     ← ★ HAUPTFOKUS: Offline-Simulation ★
-│   │   ├── combat_sim.py        ← Kampfsystem-Simulation (Mobs, Spells, Loot, Movement)
+│   │   ├── combat_sim.py        ← Kampfsystem-Simulation (Mobs, Spells, Loot, Movement, Exploration)
 │   │   ├── wow_sim_env.py       ← Gymnasium-Environment für die Sim
 │   │   ├── train_sim.py         ← PPO-Training auf der Sim (5 Bots, kein Server nötig)
+│   │   ├── terrain.py           ← SimTerrain-Wrapper für 3D-Terrain in der Sim
 │   │   └── __init__.py
-│   ├── test_3d_env.py           ← 3D-Terrain/VMAP/LOS aus echten WoW-Daten
+│   ├── test_3d_env.py           ← 3D-Terrain/VMAP/LOS/AreaTable aus echten WoW-Daten
 │   ├── wow_env.py               ← Gymnasium-Environment (Live-Server via TCP)
 │   ├── train.py                 ← Multi-Bot PPO-Training (Live-Server)
 │   ├── run_model.py             ← Inference-Loop (trained model)
@@ -227,8 +228,17 @@ Simuliert das komplette WoW-Kampfsystem in reinem Python:
 - **Loot-System**: Copper-Drops, vereinfachtes Item-Score-System
 - **Respawn**: Tote Mobs respawnen nach 60s am Original-Spawnpunkt
 - **XP**: Formelbasiert nach Mob-Level (50–120 XP pro Kill)
-- **Exploration**: Echte WoW Area/Zone/Map-IDs aus AreaTable.dbc (mit Grid-Fallback ohne 3D-Daten)
+- **Exploration**: Drei-Ebenen-Tracking (`visited_areas`, `visited_zones`, `visited_maps`)
+  - Echte WoW Area/Zone/Map-IDs aus AreaTable.dbc wenn `env3d` + DBC vorhanden
+  - Grid-Fallback ohne 3D-Daten: Areas=50×50 Units, Zones=200×200 Units
+  - `_new_areas`/`_new_zones`/`_new_maps` Counter (consume-on-read wie XP/Loot)
+- **3D-Terrain** (optional via `terrain` Parameter): Z-Koordinaten, Walkability-Checks, LOS-Prüfung bei Spells
 - **State-Dict**: Identisch zum TCP-JSON des Live-Servers
+
+**Initialisierung**: `CombatSimulation(num_mobs=None, seed=None, terrain=None, env3d=None)`
+- `num_mobs=None`: Alle 84 Spawn-Positionen nutzen (vorher: 15 zufällige)
+- `terrain`: `SimTerrain`-Instanz für Höhen, LOS, Walkability
+- `env3d`: `WoW3DEnvironment`-Instanz für Area/Zone-Lookups via AreaTable.dbc
 
 ### wow_sim_env.py — Gymnasium Sim-Environment
 
@@ -237,27 +247,44 @@ Drop-in Replacement für `wow_env.py`:
 - **Gleicher Obs Space**: `Box(17,)` — HP%, Mana%, Target-HP, Combat, Distance, Angle, etc.
 - **Gleiche Rewards**: Synchronisiert mit `wow_env.py` (Skala ~[-5, +15])
 - **Gleiche Override-Logik**: Vendor, Aggro, Cast-Guard, Loot-Automatik, Range-Management
+- **Exploration-Rewards**: Area (+0.5), Zone (+2.0), Map (+5.0) — einmalig pro Episode
 - **max_episode_steps**: 4000
+
+**Initialisierung**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None)`
+- `data_root`: Pfad zu WoW `Data/`-Verzeichnis → aktiviert 3D-Terrain (`SimTerrain`) + Area-Lookups (`WoW3DEnvironment` mit AreaTable.dbc)
+- Ohne `data_root`: Flaches Terrain, Grid-basierte Exploration-Erkennung
 
 ### train_sim.py — Sim-Training
 
 - **5 Bots** in `SubprocVecEnv`
 - **PPO** mit `ent_coef=0.01`, `n_steps=256`, `batch_size=128`
 - **TensorBoard-Logs** in `logs/PPO_2/`
-- **Episode-Callbacks** mit Kills, XP, Deaths
+- **Episode-Callbacks** mit Kills, XP, Deaths, Areas/Zones/Maps explored
+- **TensorBoard-Metriken**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`
 - **~5000+ FPS** (ohne 3D-Terrain)
+- **`--data-root`**: Optional, aktiviert 3D-Terrain + echte WoW Area-IDs im Training
 
 ### test_3d_env.py — 3D-Terrain + Area-System aus echten WoW-Daten
 
 Liest die originalen WoW-Dateien (maps/, vmaps/, dbc/):
 - **Terrain-Höhen**: 129×129 Height-Grid pro Tile, Triangle-Interpolation
 - **LOS (Line of Sight)**: VMAP-Spawns (Gebäude, Bäume) mit AABB-Ray-Intersection
-- **AreaTable.dbc-Parser**: Lädt alle Area/Zone/Map-Zuordnungen der gesamten WoW-Welt
+- **AreaTable.dbc-Parser** (`parse_area_table_dbc()`): Liest binäre WDBC-Datei → Dict `{area_id: AreaTableEntry}` mit Name, Zone, Map, Level, ExploreFlag
+- **`AreaTableEntry`**: Dataclass mit `id`, `map_id`, `zone`, `explore_flag`, `flags`, `area_level`, `name`
 - **Area-Lookup**: `get_area_id(map, x, y)` → echte WoW Area-ID aus 16×16 Grid pro Tile
 - **Zone-Lookup**: `get_zone_id(map, x, y)` → Parent-Zone via AreaTable-Hierarchie
-- **Dynamisches Tile-Loading**: Tiles werden on-demand geladen wenn der Bot neue Gebiete betritt
+- **Area-Info**: `get_area_info(map, x, y)` → vollständiges Dict mit `area_name`, `zone_name`, `area_level` etc.
+- **Dynamisches Tile-Loading**: Tiles werden on-demand geladen wenn der Bot neue Gebiete betritt — die KI ist nicht auf vorgeladene Bereiche beschränkt
 - **HeightCache**: Vorberechnetes numpy-Grid für O(1) Höhen-Lookups (~100x schneller)
 - **SpatialLOSChecker**: Räumlich indizierter LOS-Check (~100-500x schneller als brute-force)
+
+### terrain.py — SimTerrain-Wrapper
+
+Leichtgewichtiger Wrapper um `WoW3DEnvironment` für die Sim:
+- **`SimTerrain(data_root)`**: Lädt Terrain + VMAPs für das Northshire-Trainingsgebiet (3×3 Tiles)
+- **`get_height(x, y)`**: Terrain-Höhe an Weltkoordinaten (Fallback auf 82.025 ohne Daten)
+- **`check_los(x1,y1,z1, x2,y2,z2)`**: Line-of-Sight-Check mit Eye-Height-Offset (+1.7)
+- **`check_walkable(x1,y1,z1, x2,y2,z2)`**: Terrain-Walkability (Steigung/Stufen-Check)
 
 **Exploration-Hierarchie** (echte WoW-Daten):
 ```
@@ -434,7 +461,7 @@ python -m sim.train_sim --data-root /pfad/zu/Data --steps 500000
 tensorboard --logdir python/logs/
 ```
 
-Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Loss.
+Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Loss + Gameplay-Metriken (Kills, XP, Deaths, Areas/Zones/Maps explored).
 
 ### Live-Server-Training (spätere Phase)
 
@@ -460,4 +487,111 @@ Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Los
 - **Python**: Standard-Python mit `snake_case`, Type Hints fehlen weitgehend
 - **Kein Build-System im Modul**: `src_module-ai-controller/` hat keine eigene CMakeLists.txt — muss manuell in den AzerothCore-Module-Build integriert werden
 - **Sprache**: Code-Kommentare teilweise auf Deutsch ("Lausche auf Port 5000", "WICHTIG", "ACHTUNG")
-- **Keine Tests**: Kein Unit-Test-Framework, nur `check_env.py` als Smoke-Test
+- **Keine Tests**: Kein Unit-Test-Framework, nur `check_env.py` (Live) und `sim/test_sim.py` (Sim) als Smoke-Tests
+
+## Arbeitsfortschritt & Status
+
+### Was funktioniert (erledigt)
+
+| Komponente | Status | Details |
+|---|---|---|
+| **CombatSimulation Engine** | ✅ fertig | 84 Mobs, 4 Spells, Mob-AI, Loot, XP, Respawn, Exploration-Tracking |
+| **WoWSimEnv (Gym-Interface)** | ✅ fertig | Discrete(11) Actions, Box(17) Obs, identische Rewards wie Live |
+| **train_sim.py (PPO-Training)** | ✅ fertig | 5 Bots, SubprocVecEnv, TensorBoard, Gameplay-Metriken |
+| **test_sim.py (Validierung)** | ✅ fertig | 5 Tests: Engine, Gym-Spaces, Random-Episode, Benchmark, Scripted-Combat |
+| **3D-Terrain-System** | ✅ fertig | Maps/VMAPs Parser, HeightCache, SpatialLOSChecker, SimTerrain-Wrapper |
+| **AreaTable.dbc-Parser** | ✅ fertig | Liest alle Areas/Zones/Maps der WoW-Welt, on-demand Tile-Loading |
+| **Exploration-System** | ✅ fertig | 3-Tier Tracking (Area/Zone/Map), Rewards, TensorBoard-Metriken |
+| **Reward-Synchronisation** | ✅ fertig | Sim und Live haben identische Reward-Tabelle |
+| **Override-Logik** | ✅ fertig | Vendor, Aggro, Cast-Guard, Loot, Range-Mgmt — in beiden Envs identisch |
+| **wow_env.py (Live-Server)** | ✅ fertig | TCP-Anbindung, NPC-Memory, Blacklist, Override-Logik |
+| **C++ AI-Controller-Modul** | ✅ fertig | Bot-Spawning, TCP-Server, State-Publishing, Kommando-Verarbeitung |
+| **auto_grind.py** | ✅ fertig | Hybrid-Runner mit Farm-Route + RL-Policy |
+| **train.py (Live-Training)** | ✅ fertig | Multi-Bot PPO, aber bisher nur abgebrochene Runs (wow_bot_interrupted.zip) |
+
+### Bekannte Lücken & Paritäts-Differenzen
+
+| Problem | Bereich | Schwere | Details |
+|---|---|---|---|
+| **Exploration fehlt in wow_env.py** | Live-Env | mittel | Sim hat Area/Zone/Map Exploration-Rewards, Live-Env noch nicht — bei Sim→Live Transfer werden diese Rewards fehlen |
+| **nearby_mobs Cache-Bug** | C++ Modul | kritisch | `_cachedNearbyMobsJson` wird nur für den ersten Spieler berechnet — alle Bots sehen dieselbe Mob-Liste |
+| **run_bot.py kaputt** | Script | niedrig | Syntax-Fehler (fehlende Anführungszeichen, Doppelpunkte, Klammern) — nicht nutzbar |
+| **run_model.py referenziert wow_bot_v1** | Script | niedrig | Modell existiert nicht, nur wow_bot_interrupted.zip vorhanden |
+| **Kein Level-Up in der Sim** | Sim | niedrig | Level-Up Reward (+15.0) wird nie ausgelöst, da Sim nur Level 1 simuliert (Parity mit Live, wo Bots auch auf L1 zurückgesetzt werden) |
+| **Vendor-System vereinfacht** | Sim | niedrig | Sim hat keine echten Vendors — Sell-Action räumt nur Slots frei, ohne Copper-Gewinn |
+| **Keine Trainings-Artefakte** | Training | info | Weder models/ noch logs/ Verzeichnisse existieren aktuell — kein abgeschlossener Sim-Trainingslauf vorhanden |
+
+## Nächste Schritte (Roadmap)
+
+### Phase 1: Sim-Training validieren (aktuell)
+
+**Ziel**: Ein stabiles PPO-Modell in der Sim trainieren, das grundlegende Combat-Skills zeigt.
+
+1. **Erster vollständiger Trainingslauf**
+   - `python -m sim.train_sim --steps 500000` ausführen
+   - TensorBoard-Metriken prüfen: steigen Kills/XP pro Episode? Sinkt die Death-Rate?
+   - Checkpoint als `wow_sim_v1.zip` speichern
+
+2. **Hyperparameter-Tuning**
+   - `ent_coef` variieren (0.005–0.05) — zu wenig Exploration vs. zu viel Zufall
+   - `n_steps` und `batch_size` anpassen je nach Reward-Kurve
+   - `total_timesteps` auf 1M–5M erhöhen wenn Reward noch steigt
+
+3. **Trainings-Metriken auswerten**
+   - Kill-Rate pro Episode sollte >2 erreichen
+   - Death-Rate sollte unter 30% fallen
+   - Areas-explored als Indikator für Bewegungsverhalten
+
+### Phase 2: Sim-Qualität verbessern
+
+4. **3D-Terrain im Training testen**
+   - `--data-root` Training durchführen, FPS-Impact messen
+   - Vergleich: lernt der Bot mit Terrain besser/anders als ohne?
+   - LOS-Blockaden und Walkability als zusätzliche Lern-Signale nutzen
+
+5. **Exploration-Rewards in wow_env.py nachziehen**
+   - Area/Zone/Map Tracking analog zur Sim implementieren
+   - Benötigt entweder: (a) C++ Modul sendet Area-IDs mit, oder (b) Python-seitig aus Koordinaten berechnen
+   - Reward-Parität sicherstellen für Transfer Sim→Live
+
+6. **Kampf-Balancing prüfen**
+   - Mob-Damage, Spell-Damage, Mana-Kosten vs. echte WoW-Werte abgleichen
+   - Aggro-Range und Leash-Distance feintunen
+   - Mehrfach-Aggro-Situationen testen (2+ Mobs gleichzeitig)
+
+### Phase 3: Transfer auf Live-Server
+
+7. **Sim-Modell auf Live-Server testen**
+   - Trainiertes `wow_sim_v1.zip` mit `auto_grind.py` oder `run_model.py` gegen echten Server laufen lassen
+   - Beobachten: welche Verhaltensweisen transferieren, welche nicht?
+   - Delta-Analyse: wo weicht Sim-Verhalten vom Live-Verhalten ab?
+
+8. **nearby_mobs Cache-Bug fixen** (C++)
+   - `_cachedNearbyMobsJson` muss pro Spieler berechnet werden, nicht nur für den ersten
+   - Ohne Fix sind Multi-Bot-Runs auf dem Live-Server unzuverlässig
+
+9. **Live-Training mit Sim-Pretrained-Modell**
+   - `train.py --resume models/PPO/wow_sim_v1.zip` — Fine-Tuning auf echtem Server
+   - Niedrigere Learning-Rate für Fine-Tuning (1e-4 statt 3e-4)
+   - Vergleich: Sim-Pretrained vs. From-Scratch auf Live
+
+### Phase 4: Erweiterungen (später)
+
+10. **Mehr Spells / höhere Level**
+    - Weitere Priest-Spells ab Level 4+ (Renew, Mind Blast, Fade)
+    - Level-Cap in der Sim erhöhen (aktuell nur Level 1)
+    - Mob-Typen mit speziellen Fähigkeiten (Ranged, Caster, Runners)
+
+11. **Multi-Zone Navigation**
+    - Bot soll selbstständig Elwynn Forest erkunden (nicht nur Northshire)
+    - Waypoint-System oder curiosity-driven Exploration
+    - Zonen-spezifisches Mob-Scaling
+
+12. **run_bot.py reparieren oder ersetzen**
+    - Syntax-Fehler fixen oder durch sauberes Script ersetzen
+    - Einfacher Inference-Runner der sowohl Sim als auch Live unterstützt
+
+13. **Automatisierte Tests**
+    - CI-Pipeline mit `test_sim.py` als Mindestanforderung
+    - Regressions-Tests für Reward-Parität (Sim vs. Live)
+    - Performance-Benchmark als Gate (FPS darf nicht unter X fallen)
