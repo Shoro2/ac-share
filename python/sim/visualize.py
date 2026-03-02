@@ -138,6 +138,9 @@ def _snapshot_mobs(sim) -> list:
 def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
                 record_interval: int = 1) -> BotRecording:
     """Run one episode, recording trail and events."""
+    # Override env's internal episode limit so --steps actually works
+    env._max_steps = max_steps
+
     rec = BotRecording(name=env.bot_name)
     obs, _ = env.reset()
     sim = env.sim
@@ -470,6 +473,9 @@ def run_live(env: WoWSimEnv, model=None, max_steps: int = 4000,
         output_dir = os.path.join(PARENT_DIR, "sim_frames")
     os.makedirs(output_dir, exist_ok=True)
 
+    # Override env's internal episode limit so --steps actually works
+    env._max_steps = max_steps
+
     rec = BotRecording(name=env.bot_name)
     obs, _ = env.reset()
     sim = env.sim
@@ -559,23 +565,29 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
                        model=None, seed: int = 42,
                        output: str = None,
                        data_root: str = None,
-                       creature_csv_dir: str = None):
+                       creature_csv_dir: str = None,
+                       show: bool = False):
     """Run multiple episodes and overlay all routes on one map."""
+    output = output or os.path.join(PARENT_DIR, "sim_map.png")
+    print(f">>> Running {n_episodes} episodes, {max_steps} steps each <<<")
+    print(f">>> Output: {os.path.abspath(output)} <<<")
+
     recordings = []
     for i in range(n_episodes):
+        print(f"  Episode {i}/{n_episodes-1}...", end=" ", flush=True)
         env = WoWSimEnv(bot_name=f"Bot{i}", seed=seed + i * 1000,
                         data_root=data_root, creature_csv_dir=creature_csv_dir)
         rec = run_episode(env, model=model, max_steps=max_steps)
         recordings.append(rec)
-        print(f"  Episode {i}: Lv{rec.final_level}, {rec.total_kills} kills, "
+        print(f"Lv{rec.final_level}, {rec.total_kills} kills, "
               f"{rec.total_xp} XP, {rec.total_deaths} deaths, "
               f"{len(rec.trail)} steps")
         env.close()
 
-    output = output or os.path.join(PARENT_DIR, "sim_map.png")
+    print(f">>> All episodes done. Rendering map... <<<")
     plot_map(recordings,
              title=f"WoW Sim — {n_episodes} Episodes Overlay",
-             output=output, show=False)
+             output=output, show=show)
     return recordings
 
 
@@ -605,6 +617,8 @@ def main():
     parser.add_argument("--creature-data", type=str, default=None,
                         help="Path to directory with creature.csv and creature_template.csv "
                              "(enables full-world creature spawning via spatial chunks)")
+    parser.add_argument("--show", action="store_true",
+                        help="Open the map in a window after rendering (requires display)")
     args = parser.parse_args()
 
     # Load model if specified
@@ -635,6 +649,7 @@ def main():
             output=args.output,
             data_root=args.data_root,
             creature_csv_dir=args.creature_data,
+            show=args.show,
         )
 
 
