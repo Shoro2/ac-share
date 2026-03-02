@@ -146,12 +146,15 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--resume", type=str, default=None, help="Path to model to resume from")
     parser.add_argument("--output", type=str, default=None, help="Output model path")
-    parser.add_argument("--data-root", type=str, default=None,
+    parser.add_argument("--data-root", type=str,
+                        default=r"C:\wowstuff\WoWKI_serv\Data",
                         help="Path to Data/ directory (maps/, vmaps/) for 3D terrain")
-    parser.add_argument("--creature-data", type=str, default=None,
+    parser.add_argument("--creature-data", type=str,
+                        default=r"C:\wowstuff\WoWKI_serv\python\dbexport",
                         help="Path to directory with creature.csv and creature_template.csv "
                              "(enables full-world creature spawning via spatial chunks)")
-    parser.add_argument("--log-dir", type=str, default=None,
+    parser.add_argument("--log-dir", type=str,
+                        default=r"C:\wowstuff\WoWKI_serv\python\sim_episodes",
                         help="Directory for episode trail logs (for offline visualization). "
                              "Negligible performance impact.")
     parser.add_argument("--log-interval", type=int, default=1,

@@ -574,7 +574,8 @@ def main():
                     "Fallback mode: runs sim directly (--run).")
 
     # Primary mode: read from logs
-    parser.add_argument("--log-dir", type=str, default=None,
+    parser.add_argument("--log-dir", type=str,
+                        default=r"C:\wowstuff\WoWKI_serv\python\sim_episodes",
                         help="Path to episode log directory (JSONL files)")
     parser.add_argument("--bot", type=str, default=None,
                         help="Show only this bot's episodes (default: all)")
@@ -590,9 +591,11 @@ def main():
                         help="Number of episodes/bots (--run mode, default: 5)")
     parser.add_argument("--model", type=str, default=None,
                         help="Path to trained model (.zip)")
-    parser.add_argument("--data-root", type=str, default=None,
+    parser.add_argument("--data-root", type=str,
+                        default=r"C:\wowstuff\WoWKI_serv\Data",
                         help="Path to WoW Data/ directory for 3D terrain")
-    parser.add_argument("--creature-data", type=str, default=None,
+    parser.add_argument("--creature-data", type=str,
+                        default=r"C:\wowstuff\WoWKI_serv\python\dbexport",
                         help="Path to creature CSV directory")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
@@ -611,34 +614,7 @@ def main():
         model = PPO.load(args.model)
         print(f"Loaded model: {args.model}")
 
-    if args.log_dir:
-        # ─── Primary mode: read from log files ──────────────────────
-        print(f">>> Loading episodes from: {args.log_dir} <<<")
-        if args.bot:
-            print(f">>> Filtering bot: {args.bot} <<<")
-        if args.last:
-            print(f">>> Last {args.last} episodes per bot <<<")
-
-        recordings = load_recordings_from_logs(
-            args.log_dir, bot_name=args.bot, last_n=args.last)
-
-        if not recordings:
-            print("No episodes found! Make sure training was run with --log-dir.")
-            sys.exit(1)
-
-        print(f">>> Loaded {len(recordings)} episodes <<<")
-        for rec in recordings:
-            print(f"  {rec.name}: {rec.total_kills} kills, "
-                  f"Lv{rec.final_level}, {rec.total_xp} XP, "
-                  f"{len(rec.trail)} trail points")
-
-        output = args.output or os.path.join(PARENT_DIR, "sim_map.png")
-        n_eps = len(recordings)
-        plot_map(recordings,
-                 title=f"WoW Sim \u2014 {n_eps} Episodes from Logs",
-                 output=output, show=args.show)
-
-    elif args.run:
+    if args.run:
         # ─── Fallback mode: run simulation directly ─────────────────
         if args.data_root:
             print(f"3D terrain enabled: {args.data_root}")
@@ -657,11 +633,32 @@ def main():
         )
 
     else:
-        print("Specify --log-dir to render from logs, or --run to run simulation.")
-        print("Examples:")
-        print("  python -m sim.visualize --log-dir logs/sim_episodes/")
-        print("  python -m sim.visualize --run --steps 2000 --bots 3")
-        sys.exit(1)
+        # ─── Primary mode: read from log files ──────────────────────
+        print(f">>> Loading episodes from: {args.log_dir} <<<")
+        if args.bot:
+            print(f">>> Filtering bot: {args.bot} <<<")
+        if args.last:
+            print(f">>> Last {args.last} episodes per bot <<<")
+
+        recordings = load_recordings_from_logs(
+            args.log_dir, bot_name=args.bot, last_n=args.last)
+
+        if not recordings:
+            print("No episodes found! Make sure training was run with --log-dir.")
+            print(f"Expected JSONL files in: {args.log_dir}")
+            sys.exit(1)
+
+        print(f">>> Loaded {len(recordings)} episodes <<<")
+        for rec in recordings:
+            print(f"  {rec.name}: {rec.total_kills} kills, "
+                  f"Lv{rec.final_level}, {rec.total_xp} XP, "
+                  f"{len(rec.trail)} trail points")
+
+        output = args.output or os.path.join(PARENT_DIR, "sim_map.png")
+        n_eps = len(recordings)
+        plot_map(recordings,
+                 title=f"WoW Sim \u2014 {n_eps} Episodes from Logs",
+                 output=output, show=args.show)
 
 
 if __name__ == "__main__":
