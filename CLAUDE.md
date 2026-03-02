@@ -227,7 +227,7 @@ Simuliert das komplette WoW-Kampfsystem in reinem Python:
 - **Loot-System**: Copper-Drops, vereinfachtes Item-Score-System
 - **Respawn**: Tote Mobs respawnen nach 60s am Original-Spawnpunkt
 - **XP**: Formelbasiert nach Mob-Level (50–120 XP pro Kill)
-- **Exploration**: Grid-basiertes Area/Zone-Discovery-System (50×50 / 200×200 Units)
+- **Exploration**: Echte WoW Area/Zone/Map-IDs aus AreaTable.dbc (mit Grid-Fallback ohne 3D-Daten)
 - **State-Dict**: Identisch zum TCP-JSON des Live-Servers
 
 ### wow_sim_env.py — Gymnasium Sim-Environment
@@ -247,13 +247,30 @@ Drop-in Replacement für `wow_env.py`:
 - **Episode-Callbacks** mit Kills, XP, Deaths
 - **~5000+ FPS** (ohne 3D-Terrain)
 
-### test_3d_env.py — 3D-Terrain aus echten WoW-Daten
+### test_3d_env.py — 3D-Terrain + Area-System aus echten WoW-Daten
 
-Liest die originalen WoW-Dateien (maps/, vmaps/):
+Liest die originalen WoW-Dateien (maps/, vmaps/, dbc/):
 - **Terrain-Höhen**: 129×129 Height-Grid pro Tile, Triangle-Interpolation
 - **LOS (Line of Sight)**: VMAP-Spawns (Gebäude, Bäume) mit AABB-Ray-Intersection
+- **AreaTable.dbc-Parser**: Lädt alle Area/Zone/Map-Zuordnungen der gesamten WoW-Welt
+- **Area-Lookup**: `get_area_id(map, x, y)` → echte WoW Area-ID aus 16×16 Grid pro Tile
+- **Zone-Lookup**: `get_zone_id(map, x, y)` → Parent-Zone via AreaTable-Hierarchie
+- **Dynamisches Tile-Loading**: Tiles werden on-demand geladen wenn der Bot neue Gebiete betritt
 - **HeightCache**: Vorberechnetes numpy-Grid für O(1) Höhen-Lookups (~100x schneller)
 - **SpatialLOSChecker**: Räumlich indizierter LOS-Check (~100-500x schneller als brute-force)
+
+**Exploration-Hierarchie** (echte WoW-Daten):
+```
+Map 0 (Eastern Kingdoms)
+  └─ Zone 12 (Elwynn Forest)
+       ├─ Area 9 (Northshire Valley)
+       ├─ Area 87 (Goldshire)
+       ├─ Area 57 (Crystal Lake)
+       └─ ...
+  └─ Zone 40 (Westfall)
+       ├─ Area 108 (Sentinel Hill)
+       └─ ...
+```
 
 ### Reward-Tabelle (gilt für Sim UND Live identisch)
 
@@ -280,8 +297,9 @@ Liest die originalen WoW-Dateien (maps/, vmaps/):
 | PW:Shield (aktiv) | -0.2 | |
 | Bewegen im Kampf | -0.3 | |
 | Drehen zu Target | +0.4 | im Kampf |
-| Neues Area betreten | +0.5 | pro 50×50 Zelle (einmalig) |
-| Neue Zone betreten | +2.0 | pro 200×200 Zelle (einmalig) |
+| Neues Area betreten | +0.5 | echte WoW Area-ID aus AreaTable.dbc (einmalig) |
+| Neue Zone betreten | +2.0 | echte WoW Zone-ID (z.B. Elwynn→Westfall, einmalig) |
+| Neue Map betreten | +5.0 | echte WoW Map-ID (z.B. Eastern Kingdoms→Kalimdor, einmalig) |
 | Tod | -5.0 | terminal, überschreibt |
 | OOM (<5% Mana) | -2.0 | terminal |
 
