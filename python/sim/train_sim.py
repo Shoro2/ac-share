@@ -128,10 +128,12 @@ class GameplayMetricsCallback(BaseCallback):
 
 
 def make_env(bot_name: str, seed: int, data_root: str = None,
-             creature_csv_dir: str = None):
+             creature_csv_dir: str = None, log_dir: str = None,
+             log_interval: int = 1):
     def _init():
         return WoWSimEnv(bot_name=bot_name, seed=seed, data_root=data_root,
-                         creature_csv_dir=creature_csv_dir)
+                         creature_csv_dir=creature_csv_dir,
+                         log_dir=log_dir, log_interval=log_interval)
     return _init
 
 
@@ -149,6 +151,11 @@ def main():
     parser.add_argument("--creature-data", type=str, default=None,
                         help="Path to directory with creature.csv and creature_template.csv "
                              "(enables full-world creature spawning via spatial chunks)")
+    parser.add_argument("--log-dir", type=str, default=None,
+                        help="Directory for episode trail logs (for offline visualization). "
+                             "Negligible performance impact.")
+    parser.add_argument("--log-interval", type=int, default=1,
+                        help="Record trail every N steps (default: 1 = every step)")
     args = parser.parse_args()
 
     models_dir = os.path.join(PARENT_DIR, "models", "PPO")
@@ -159,19 +166,24 @@ def main():
     bot_names = [f"SimBot{i}" for i in range(args.bots)]
     data_root = args.data_root
     creature_csv_dir = args.creature_data
+    vis_log_dir = args.log_dir
+    vis_log_interval = args.log_interval
     print(f">>> Starting sim training: {args.bots} bots, {args.steps} timesteps <<<")
     print(f">>> n_steps={args.n_steps}, batch_size={args.batch_size}, lr={args.lr} <<<")
     if data_root:
         print(f">>> 3D terrain enabled: {data_root} <<<")
     if creature_csv_dir:
         print(f">>> Full-world creatures enabled: {creature_csv_dir} <<<")
+    if vis_log_dir:
+        print(f">>> Episode trail logging enabled: {vis_log_dir} (interval={vis_log_interval}) <<<")
 
     start_method = "fork" if sys.platform != "win32" else "spawn"
 
     try:
         env = SubprocVecEnv(
             [make_env(name, seed=i * 1000, data_root=data_root,
-                      creature_csv_dir=creature_csv_dir)
+                      creature_csv_dir=creature_csv_dir,
+                      log_dir=vis_log_dir, log_interval=vis_log_interval)
              for i, name in enumerate(bot_names)],
             start_method=start_method,
         )
