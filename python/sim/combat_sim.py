@@ -524,6 +524,7 @@ class CombatSimulation:
         new_y = p.y + math.sin(p.orientation) * self.MOVE_SPEED
 
         if self.terrain:
+            self.terrain.ensure_loaded(new_x, new_y)
             new_z = self.terrain.get_height(new_x, new_y)
             if not self.terrain.check_walkable(p.x, p.y, p.z, new_x, new_y, new_z):
                 return  # blocked by terrain slope/step
