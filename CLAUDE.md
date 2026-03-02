@@ -281,10 +281,12 @@ Liest die originalen WoW-Dateien (maps/, vmaps/, dbc/):
 ### terrain.py — SimTerrain-Wrapper
 
 Leichtgewichtiger Wrapper um `WoW3DEnvironment` für die Sim:
-- **`SimTerrain(data_root)`**: Lädt Terrain + VMAPs für das Northshire-Trainingsgebiet (3×3 Tiles)
+- **`SimTerrain(data_root)`**: Lädt vmtree (BIH-Index, einmalig) + initiale Tiles um Spawn
+- **`ensure_loaded(x, y)`**: Lädt Map-Tiles + VMAPs on-demand wenn der Spieler ein neues Tile betritt (3×3 um Position). Cheap no-op wenn auf demselben Tile.
 - **`get_height(x, y)`**: Terrain-Höhe an Weltkoordinaten (Fallback auf 82.025 ohne Daten)
 - **`check_los(x1,y1,z1, x2,y2,z2)`**: Line-of-Sight-Check mit Eye-Height-Offset (+1.7)
 - **`check_walkable(x1,y1,z1, x2,y2,z2)`**: Terrain-Walkability (Steigung/Stufen-Check)
+- **Dynamisches Tile-Loading**: Tiles werden on-demand geladen wenn der Bot neue Gebiete betritt — die KI ist nicht auf vorgeladene Bereiche beschränkt. Geladene Tiles bleiben im Cache (werden nie entladen).
 
 **Exploration-Hierarchie** (echte WoW-Daten):
 ```
@@ -439,10 +441,11 @@ Das Modul besteht aus 2 Dateien ohne eigene Header oder CMakeLists:
 - **run_bot.py ist kaputt**: Enthält mehrere Syntax-Fehler und ist nicht ausführbar
 
 ### Limitierungen
-- Hardcoded Spawn-Position (Northshire Abbey / Elwynn Forest)
+- Hardcoded Spawn-Position (Northshire Abbey / Elwynn Forest) — Sim startet immer dort
 - Hardcoded Bot-Namen (Bota–Bote, plus Autoai im Test-Script)
 - Character muss in der DB existieren bevor `#spawn` funktioniert
 - Python-Environment ist teilweise gescriptet (Override-Logik) — gelernte Policy ist abhängig davon
+- Terrain-Tiles werden on-demand geladen, aber nur für Map 0 (Eastern Kingdoms) — Map-Transfer noch nicht implementiert
 
 ## Workflow
 
