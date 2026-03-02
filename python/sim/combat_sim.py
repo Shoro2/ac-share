@@ -717,49 +717,64 @@ class CombatSimulation:
         if p.gcd_remaining > 0:
             p.gcd_remaining -= 1
 
-        # --- Mob AI ---
+        # --- Mob AI (inlined distance to avoid method-call overhead) ---
+        px, py = p.x, p.y
+        _sqrt = math.sqrt
         for mob in self.mobs:
             if not mob.alive:
-                # Respawn timer
                 if mob.respawn_timer > 0:
                     mob.respawn_timer -= 1
                     if mob.respawn_timer <= 0:
                         self._respawn_mob(mob)
                 continue
 
-            dist = self._dist_to_mob(mob)
+            # Inline distance (saves 2 method calls per mob)
+            _dx = mob.x - px
+            _dy = mob.y - py
+            dist = _sqrt(_dx * _dx + _dy * _dy)
 
-            # Aggro check
-            if not mob.in_combat and dist <= mob.template.detect_range:
-                mob.in_combat = True
-                mob.target_player = True
-                p.in_combat = True
+            if not mob.in_combat:
+                # Aggro check
+                if dist <= mob.template.detect_range:
+                    mob.in_combat = True
+                    mob.target_player = True
+                    p.in_combat = True
+                else:
+                    # Far non-combat mob: only process DoT then skip
+                    if mob.dot_remaining > 0:
+                        mob.dot_remaining -= 1
+                        mob.dot_timer -= 1
+                        if mob.dot_timer <= 0:
+                            self._damage_mob(mob, mob.dot_damage_per_tick)
+                            mob.dot_timer = 6
+                    continue
 
-            if mob.in_combat and mob.target_player:
-                # Leash check
-                spawn_dist = self._dist(mob.x, mob.y, mob.spawn_x, mob.spawn_y)
-                if spawn_dist > self.MOB_LEASH_RANGE:
+            if mob.target_player:
+                # Leash check (inlined)
+                sdx = mob.x - mob.spawn_x
+                sdy = mob.y - mob.spawn_y
+                if _sqrt(sdx * sdx + sdy * sdy) > self.MOB_LEASH_RANGE:
                     self._evade_mob(mob)
                     continue
 
                 # Chase player
                 if dist > 2.0:
-                    dx = p.x - mob.x
-                    dy = p.y - mob.y
                     move = min(self.MOB_SPEED, dist - 1.5)
-                    new_mx = mob.x + (dx / dist) * move
-                    new_my = mob.y + (dy / dist) * move
+                    new_mx = mob.x + (-_dx / dist) * move
+                    new_my = mob.y + (-_dy / dist) * move
                     if self.terrain:
                         new_mz = self.terrain.get_height(new_mx, new_my)
                         if self.terrain.check_walkable(mob.x, mob.y, mob.z, new_mx, new_my, new_mz):
                             mob.x = new_mx
                             mob.y = new_my
                             mob.z = new_mz
-                        # else: mob can't move (blocked), stays in place
                     else:
                         mob.x = new_mx
                         mob.y = new_my
-                    dist = self._dist_to_mob(mob)
+                    # Recompute distance after move
+                    _dx = mob.x - px
+                    _dy = mob.y - py
+                    dist = _sqrt(_dx * _dx + _dy * _dy)
 
                 # Melee attack
                 if dist <= 5.0:
@@ -776,7 +791,7 @@ class CombatSimulation:
                 mob.dot_timer -= 1
                 if mob.dot_timer <= 0:
                     self._damage_mob(mob, mob.dot_damage_per_tick)
-                    mob.dot_timer = 6  # reset to 3s interval
+                    mob.dot_timer = 6
 
         # --- Shield decay ---
         if p.shield_remaining > 0:
@@ -854,10 +869,16 @@ class CombatSimulation:
     def get_nearby_mobs(self, scan_range: Optional[float] = None) -> list[dict]:
         """Get list of nearby mobs (alive and dead, within scan range)."""
         r = scan_range or self.SCAN_RANGE
+        r_sq = r * r  # squared comparison avoids sqrt for far mobs
+        px, py = self.player.x, self.player.y
+        _sqrt = math.sqrt
         result = []
         for mob in self.mobs:
-            d = self._dist_to_mob(mob)
-            if d <= r:
+            dx = mob.x - px
+            dy = mob.y - py
+            dsq = dx * dx + dy * dy
+            if dsq <= r_sq:
+                d = _sqrt(dsq)
                 result.append({
                     "uid": mob.uid,
                     "name": mob.template.name,

@@ -84,6 +84,8 @@ class WoWSimEnv(gym.Env):
         self._ep_maps = 0
         self._prev_dist_to_target = None
         self._prev_target_hp = None
+        self._ep_discoveries = 0
+        self._last_nearby_guids = set()
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -104,6 +106,8 @@ class WoWSimEnv(gym.Env):
         self._ep_maps = 0
         self._prev_dist_to_target = None
         self._prev_target_hp = None
+        self._ep_discoveries = 0
+        self._last_nearby_guids = set()
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
         return obs, {}
@@ -242,13 +246,18 @@ class WoWSimEnv(gym.Env):
         if override_action == 0 and not is_casting_now:
             reward -= 0.03
 
-        # 3. Discovery (new mobs found)
+        # 3. Discovery (new mobs found — capped to prevent walk-farming)
         discovery_reward = 0.0
-        if self.last_state:
-            old_nearby = {m['guid'] for m in self.last_state.get('nearby_mobs', [])}
+        if self.last_state and self._ep_discoveries < 30:
+            old_nearby = self._last_nearby_guids
+            new_count = 0
             for m in state.get('nearby_mobs', []):
                 if m['guid'] not in old_nearby and m['hp'] > 0:
-                    discovery_reward += 0.5
+                    new_count += 1
+                    if new_count >= 2:  # max 2 per step
+                        break
+            self._ep_discoveries += new_count
+            discovery_reward = new_count * 0.5
         reward += discovery_reward * 0.5
 
         # 4. Approach-Reward (closer to target = good, potential-based)
@@ -367,6 +376,7 @@ class WoWSimEnv(gym.Env):
         # Build obs
         obs = self._build_obs(state)
         self.last_state = state
+        self._last_nearby_guids = {m['guid'] for m in state.get('nearby_mobs', [])}
 
         info = {}
         if terminated or truncated:
