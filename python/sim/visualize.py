@@ -14,6 +14,9 @@ Usage:
     # Multiple bots
     python -m sim.visualize --bots 3
 
+    # With 3D terrain and/or full-world creature data
+    python -m sim.visualize --data-root ../Data/ --creature-data data/
+
     # Custom steps and output
     python -m sim.visualize --steps 2000 --output my_run.png
 """
@@ -42,6 +45,7 @@ from sim.wow_sim_env import WoWSimEnv
 
 # ─── Color Palette ───────────────────────────────────────────────────────
 
+# Known mob colors (Northshire hardcoded entries)
 MOB_COLORS = {
     299: "#8B4513",   # Diseased Young Wolf — brown
     6:   "#6A5ACD",   # Kobold Vermin — slate blue
@@ -55,6 +59,13 @@ MOB_MARKERS = {
     69:  "v",   # wolf — triangle down
     257: "D",   # kobold worker — diamond
 }
+
+# Fallback palette for unknown mob entries (creature_db mode)
+_EXTRA_COLORS = [
+    "#2E8B57", "#DC143C", "#1E90FF", "#FF8C00", "#9932CC",
+    "#00CED1", "#FF69B4", "#32CD32", "#BA55D3", "#FF6347",
+]
+_EXTRA_MARKERS = ["o", "s", "v", "D", "^", "p", "h", "*"]
 
 BOT_TRAIL_CMAPS = [
     "cool", "autumn", "spring", "winter", "summer",
@@ -85,14 +96,41 @@ class MapEvent:
 
 
 @dataclass
+class MobSnapshot:
+    """Snapshot of a mob's position and type for visualization."""
+    entry: int
+    name: str
+    x: float
+    y: float
+    level: int
+    alive: bool
+
+
+@dataclass
 class BotRecording:
     name: str
     trail: list = field(default_factory=list)
     events: list = field(default_factory=list)
+    mob_snapshots: list = field(default_factory=list)
     final_level: int = 1
     total_kills: int = 0
     total_xp: int = 0
     total_deaths: int = 0
+
+
+def _snapshot_mobs(sim) -> list:
+    """Take a snapshot of all mobs currently in the simulation."""
+    snaps = []
+    for mob in sim.mobs:
+        snaps.append(MobSnapshot(
+            entry=mob.template.entry,
+            name=mob.template.name,
+            x=mob.spawn_x,
+            y=mob.spawn_y,
+            level=mob.level,
+            alive=mob.alive,
+        ))
+    return snaps
 
 
 # ─── Run Simulation & Record ────────────────────────────────────────────
@@ -104,6 +142,9 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
     obs, _ = env.reset()
     sim = env.sim
     p = sim.player
+
+    # Snapshot mobs after reset (captures all spawned mobs including creature_db)
+    rec.mob_snapshots = _snapshot_mobs(sim)
 
     rec.trail.append(TrailPoint(
         step=0, x=p.x, y=p.y,
@@ -133,6 +174,14 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
                 orientation=p.orientation,
             ))
 
+        # In creature_db mode, new chunks may have loaded — capture new mobs
+        if sim.creature_db and step % 200 == 0:
+            existing_positions = {(s.x, s.y) for s in rec.mob_snapshots}
+            for snap in _snapshot_mobs(sim):
+                if (snap.x, snap.y) not in existing_positions:
+                    rec.mob_snapshots.append(snap)
+                    existing_positions.add((snap.x, snap.y))
+
         # Detect kills
         if sim.kills > prev_kills:
             for _ in range(sim.kills - prev_kills):
@@ -160,6 +209,13 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
         if terminated or truncated:
             break
 
+    # Final mob snapshot (captures any chunks loaded during the episode)
+    if sim.creature_db:
+        existing_positions = {(s.x, s.y) for s in rec.mob_snapshots}
+        for snap in _snapshot_mobs(sim):
+            if (snap.x, snap.y) not in existing_positions:
+                rec.mob_snapshots.append(snap)
+
     rec.final_level = p.level
     rec.total_xp = p.xp
     return rec
@@ -167,27 +223,89 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
 
 # ─── Plotting ────────────────────────────────────────────────────────────
 
-def _get_map_bounds():
-    """Compute map boundaries from all spawn positions + player spawn."""
+def _get_map_bounds(recordings: list):
+    """Compute map boundaries from trails, mob snapshots, and hardcoded spawns."""
     all_x = [-8921.09]
     all_y = [-119.135]
-    for positions in SPAWN_POSITIONS.values():
-        for (x, y) in positions:
-            all_x.append(x)
-            all_y.append(y)
+
+    # Include all trail points
+    for rec in recordings:
+        for pt in rec.trail:
+            all_x.append(pt.x)
+            all_y.append(pt.y)
+        # Include mob snapshot positions
+        for snap in rec.mob_snapshots:
+            all_x.append(snap.x)
+            all_y.append(snap.y)
+
+    # Include hardcoded spawns only if no mob_snapshots anywhere
+    has_snapshots = any(len(rec.mob_snapshots) > 0 for rec in recordings)
+    if not has_snapshots:
+        for positions in SPAWN_POSITIONS.values():
+            for (x, y) in positions:
+                all_x.append(x)
+                all_y.append(y)
+
     margin = 30.0
     return (min(all_x) - margin, max(all_x) + margin,
             min(all_y) - margin, max(all_y) + margin)
 
 
+def _plot_mobs_from_snapshots(ax, all_snapshots: list):
+    """Plot mob positions from snapshots, grouping by entry for legend."""
+    # Group by entry
+    by_entry = {}
+    for snap in all_snapshots:
+        by_entry.setdefault(snap.entry, []).append(snap)
+
+    # Assign colors/markers to unknown entries
+    extra_idx = 0
+    plotted_entries = set()
+
+    for entry, snaps in sorted(by_entry.items()):
+        if entry in plotted_entries:
+            continue
+        plotted_entries.add(entry)
+
+        xs = [s.x for s in snaps]
+        ys = [s.y for s in snaps]
+        name = snaps[0].name
+        levels = sorted(set(s.level for s in snaps))
+        lvl_str = f"L{levels[0]}" if len(levels) == 1 else f"L{levels[0]}-{levels[-1]}"
+
+        color = MOB_COLORS.get(entry, _EXTRA_COLORS[extra_idx % len(_EXTRA_COLORS)])
+        marker = MOB_MARKERS.get(entry, _EXTRA_MARKERS[extra_idx % len(_EXTRA_MARKERS)])
+        if entry not in MOB_COLORS:
+            extra_idx += 1
+
+        ax.scatter(xs, ys, c=color, marker=marker,
+                   s=40, alpha=0.6, edgecolors="white", linewidths=0.3,
+                   label=f"{name} ({lvl_str})",
+                   zorder=2)
+
+
+def _plot_mobs_from_hardcoded(ax):
+    """Plot mob positions from hardcoded SPAWN_POSITIONS."""
+    for entry, positions in SPAWN_POSITIONS.items():
+        tmpl = MOB_TEMPLATES[entry]
+        xs = [p[0] for p in positions]
+        ys = [p[1] for p in positions]
+        ax.scatter(xs, ys,
+                   c=MOB_COLORS[entry],
+                   marker=MOB_MARKERS[entry],
+                   s=40, alpha=0.6, edgecolors="white", linewidths=0.3,
+                   label=f"{tmpl.name} (L{tmpl.min_level}-{tmpl.max_level})",
+                   zorder=2)
+
+
 def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
              output: str = None, show: bool = True):
-    """Plot the full Northshire map with bot trails and events."""
+    """Plot the full map with bot trails and events."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#16213e")
 
-    x_min, x_max, y_min, y_max = _get_map_bounds()
+    x_min, x_max, y_min, y_max = _get_map_bounds(recordings)
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     ax.set_aspect("equal")
@@ -201,17 +319,23 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
     # Grid
     ax.grid(True, alpha=0.15, color="white", linewidth=0.5)
 
-    # ─── Mob Spawns ──────────────────────────────────────────────────
-    for entry, positions in SPAWN_POSITIONS.items():
-        tmpl = MOB_TEMPLATES[entry]
-        xs = [p[0] for p in positions]
-        ys = [p[1] for p in positions]
-        ax.scatter(xs, ys,
-                   c=MOB_COLORS[entry],
-                   marker=MOB_MARKERS[entry],
-                   s=40, alpha=0.6, edgecolors="white", linewidths=0.3,
-                   label=f"{tmpl.name} (L{tmpl.min_level}-{tmpl.max_level})",
-                   zorder=2)
+    # ─── Mob Spawns (from snapshots or hardcoded) ────────────────────
+    all_snapshots = []
+    for rec in recordings:
+        all_snapshots.extend(rec.mob_snapshots)
+
+    if all_snapshots:
+        # Deduplicate by (entry, spawn_x, spawn_y)
+        seen = set()
+        unique = []
+        for snap in all_snapshots:
+            key = (snap.entry, round(snap.x, 1), round(snap.y, 1))
+            if key not in seen:
+                seen.add(key)
+                unique.append(snap)
+        _plot_mobs_from_snapshots(ax, unique)
+    else:
+        _plot_mobs_from_hardcoded(ax)
 
     # ─── Player Spawn ────────────────────────────────────────────────
     ax.scatter([-8921.09], [-119.135],
@@ -351,6 +475,8 @@ def run_live(env: WoWSimEnv, model=None, max_steps: int = 4000,
     sim = env.sim
     p = sim.player
 
+    rec.mob_snapshots = _snapshot_mobs(sim)
+
     rec.trail.append(TrailPoint(
         step=0, x=p.x, y=p.y,
         hp_pct=p.hp / max(1, p.max_hp),
@@ -377,6 +503,14 @@ def run_live(env: WoWSimEnv, model=None, max_steps: int = 4000,
             level=p.level, in_combat=p.in_combat,
             orientation=p.orientation,
         ))
+
+        # In creature_db mode, capture newly loaded chunk mobs
+        if sim.creature_db and step % 50 == 0:
+            existing_positions = {(s.x, s.y) for s in rec.mob_snapshots}
+            for snap in _snapshot_mobs(sim):
+                if (snap.x, snap.y) not in existing_positions:
+                    rec.mob_snapshots.append(snap)
+                    existing_positions.add((snap.x, snap.y))
 
         if sim.kills > prev_kills:
             for _ in range(sim.kills - prev_kills):
@@ -423,11 +557,14 @@ def run_live(env: WoWSimEnv, model=None, max_steps: int = 4000,
 
 def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
                        model=None, seed: int = 42,
-                       output: str = None):
+                       output: str = None,
+                       data_root: str = None,
+                       creature_csv_dir: str = None):
     """Run multiple episodes and overlay all routes on one map."""
     recordings = []
     for i in range(n_episodes):
-        env = WoWSimEnv(bot_name=f"Bot{i}", seed=seed + i * 1000)
+        env = WoWSimEnv(bot_name=f"Bot{i}", seed=seed + i * 1000,
+                        data_root=data_root, creature_csv_dir=creature_csv_dir)
         rec = run_episode(env, model=model, max_steps=max_steps)
         recordings.append(rec)
         print(f"  Episode {i}: Lv{rec.final_level}, {rec.total_kills} kills, "
@@ -463,6 +600,11 @@ def main():
                         help="Random seed (default: 42)")
     parser.add_argument("--frames-dir", type=str, default=None,
                         help="Output directory for live mode frames")
+    parser.add_argument("--data-root", type=str, default=None,
+                        help="Path to WoW Data/ directory (maps/, vmaps/) for 3D terrain")
+    parser.add_argument("--creature-data", type=str, default=None,
+                        help="Path to directory with creature.csv and creature_template.csv "
+                             "(enables full-world creature spawning via spatial chunks)")
     args = parser.parse_args()
 
     # Load model if specified
@@ -472,8 +614,15 @@ def main():
         model = PPO.load(args.model)
         print(f"Loaded model: {args.model}")
 
+    if args.data_root:
+        print(f"3D terrain enabled: {args.data_root}")
+    if args.creature_data:
+        print(f"Full-world creatures enabled: {args.creature_data}")
+
     if args.live:
-        env = WoWSimEnv(bot_name="LiveBot", seed=args.seed)
+        env = WoWSimEnv(bot_name="LiveBot", seed=args.seed,
+                        data_root=args.data_root,
+                        creature_csv_dir=args.creature_data)
         run_live(env, model=model, max_steps=args.steps,
                  refresh_every=args.refresh, output_dir=args.frames_dir)
         env.close()
@@ -484,6 +633,8 @@ def main():
             model=model,
             seed=args.seed,
             output=args.output,
+            data_root=args.data_root,
+            creature_csv_dir=args.creature_data,
         )
 
 
