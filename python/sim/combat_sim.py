@@ -360,21 +360,33 @@ class CombatSimulation:
         """Track area/zone/map discovery based on player position.
 
         Uses real WoW area IDs from AreaTable.dbc if env3d is available,
-        falls back to grid-based cells otherwise.
+        falls back to grid-based cells otherwise (also for tiles not pre-loaded).
         """
         p = self.player
 
         if self.env3d and self.env3d.area_table:
-            # Real WoW area/zone/map lookup
             area_id = self.env3d.get_area_id(self.map_id, p.x, p.y)
             zone_id = self.env3d.get_zone_id(self.map_id, p.x, p.y)
 
-            if area_id > 0 and area_id not in self.visited_areas:
-                self.visited_areas.add(area_id)
-                self._new_areas += 1
-            if zone_id > 0 and zone_id not in self.visited_zones:
-                self.visited_zones.add(zone_id)
-                self._new_zones += 1
+            if area_id > 0:
+                # Real WoW area/zone from pre-loaded tiles
+                if area_id not in self.visited_areas:
+                    self.visited_areas.add(area_id)
+                    self._new_areas += 1
+                if zone_id > 0 and zone_id not in self.visited_zones:
+                    self.visited_zones.add(zone_id)
+                    self._new_zones += 1
+            else:
+                # Outside pre-loaded tiles — grid-based fallback
+                area_key = (int(p.x // self.AREA_CELL_SIZE), int(p.y // self.AREA_CELL_SIZE))
+                zone_key = (int(p.x // self.ZONE_CELL_SIZE), int(p.y // self.ZONE_CELL_SIZE))
+                if area_key not in self.visited_areas:
+                    self.visited_areas.add(area_key)
+                    self._new_areas += 1
+                if zone_key not in self.visited_zones:
+                    self.visited_zones.add(zone_key)
+                    self._new_zones += 1
+
             if self.map_id not in self.visited_maps:
                 self.visited_maps.add(self.map_id)
                 self._new_maps += 1

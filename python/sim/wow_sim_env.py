@@ -250,7 +250,7 @@ class WoWSimEnv(gym.Env):
 
         # 3. Discovery (new mobs found — capped to prevent walk-farming)
         discovery_reward = 0.0
-        if self.last_state and self._ep_discoveries < 30:
+        if self.last_state and self._ep_discoveries < 50:
             old_nearby = self._last_nearby_guids
             new_count = 0
             for m in state.get('nearby_mobs', []):
@@ -313,18 +313,18 @@ class WoWSimEnv(gym.Env):
         if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
             reward += 2.0
 
-        # 11b. Exploration (new area/zone/map discovered)
+        # 11b. Exploration (new area/zone/map discovered — strong incentive)
         new_areas = events.get("new_areas", 0)
         new_zones = events.get("new_zones", 0)
         new_maps = events.get("new_maps", 0)
         if new_areas > 0:
-            reward += new_areas * 0.5
+            reward += new_areas * 1.0
             self._ep_areas += new_areas
         if new_zones > 0:
-            reward += new_zones * 2.0
+            reward += new_zones * 3.0
             self._ep_zones += new_zones
         if new_maps > 0:
-            reward += new_maps * 5.0
+            reward += new_maps * 10.0
             self._ep_maps += new_maps
 
         # 12. Action-specific rewards
@@ -358,14 +358,14 @@ class WoWSimEnv(gym.Env):
                 if abs(angle_norm) > 0.2 and override_action in [2, 3]:
                     reward += 0.4
 
-        # 14. Terminal: Death
+        # 14. Terminal: Death (heavy penalty — bot must learn to avoid dying)
         terminated = False
         if self.sim.player.hp <= 0:
-            reward = -5.0
+            reward = -30.0
             terminated = True
         # 15. Terminal: OOM
         elif mana_pct < 0.05:
-            reward -= 2.0
+            reward = -15.0
             terminated = True
 
         truncated = self._step_count >= self._max_steps
