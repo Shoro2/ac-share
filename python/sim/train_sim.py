@@ -91,6 +91,9 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_zones_explored", stats.get("zones_explored", 0), step)
                 self._writer.add_scalar("gameplay/ep_maps_explored", stats.get("maps_explored", 0), step)
 
+                # Exploration reward breakdown
+                self._writer.add_scalar("reward_breakdown/explore", stats.get("rw_explore", 0), step)
+
                 self._writer.add_scalar("gameplay/total_episodes", self._episode_count, step)
                 self._writer.add_scalar("gameplay/total_kills", self._total_kills, step)
                 self._writer.add_scalar("gameplay/total_deaths", self._total_deaths, step)
@@ -107,10 +110,11 @@ class GameplayMetricsCallback(BaseCallback):
                 areas = stats.get('areas_explored', 0)
                 zones = stats.get('zones_explored', 0)
                 maps = stats.get('maps_explored', 0)
+                dmg = stats.get('damage_dealt', 0)
                 print(f"  [Episode {self._episode_count}] "
                       f"reward={stats['reward']:.1f} kills={stats['kills']} "
                       f"xp={stats['xp']} deaths={stats['death']} "
-                      f"areas={areas} zones={zones} maps={maps} "
+                      f"dmg={dmg} areas={areas} "
                       f"len={stats['length']}")
 
         return True
