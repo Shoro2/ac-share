@@ -1,24 +1,28 @@
 """
-WoW Sim Map Visualization — shows bot routes, kills, level-ups on the Northshire map.
+WoW Sim Map Visualization — reads episode logs and renders bot routes.
+
+The visualization is fully decoupled from the simulation.  Training
+generates JSONL log files (via --log-dir), and this script reads them
+to produce map images.
 
 Usage:
-    # Full route visualization (runs one episode, saves PNG)
-    python -m sim.visualize
+    # Render from training logs (primary mode)
+    python -m sim.visualize --log-dir logs/sim_episodes/
 
-    # Live mode: refreshes every N steps
-    python -m sim.visualize --live --refresh 50
+    # Show only the last 3 episodes per bot
+    python -m sim.visualize --log-dir logs/sim_episodes/ --last 3
 
-    # Use a trained model instead of random policy
-    python -m sim.visualize --model models/PPO/wow_bot_sim_v1.zip
+    # Show only a specific bot
+    python -m sim.visualize --log-dir logs/sim_episodes/ --bot SimBot0
 
-    # Multiple bots
-    python -m sim.visualize --bots 3
+    # Fallback: run simulation directly (quick ad-hoc test)
+    python -m sim.visualize --run --steps 2000 --bots 3
 
-    # With 3D terrain and/or full-world creature data
-    python -m sim.visualize --data-root ../Data/ --creature-data data/
+    # With trained model (--run mode)
+    python -m sim.visualize --run --model models/PPO/wow_bot_sim_v1.zip
 
-    # Custom steps and output
-    python -m sim.visualize --steps 2000 --output my_run.png
+    # Custom output path
+    python -m sim.visualize --log-dir logs/sim_episodes/ --output my_map.png
 """
 
 import os
@@ -40,7 +44,6 @@ if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
 from sim.combat_sim import SPAWN_POSITIONS, MOB_TEMPLATES
-from sim.wow_sim_env import WoWSimEnv
 
 
 # ─── Color Palette ───────────────────────────────────────────────────────
@@ -72,8 +75,24 @@ BOT_TRAIL_CMAPS = [
     "Wistia", "copper", "YlGn",
 ]
 
+# Spawn point (WoW coordinates)
+SPAWN_X, SPAWN_Y = -8921.09, -119.135
 
-# ─── Data Recording ─────────────────────────────────────────────────────
+
+# ─── Coordinate Rotation ────────────────────────────────────────────────
+# Rotate 90° counter-clockwise: (x, y) → (-y, x)
+
+def _rot_xy(x, y):
+    """Rotate a single WoW (x, y) coordinate 90° CCW for display."""
+    return (-y, x)
+
+
+def _rot_xs_ys(xs, ys):
+    """Rotate lists of WoW coordinates 90° CCW for display."""
+    return ([-y for y in ys], list(xs))
+
+
+# ─── Data structures ────────────────────────────────────────────────────
 
 @dataclass
 class TrailPoint:
@@ -97,13 +116,12 @@ class MapEvent:
 
 @dataclass
 class MobSnapshot:
-    """Snapshot of a mob's position and type for visualization."""
     entry: int
     name: str
     x: float
     y: float
     level: int
-    alive: bool
+    alive: bool = True
 
 
 @dataclass
@@ -117,6 +135,61 @@ class BotRecording:
     total_xp: int = 0
     total_deaths: int = 0
 
+
+# ─── Load from log files ────────────────────────────────────────────────
+
+def load_recordings_from_logs(log_dir: str, bot_name: str = None,
+                              last_n: int = None) -> list:
+    """Load BotRecording objects from JSONL episode logs."""
+    from sim.sim_logger import load_episodes
+    episodes = load_episodes(log_dir, bot_name=bot_name, last_n=last_n)
+
+    recordings = []
+    for ep in episodes:
+        rec = BotRecording(name=ep.get("bot", "?"))
+        rec.final_level = ep.get("final_level", 1)
+        rec.total_kills = ep.get("kills", 0)
+        rec.total_xp = ep.get("xp", 0)
+        rec.total_deaths = ep.get("deaths", 0)
+
+        # Trail: each entry is [step, x, y, hp_pct, level, in_combat, orientation]
+        for pt in ep.get("trail", []):
+            rec.trail.append(TrailPoint(
+                step=int(pt[0]),
+                x=float(pt[1]),
+                y=float(pt[2]),
+                hp_pct=float(pt[3]),
+                level=int(pt[4]),
+                in_combat=bool(pt[5]),
+                orientation=float(pt[6]),
+            ))
+
+        # Events
+        for ev in ep.get("events", []):
+            rec.events.append(MapEvent(
+                step=ev["s"],
+                x=ev["x"],
+                y=ev["y"],
+                kind=ev["k"],
+                label=ev.get("l", ""),
+            ))
+
+        # Mobs
+        for m in ep.get("mobs", []):
+            rec.mob_snapshots.append(MobSnapshot(
+                entry=m["e"],
+                name=m["n"],
+                x=m["x"],
+                y=m["y"],
+                level=m["lv"],
+            ))
+
+        recordings.append(rec)
+
+    return recordings
+
+
+# ─── Snapshot mobs from live sim ─────────────────────────────────────────
 
 def _snapshot_mobs(sim) -> list:
     """Take a snapshot of all mobs currently in the simulation."""
@@ -133,12 +206,11 @@ def _snapshot_mobs(sim) -> list:
     return snaps
 
 
-# ─── Run Simulation & Record ────────────────────────────────────────────
+# ─── Run Simulation & Record (--run fallback mode) ───────────────────────
 
-def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
+def run_episode(env, model=None, max_steps: int = 4000,
                 record_interval: int = 1) -> BotRecording:
     """Run one episode, recording trail and events."""
-    # Override env's internal episode limit so --steps actually works
     env._max_steps = max_steps
 
     rec = BotRecording(name=env.bot_name)
@@ -146,7 +218,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
     sim = env.sim
     p = sim.player
 
-    # Snapshot mobs after reset (captures all spawned mobs including creature_db)
     rec.mob_snapshots = _snapshot_mobs(sim)
 
     rec.trail.append(TrailPoint(
@@ -168,7 +239,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
         obs, reward, terminated, truncated, info = env.step(action)
         p = sim.player
 
-        # Record trail point
         if step % record_interval == 0:
             rec.trail.append(TrailPoint(
                 step=step, x=p.x, y=p.y,
@@ -177,7 +247,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
                 orientation=p.orientation,
             ))
 
-        # In creature_db mode, new chunks may have loaded — capture new mobs
         if sim.creature_db and step % 200 == 0:
             existing_positions = {(s.x, s.y) for s in rec.mob_snapshots}
             for snap in _snapshot_mobs(sim):
@@ -185,7 +254,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
                     rec.mob_snapshots.append(snap)
                     existing_positions.add((snap.x, snap.y))
 
-        # Detect kills
         if sim.kills > prev_kills:
             for _ in range(sim.kills - prev_kills):
                 rec.events.append(MapEvent(
@@ -194,7 +262,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
             rec.total_kills += sim.kills - prev_kills
             prev_kills = sim.kills
 
-        # Detect level-ups
         if p.level > prev_level:
             rec.events.append(MapEvent(
                 step=step, x=p.x, y=p.y, kind="levelup",
@@ -202,7 +269,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
             ))
             prev_level = p.level
 
-        # Detect death
         if terminated and p.hp <= 0:
             rec.events.append(MapEvent(
                 step=step, x=p.x, y=p.y, kind="death",
@@ -212,7 +278,6 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
         if terminated or truncated:
             break
 
-    # Final mob snapshot (captures any chunks loaded during the episode)
     if sim.creature_db:
         existing_positions = {(s.x, s.y) for s in rec.mob_snapshots}
         for snap in _snapshot_mobs(sim):
@@ -227,27 +292,31 @@ def run_episode(env: WoWSimEnv, model=None, max_steps: int = 4000,
 # ─── Plotting ────────────────────────────────────────────────────────────
 
 def _get_map_bounds(recordings: list):
-    """Compute map boundaries from trails, mob snapshots, and hardcoded spawns."""
-    all_x = [-8921.09]
-    all_y = [-119.135]
+    """Compute map boundaries from trails, mob snapshots, and hardcoded spawns.
 
-    # Include all trail points
+    Returns bounds in ROTATED coordinates (display space).
+    """
+    sx, sy = _rot_xy(SPAWN_X, SPAWN_Y)
+    all_x = [sx]
+    all_y = [sy]
+
     for rec in recordings:
         for pt in rec.trail:
-            all_x.append(pt.x)
-            all_y.append(pt.y)
-        # Include mob snapshot positions
+            rx, ry = _rot_xy(pt.x, pt.y)
+            all_x.append(rx)
+            all_y.append(ry)
         for snap in rec.mob_snapshots:
-            all_x.append(snap.x)
-            all_y.append(snap.y)
+            rx, ry = _rot_xy(snap.x, snap.y)
+            all_x.append(rx)
+            all_y.append(ry)
 
-    # Include hardcoded spawns only if no mob_snapshots anywhere
     has_snapshots = any(len(rec.mob_snapshots) > 0 for rec in recordings)
     if not has_snapshots:
         for positions in SPAWN_POSITIONS.values():
             for (x, y) in positions:
-                all_x.append(x)
-                all_y.append(y)
+                rx, ry = _rot_xy(x, y)
+                all_x.append(rx)
+                all_y.append(ry)
 
     margin = 30.0
     return (min(all_x) - margin, max(all_x) + margin,
@@ -256,12 +325,10 @@ def _get_map_bounds(recordings: list):
 
 def _plot_mobs_from_snapshots(ax, all_snapshots: list):
     """Plot mob positions from snapshots, grouping by entry for legend."""
-    # Group by entry
     by_entry = {}
     for snap in all_snapshots:
         by_entry.setdefault(snap.entry, []).append(snap)
 
-    # Assign colors/markers to unknown entries
     extra_idx = 0
     plotted_entries = set()
 
@@ -270,8 +337,9 @@ def _plot_mobs_from_snapshots(ax, all_snapshots: list):
             continue
         plotted_entries.add(entry)
 
-        xs = [s.x for s in snaps]
-        ys = [s.y for s in snaps]
+        # Rotate mob coordinates
+        plot_xs, plot_ys = _rot_xs_ys(
+            [s.x for s in snaps], [s.y for s in snaps])
         name = snaps[0].name
         levels = sorted(set(s.level for s in snaps))
         lvl_str = f"L{levels[0]}" if len(levels) == 1 else f"L{levels[0]}-{levels[-1]}"
@@ -281,7 +349,7 @@ def _plot_mobs_from_snapshots(ax, all_snapshots: list):
         if entry not in MOB_COLORS:
             extra_idx += 1
 
-        ax.scatter(xs, ys, c=color, marker=marker,
+        ax.scatter(plot_xs, plot_ys, c=color, marker=marker,
                    s=40, alpha=0.6, edgecolors="white", linewidths=0.3,
                    label=f"{name} ({lvl_str})",
                    zorder=2)
@@ -291,9 +359,9 @@ def _plot_mobs_from_hardcoded(ax):
     """Plot mob positions from hardcoded SPAWN_POSITIONS."""
     for entry, positions in SPAWN_POSITIONS.items():
         tmpl = MOB_TEMPLATES[entry]
-        xs = [p[0] for p in positions]
-        ys = [p[1] for p in positions]
-        ax.scatter(xs, ys,
+        plot_xs, plot_ys = _rot_xs_ys(
+            [p[0] for p in positions], [p[1] for p in positions])
+        ax.scatter(plot_xs, plot_ys,
                    c=MOB_COLORS[entry],
                    marker=MOB_MARKERS[entry],
                    s=40, alpha=0.6, edgecolors="white", linewidths=0.3,
@@ -303,7 +371,7 @@ def _plot_mobs_from_hardcoded(ax):
 
 def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
              output: str = None, show: bool = True):
-    """Plot the full map with bot trails and events."""
+    """Plot the full map with bot trails and events (rotated 90° CCW)."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
     fig.set_facecolor("#1a1a2e")
     ax.set_facecolor("#16213e")
@@ -312,14 +380,13 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     ax.set_aspect("equal")
-    ax.set_xlabel("X (West → East)", color="white", fontsize=10)
-    ax.set_ylabel("Y (South → North)", color="white", fontsize=10)
+    ax.set_xlabel("Y (East \u2192 West)", color="white", fontsize=10)
+    ax.set_ylabel("X (South \u2192 North)", color="white", fontsize=10)
     ax.set_title(title, color="white", fontsize=14, fontweight="bold", pad=12)
     ax.tick_params(colors="white", labelsize=8)
     for spine in ax.spines.values():
         spine.set_color("#444")
 
-    # Grid
     ax.grid(True, alpha=0.15, color="white", linewidth=0.5)
 
     # ─── Mob Spawns (from snapshots or hardcoded) ────────────────────
@@ -328,7 +395,6 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
         all_snapshots.extend(rec.mob_snapshots)
 
     if all_snapshots:
-        # Deduplicate by (entry, spawn_x, spawn_y)
         seen = set()
         unique = []
         for snap in all_snapshots:
@@ -341,7 +407,8 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
         _plot_mobs_from_hardcoded(ax)
 
     # ─── Player Spawn ────────────────────────────────────────────────
-    ax.scatter([-8921.09], [-119.135],
+    sp_rx, sp_ry = _rot_xy(SPAWN_X, SPAWN_Y)
+    ax.scatter([sp_rx], [sp_ry],
                c="#FFD700", marker="*", s=200, edgecolors="white",
                linewidths=1, zorder=10, label="Spawn Point")
 
@@ -353,12 +420,13 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
         cmap_name = BOT_TRAIL_CMAPS[i % len(BOT_TRAIL_CMAPS)]
         cmap = plt.get_cmap(cmap_name)
 
-        xs = [pt.x for pt in rec.trail]
-        ys = [pt.y for pt in rec.trail]
+        # Rotate trail coordinates
+        plot_xs, plot_ys = _rot_xs_ys(
+            [pt.x for pt in rec.trail], [pt.y for pt in rec.trail])
         steps = [pt.step for pt in rec.trail]
 
         # Draw trail as colored line segments (color = time progression)
-        points = np.array([xs, ys]).T.reshape(-1, 1, 2)
+        points = np.array([plot_xs, plot_ys]).T.reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         norm = Normalize(vmin=0, vmax=max(steps) if steps else 1)
         lc = LineCollection(segments, cmap=cmap, norm=norm,
@@ -367,19 +435,20 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
         ax.add_collection(lc)
 
         # Start marker
-        ax.scatter([xs[0]], [ys[0]], c="lime", marker="o", s=60,
+        ax.scatter([plot_xs[0]], [plot_ys[0]], c="lime", marker="o", s=60,
                    edgecolors="white", linewidths=1, zorder=8)
 
         # End marker with orientation arrow
         last_pt = rec.trail[-1]
         end_color = "red" if rec.total_deaths > 0 else "cyan"
-        ax.scatter([xs[-1]], [ys[-1]], c=end_color,
+        ax.scatter([plot_xs[-1]], [plot_ys[-1]], c=end_color,
                    marker="o", s=60, edgecolors="white", linewidths=1, zorder=8)
-        # Direction arrow
+        # Direction arrow (also rotated 90° CCW: angle + π/2)
         arrow_len = 8.0
-        ax.annotate("", xy=(xs[-1] + math.cos(last_pt.orientation) * arrow_len,
-                            ys[-1] + math.sin(last_pt.orientation) * arrow_len),
-                     xytext=(xs[-1], ys[-1]),
+        rot_angle = last_pt.orientation + math.pi / 2
+        ax.annotate("", xy=(plot_xs[-1] + math.cos(rot_angle) * arrow_len,
+                            plot_ys[-1] + math.sin(rot_angle) * arrow_len),
+                     xytext=(plot_xs[-1], plot_ys[-1]),
                      arrowprops=dict(arrowstyle="->", color=end_color,
                                      lw=2.0, mutation_scale=15),
                      zorder=9)
@@ -388,36 +457,36 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
         marker_interval = max(1, len(rec.trail) // 8)
         for j in range(marker_interval, len(rec.trail), marker_interval):
             pt = rec.trail[j]
-            ax.plot(pt.x, pt.y, ".", color="white", markersize=4, zorder=7)
-            ax.annotate(str(pt.step), (pt.x, pt.y),
+            rx, ry = _rot_xy(pt.x, pt.y)
+            ax.plot(rx, ry, ".", color="white", markersize=4, zorder=7)
+            ax.annotate(str(pt.step), (rx, ry),
                         textcoords="offset points", xytext=(4, 4),
                         fontsize=6, color="white", alpha=0.7, zorder=7)
 
         # ─── Events ─────────────────────────────────────────────────
         for ev in rec.events:
+            ex, ey = _rot_xy(ev.x, ev.y)
             if ev.kind == "kill":
-                ax.scatter([ev.x], [ev.y], c="#FF4444", marker="x", s=35,
+                ax.scatter([ex], [ey], c="#FF4444", marker="x", s=35,
                            linewidths=1.5, zorder=7, alpha=0.8)
             elif ev.kind == "levelup":
-                ax.scatter([ev.x], [ev.y], c="#FFD700", marker="*", s=150,
+                ax.scatter([ex], [ey], c="#FFD700", marker="*", s=150,
                            edgecolors="black", linewidths=0.8, zorder=9)
-                ax.annotate(ev.label, (ev.x, ev.y),
+                ax.annotate(ev.label, (ex, ey),
                             textcoords="offset points", xytext=(6, 6),
                             fontsize=9, fontweight="bold", color="#FFD700",
                             zorder=9)
             elif ev.kind == "death":
-                ax.scatter([ev.x], [ev.y], c="red", marker="X", s=120,
+                ax.scatter([ex], [ey], c="red", marker="X", s=120,
                            edgecolors="white", linewidths=1, zorder=9)
-                ax.annotate("DEATH", (ev.x, ev.y),
+                ax.annotate("DEATH", (ex, ey),
                             textcoords="offset points", xytext=(6, -10),
                             fontsize=8, fontweight="bold", color="red",
                             zorder=9)
 
     # ─── Legend ──────────────────────────────────────────────────────
-    # Build custom legend
     handles, labels = ax.get_legend_handles_labels()
 
-    # Add event markers to legend
     handles.append(plt.Line2D([0], [0], marker="x", color="#FF4444",
                               linestyle="None", markersize=8, label="Kill"))
     handles.append(plt.Line2D([0], [0], marker="*", color="#FFD700",
@@ -425,7 +494,6 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
     handles.append(plt.Line2D([0], [0], marker="X", color="red",
                               linestyle="None", markersize=10, label="Death"))
 
-    # Stats text box
     stats_lines = []
     for rec in recordings:
         line = (f"{rec.name}: {rec.total_kills} kills, "
@@ -439,7 +507,6 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
                        labelcolor="white", framealpha=0.9)
     legend.set_zorder(20)
 
-    # Stats box in lower-right
     if stats_lines:
         stats_text = "\n".join(stats_lines)
         trail_len = len(recordings[0].trail) if recordings else 0
@@ -464,102 +531,7 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
     return fig
 
 
-# ─── Live Mode ───────────────────────────────────────────────────────────
-
-def run_live(env: WoWSimEnv, model=None, max_steps: int = 4000,
-             refresh_every: int = 50, output_dir: str = None):
-    """Run simulation with periodic map snapshots saved to disk."""
-    if output_dir is None:
-        output_dir = os.path.join(PARENT_DIR, "sim_frames")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Override env's internal episode limit so --steps actually works
-    env._max_steps = max_steps
-
-    rec = BotRecording(name=env.bot_name)
-    obs, _ = env.reset()
-    sim = env.sim
-    p = sim.player
-
-    rec.mob_snapshots = _snapshot_mobs(sim)
-
-    rec.trail.append(TrailPoint(
-        step=0, x=p.x, y=p.y,
-        hp_pct=p.hp / max(1, p.max_hp),
-        level=p.level, in_combat=p.in_combat,
-        orientation=p.orientation,
-    ))
-
-    prev_kills = 0
-    prev_level = p.level
-    frame_num = 0
-
-    for step in range(1, max_steps + 1):
-        if model is not None:
-            action, _ = model.predict(obs, deterministic=True)
-        else:
-            action = env.action_space.sample()
-
-        obs, reward, terminated, truncated, info = env.step(action)
-        p = sim.player
-
-        rec.trail.append(TrailPoint(
-            step=step, x=p.x, y=p.y,
-            hp_pct=p.hp / max(1, p.max_hp),
-            level=p.level, in_combat=p.in_combat,
-            orientation=p.orientation,
-        ))
-
-        # In creature_db mode, capture newly loaded chunk mobs
-        if sim.creature_db and step % 50 == 0:
-            existing_positions = {(s.x, s.y) for s in rec.mob_snapshots}
-            for snap in _snapshot_mobs(sim):
-                if (snap.x, snap.y) not in existing_positions:
-                    rec.mob_snapshots.append(snap)
-                    existing_positions.add((snap.x, snap.y))
-
-        if sim.kills > prev_kills:
-            for _ in range(sim.kills - prev_kills):
-                rec.events.append(MapEvent(step=step, x=p.x, y=p.y, kind="kill"))
-            rec.total_kills += sim.kills - prev_kills
-            prev_kills = sim.kills
-
-        if p.level > prev_level:
-            rec.events.append(MapEvent(
-                step=step, x=p.x, y=p.y, kind="levelup",
-                label=f"Lv{p.level}",
-            ))
-            prev_level = p.level
-
-        if terminated and p.hp <= 0:
-            rec.events.append(MapEvent(step=step, x=p.x, y=p.y, kind="death"))
-            rec.total_deaths += 1
-
-        # Save frame
-        if step % refresh_every == 0 or terminated or truncated:
-            rec.final_level = p.level
-            rec.total_xp = p.xp
-            frame_path = os.path.join(output_dir, f"frame_{frame_num:04d}.png")
-            plot_map(
-                [rec],
-                title=f"Step {step} — Lv{p.level} | {rec.total_kills} kills | HP {p.hp}/{p.max_hp}",
-                output=frame_path,
-                show=False,
-            )
-            frame_num += 1
-            print(f"  Frame {frame_num}: step={step}, kills={rec.total_kills}, "
-                  f"level={p.level}")
-
-        if terminated or truncated:
-            break
-
-    print(f"\nDone! {frame_num} frames saved to {output_dir}/")
-    print(f"Final: Lv{rec.final_level}, {rec.total_kills} kills, "
-          f"{rec.total_xp} XP, {rec.total_deaths} deaths")
-    return rec
-
-
-# ─── Multi-Episode Overlay ───────────────────────────────────────────────
+# ─── Multi-Episode (--run fallback) ─────────────────────────────────────
 
 def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
                        model=None, seed: int = 42,
@@ -568,6 +540,8 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
                        creature_csv_dir: str = None,
                        show: bool = False):
     """Run multiple episodes and overlay all routes on one map."""
+    from sim.wow_sim_env import WoWSimEnv
+
     output = output or os.path.join(PARENT_DIR, "sim_map.png")
     print(f">>> Running {n_episodes} episodes, {max_steps} steps each <<<")
     print(f">>> Output: {os.path.abspath(output)} <<<")
@@ -586,7 +560,7 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
 
     print(f">>> All episodes done. Rendering map... <<<")
     plot_map(recordings,
-             title=f"WoW Sim — {n_episodes} Episodes Overlay",
+             title=f"WoW Sim \u2014 {n_episodes} Episodes Overlay",
              output=output, show=show)
     return recordings
 
@@ -595,30 +569,39 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize WoW Sim bot routes on the Northshire map")
-    parser.add_argument("--live", action="store_true",
-                        help="Live mode: save frame snapshots every --refresh steps")
-    parser.add_argument("--refresh", type=int, default=50,
-                        help="Steps between frame saves in live mode (default: 50)")
+        description="Visualize WoW Sim bot routes on the Northshire map.\n"
+                    "Primary mode: reads from log files (--log-dir).\n"
+                    "Fallback mode: runs sim directly (--run).")
+
+    # Primary mode: read from logs
+    parser.add_argument("--log-dir", type=str, default=None,
+                        help="Path to episode log directory (JSONL files)")
+    parser.add_argument("--bot", type=str, default=None,
+                        help="Show only this bot's episodes (default: all)")
+    parser.add_argument("--last", type=int, default=None,
+                        help="Show only the last N episodes per bot")
+
+    # Fallback mode: run sim directly
+    parser.add_argument("--run", action="store_true",
+                        help="Run simulation directly instead of reading logs")
     parser.add_argument("--steps", type=int, default=4000,
-                        help="Max steps per episode (default: 4000)")
+                        help="Max steps per episode (--run mode, default: 4000)")
     parser.add_argument("--bots", type=int, default=5,
-                        help="Number of episodes/bots to overlay (default: 5)")
+                        help="Number of episodes/bots (--run mode, default: 5)")
     parser.add_argument("--model", type=str, default=None,
-                        help="Path to trained model (.zip) for policy")
-    parser.add_argument("--output", type=str, default=None,
-                        help="Output file path (default: python/sim_map.png)")
+                        help="Path to trained model (.zip)")
+    parser.add_argument("--data-root", type=str, default=None,
+                        help="Path to WoW Data/ directory for 3D terrain")
+    parser.add_argument("--creature-data", type=str, default=None,
+                        help="Path to creature CSV directory")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
-    parser.add_argument("--frames-dir", type=str, default=None,
-                        help="Output directory for live mode frames")
-    parser.add_argument("--data-root", type=str, default=None,
-                        help="Path to WoW Data/ directory (maps/, vmaps/) for 3D terrain")
-    parser.add_argument("--creature-data", type=str, default=None,
-                        help="Path to directory with creature.csv and creature_template.csv "
-                             "(enables full-world creature spawning via spatial chunks)")
+
+    # Shared options
+    parser.add_argument("--output", type=str, default=None,
+                        help="Output file path (default: python/sim_map.png)")
     parser.add_argument("--show", action="store_true",
-                        help="Open the map in a window after rendering (requires display)")
+                        help="Open the map in a window after rendering")
     args = parser.parse_args()
 
     # Load model if specified
@@ -628,19 +611,40 @@ def main():
         model = PPO.load(args.model)
         print(f"Loaded model: {args.model}")
 
-    if args.data_root:
-        print(f"3D terrain enabled: {args.data_root}")
-    if args.creature_data:
-        print(f"Full-world creatures enabled: {args.creature_data}")
+    if args.log_dir:
+        # ─── Primary mode: read from log files ──────────────────────
+        print(f">>> Loading episodes from: {args.log_dir} <<<")
+        if args.bot:
+            print(f">>> Filtering bot: {args.bot} <<<")
+        if args.last:
+            print(f">>> Last {args.last} episodes per bot <<<")
 
-    if args.live:
-        env = WoWSimEnv(bot_name="LiveBot", seed=args.seed,
-                        data_root=args.data_root,
-                        creature_csv_dir=args.creature_data)
-        run_live(env, model=model, max_steps=args.steps,
-                 refresh_every=args.refresh, output_dir=args.frames_dir)
-        env.close()
-    else:
+        recordings = load_recordings_from_logs(
+            args.log_dir, bot_name=args.bot, last_n=args.last)
+
+        if not recordings:
+            print("No episodes found! Make sure training was run with --log-dir.")
+            sys.exit(1)
+
+        print(f">>> Loaded {len(recordings)} episodes <<<")
+        for rec in recordings:
+            print(f"  {rec.name}: {rec.total_kills} kills, "
+                  f"Lv{rec.final_level}, {rec.total_xp} XP, "
+                  f"{len(rec.trail)} trail points")
+
+        output = args.output or os.path.join(PARENT_DIR, "sim_map.png")
+        n_eps = len(recordings)
+        plot_map(recordings,
+                 title=f"WoW Sim \u2014 {n_eps} Episodes from Logs",
+                 output=output, show=args.show)
+
+    elif args.run:
+        # ─── Fallback mode: run simulation directly ─────────────────
+        if args.data_root:
+            print(f"3D terrain enabled: {args.data_root}")
+        if args.creature_data:
+            print(f"Full-world creatures enabled: {args.creature_data}")
+
         run_multi_episodes(
             n_episodes=args.bots,
             max_steps=args.steps,
@@ -651,6 +655,13 @@ def main():
             creature_csv_dir=args.creature_data,
             show=args.show,
         )
+
+    else:
+        print("Specify --log-dir to render from logs, or --run to run simulation.")
+        print("Examples:")
+        print("  python -m sim.visualize --log-dir logs/sim_episodes/")
+        print("  python -m sim.visualize --run --steps 2000 --bots 3")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

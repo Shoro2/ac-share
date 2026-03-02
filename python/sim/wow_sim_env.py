@@ -32,7 +32,8 @@ class WoWSimEnv(gym.Env):
 
     def __init__(self, bot_name: str = "SimBot", num_mobs: int = None,
                  seed: int = None, data_root: str = None,
-                 creature_csv_dir: str = None):
+                 creature_csv_dir: str = None, log_dir: str = None,
+                 log_interval: int = 1):
         super().__init__()
 
         self.action_space = spaces.Discrete(11)
@@ -45,6 +46,13 @@ class WoWSimEnv(gym.Env):
         self._seed = seed
         self._data_root = data_root
         self._creature_csv_dir = creature_csv_dir
+
+        # Episode logger (optional — zero overhead when disabled)
+        self._logger = None
+        if log_dir:
+            from sim.sim_logger import SimEpisodeLogger
+            self._logger = SimEpisodeLogger(log_dir, bot_name,
+                                            record_interval=log_interval)
 
         # Load 3D terrain + area lookup if data_root provided
         self._terrain = None
@@ -108,6 +116,20 @@ class WoWSimEnv(gym.Env):
         self._ep_levels_gained = 0
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
+
+        # Log initial state
+        if self._logger:
+            self._logger.reset()
+            self._logger.record_mobs([
+                {"entry": m.template.entry, "name": m.template.name,
+                 "x": m.spawn_x, "y": m.spawn_y, "level": m.level}
+                for m in self.sim.mobs
+            ])
+            p = self.sim.player
+            self._logger.record_step(
+                0, p.x, p.y, p.hp / max(1, p.max_hp),
+                p.level, p.in_combat, p.orientation)
+
         return obs, {}
 
     def step(self, action):
@@ -240,12 +262,19 @@ class WoWSimEnv(gym.Env):
         if xp > 0:
             reward += 3.0 + min(xp * 0.05, 2.0)
             self._ep_kills += 1
+            if self._logger:
+                self._logger.record_event(
+                    self._step_count, p.x, p.y, "kill")
 
         # 5. Level-Up
         levels = events.get("levels_gained", 0)
         if levels > 0:
             reward += 15.0 * levels
             self._ep_levels_gained += levels
+            if self._logger:
+                self._logger.record_event(
+                    self._step_count, p.x, p.y, "levelup",
+                    f"Lv{p.level}")
 
         # 6. Equipment-Upgrade
         if events["equipped_upgrade"]:
@@ -282,11 +311,20 @@ class WoWSimEnv(gym.Env):
             self._ep_maps += new_maps
             self._ep_exploration_reward += r
 
+        # Log trail point
+        if self._logger:
+            self._logger.record_step(
+                self._step_count, p.x, p.y, hp_pct,
+                p.level, p.in_combat, p.orientation)
+
         # 10. Terminal: Death (heavy penalty — bot must learn to avoid dying)
         terminated = False
         if self.sim.player.hp <= 0:
             reward = -30.0
             terminated = True
+            if self._logger:
+                self._logger.record_event(
+                    self._step_count, p.x, p.y, "death")
         # 11. Terminal: OOM
         elif mana_pct < 0.05:
             reward = -15.0
@@ -308,7 +346,7 @@ class WoWSimEnv(gym.Env):
 
         info = {}
         if terminated or truncated:
-            info["episode_stats"] = {
+            ep_stats = {
                 "reward": self._ep_reward,
                 "length": self._step_count,
                 "kills": self.sim.kills,
@@ -323,6 +361,11 @@ class WoWSimEnv(gym.Env):
                 "levels_gained": self._ep_levels_gained,
                 "final_level": self.sim.player.level,
             }
+            info["episode_stats"] = ep_stats
+
+            # Flush episode log to disk
+            if self._logger:
+                self._logger.flush_episode(ep_stats)
 
         return obs, reward, terminated, truncated, info
 
