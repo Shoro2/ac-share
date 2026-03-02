@@ -487,4 +487,111 @@ Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Los
 - **Python**: Standard-Python mit `snake_case`, Type Hints fehlen weitgehend
 - **Kein Build-System im Modul**: `src_module-ai-controller/` hat keine eigene CMakeLists.txt — muss manuell in den AzerothCore-Module-Build integriert werden
 - **Sprache**: Code-Kommentare teilweise auf Deutsch ("Lausche auf Port 5000", "WICHTIG", "ACHTUNG")
-- **Keine Tests**: Kein Unit-Test-Framework, nur `check_env.py` als Smoke-Test
+- **Keine Tests**: Kein Unit-Test-Framework, nur `check_env.py` (Live) und `sim/test_sim.py` (Sim) als Smoke-Tests
+
+## Arbeitsfortschritt & Status
+
+### Was funktioniert (erledigt)
+
+| Komponente | Status | Details |
+|---|---|---|
+| **CombatSimulation Engine** | ✅ fertig | 84 Mobs, 4 Spells, Mob-AI, Loot, XP, Respawn, Exploration-Tracking |
+| **WoWSimEnv (Gym-Interface)** | ✅ fertig | Discrete(11) Actions, Box(17) Obs, identische Rewards wie Live |
+| **train_sim.py (PPO-Training)** | ✅ fertig | 5 Bots, SubprocVecEnv, TensorBoard, Gameplay-Metriken |
+| **test_sim.py (Validierung)** | ✅ fertig | 5 Tests: Engine, Gym-Spaces, Random-Episode, Benchmark, Scripted-Combat |
+| **3D-Terrain-System** | ✅ fertig | Maps/VMAPs Parser, HeightCache, SpatialLOSChecker, SimTerrain-Wrapper |
+| **AreaTable.dbc-Parser** | ✅ fertig | Liest alle Areas/Zones/Maps der WoW-Welt, on-demand Tile-Loading |
+| **Exploration-System** | ✅ fertig | 3-Tier Tracking (Area/Zone/Map), Rewards, TensorBoard-Metriken |
+| **Reward-Synchronisation** | ✅ fertig | Sim und Live haben identische Reward-Tabelle |
+| **Override-Logik** | ✅ fertig | Vendor, Aggro, Cast-Guard, Loot, Range-Mgmt — in beiden Envs identisch |
+| **wow_env.py (Live-Server)** | ✅ fertig | TCP-Anbindung, NPC-Memory, Blacklist, Override-Logik |
+| **C++ AI-Controller-Modul** | ✅ fertig | Bot-Spawning, TCP-Server, State-Publishing, Kommando-Verarbeitung |
+| **auto_grind.py** | ✅ fertig | Hybrid-Runner mit Farm-Route + RL-Policy |
+| **train.py (Live-Training)** | ✅ fertig | Multi-Bot PPO, aber bisher nur abgebrochene Runs (wow_bot_interrupted.zip) |
+
+### Bekannte Lücken & Paritäts-Differenzen
+
+| Problem | Bereich | Schwere | Details |
+|---|---|---|---|
+| **Exploration fehlt in wow_env.py** | Live-Env | mittel | Sim hat Area/Zone/Map Exploration-Rewards, Live-Env noch nicht — bei Sim→Live Transfer werden diese Rewards fehlen |
+| **nearby_mobs Cache-Bug** | C++ Modul | kritisch | `_cachedNearbyMobsJson` wird nur für den ersten Spieler berechnet — alle Bots sehen dieselbe Mob-Liste |
+| **run_bot.py kaputt** | Script | niedrig | Syntax-Fehler (fehlende Anführungszeichen, Doppelpunkte, Klammern) — nicht nutzbar |
+| **run_model.py referenziert wow_bot_v1** | Script | niedrig | Modell existiert nicht, nur wow_bot_interrupted.zip vorhanden |
+| **Kein Level-Up in der Sim** | Sim | niedrig | Level-Up Reward (+15.0) wird nie ausgelöst, da Sim nur Level 1 simuliert (Parity mit Live, wo Bots auch auf L1 zurückgesetzt werden) |
+| **Vendor-System vereinfacht** | Sim | niedrig | Sim hat keine echten Vendors — Sell-Action räumt nur Slots frei, ohne Copper-Gewinn |
+| **Keine Trainings-Artefakte** | Training | info | Weder models/ noch logs/ Verzeichnisse existieren aktuell — kein abgeschlossener Sim-Trainingslauf vorhanden |
+
+## Nächste Schritte (Roadmap)
+
+### Phase 1: Sim-Training validieren (aktuell)
+
+**Ziel**: Ein stabiles PPO-Modell in der Sim trainieren, das grundlegende Combat-Skills zeigt.
+
+1. **Erster vollständiger Trainingslauf**
+   - `python -m sim.train_sim --steps 500000` ausführen
+   - TensorBoard-Metriken prüfen: steigen Kills/XP pro Episode? Sinkt die Death-Rate?
+   - Checkpoint als `wow_sim_v1.zip` speichern
+
+2. **Hyperparameter-Tuning**
+   - `ent_coef` variieren (0.005–0.05) — zu wenig Exploration vs. zu viel Zufall
+   - `n_steps` und `batch_size` anpassen je nach Reward-Kurve
+   - `total_timesteps` auf 1M–5M erhöhen wenn Reward noch steigt
+
+3. **Trainings-Metriken auswerten**
+   - Kill-Rate pro Episode sollte >2 erreichen
+   - Death-Rate sollte unter 30% fallen
+   - Areas-explored als Indikator für Bewegungsverhalten
+
+### Phase 2: Sim-Qualität verbessern
+
+4. **3D-Terrain im Training testen**
+   - `--data-root` Training durchführen, FPS-Impact messen
+   - Vergleich: lernt der Bot mit Terrain besser/anders als ohne?
+   - LOS-Blockaden und Walkability als zusätzliche Lern-Signale nutzen
+
+5. **Exploration-Rewards in wow_env.py nachziehen**
+   - Area/Zone/Map Tracking analog zur Sim implementieren
+   - Benötigt entweder: (a) C++ Modul sendet Area-IDs mit, oder (b) Python-seitig aus Koordinaten berechnen
+   - Reward-Parität sicherstellen für Transfer Sim→Live
+
+6. **Kampf-Balancing prüfen**
+   - Mob-Damage, Spell-Damage, Mana-Kosten vs. echte WoW-Werte abgleichen
+   - Aggro-Range und Leash-Distance feintunen
+   - Mehrfach-Aggro-Situationen testen (2+ Mobs gleichzeitig)
+
+### Phase 3: Transfer auf Live-Server
+
+7. **Sim-Modell auf Live-Server testen**
+   - Trainiertes `wow_sim_v1.zip` mit `auto_grind.py` oder `run_model.py` gegen echten Server laufen lassen
+   - Beobachten: welche Verhaltensweisen transferieren, welche nicht?
+   - Delta-Analyse: wo weicht Sim-Verhalten vom Live-Verhalten ab?
+
+8. **nearby_mobs Cache-Bug fixen** (C++)
+   - `_cachedNearbyMobsJson` muss pro Spieler berechnet werden, nicht nur für den ersten
+   - Ohne Fix sind Multi-Bot-Runs auf dem Live-Server unzuverlässig
+
+9. **Live-Training mit Sim-Pretrained-Modell**
+   - `train.py --resume models/PPO/wow_sim_v1.zip` — Fine-Tuning auf echtem Server
+   - Niedrigere Learning-Rate für Fine-Tuning (1e-4 statt 3e-4)
+   - Vergleich: Sim-Pretrained vs. From-Scratch auf Live
+
+### Phase 4: Erweiterungen (später)
+
+10. **Mehr Spells / höhere Level**
+    - Weitere Priest-Spells ab Level 4+ (Renew, Mind Blast, Fade)
+    - Level-Cap in der Sim erhöhen (aktuell nur Level 1)
+    - Mob-Typen mit speziellen Fähigkeiten (Ranged, Caster, Runners)
+
+11. **Multi-Zone Navigation**
+    - Bot soll selbstständig Elwynn Forest erkunden (nicht nur Northshire)
+    - Waypoint-System oder curiosity-driven Exploration
+    - Zonen-spezifisches Mob-Scaling
+
+12. **run_bot.py reparieren oder ersetzen**
+    - Syntax-Fehler fixen oder durch sauberes Script ersetzen
+    - Einfacher Inference-Runner der sowohl Sim als auch Live unterstützt
+
+13. **Automatisierte Tests**
+    - CI-Pipeline mit `test_sim.py` als Mindestanforderung
+    - Regressions-Tests für Reward-Parität (Sim vs. Live)
+    - Performance-Benchmark als Gate (FPS darf nicht unter X fallen)
