@@ -14,6 +14,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import math
+import random
 from typing import Optional
 
 from sim.combat_sim import CombatSimulation, SPELLS
@@ -88,10 +89,9 @@ class WoWSimEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self._seed = seed
-        self.sim = CombatSimulation(num_mobs=self.num_mobs, seed=self._seed,
-                                    terrain=self._terrain, env3d=self._env3d,
-                                    creature_db=self._creature_db)
+        self.sim.reset()
         if self._seed is not None:
+            self.sim.rng = random.Random(self._seed)
             self._seed += 1  # vary each episode
         self._step_count = 0
         self._ep_reward = 0.0
