@@ -120,7 +120,8 @@ def main():
             verbose=1,
             tensorboard_log=log_dir,
             n_steps=128,
-            batch_size=64
+            batch_size=64,
+            ent_coef=0.01,
         )
     except Exception as e:
         print(f"MODEL FEHLER: {e}")
