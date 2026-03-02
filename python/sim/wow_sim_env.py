@@ -30,7 +30,8 @@ class WoWSimEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, bot_name: str = "SimBot", num_mobs: int = None,
-                 seed: int = None, data_root: str = None):
+                 seed: int = None, data_root: str = None,
+                 creature_csv_dir: str = None):
         super().__init__()
 
         self.action_space = spaces.Discrete(11)
@@ -42,6 +43,7 @@ class WoWSimEnv(gym.Env):
         self.num_mobs = num_mobs
         self._seed = seed
         self._data_root = data_root
+        self._creature_csv_dir = creature_csv_dir
 
         # Load 3D terrain + area lookup if data_root provided
         self._terrain = None
@@ -60,8 +62,15 @@ class WoWSimEnv(gym.Env):
                 print(f"  [WARN] Area lookup not available: {e}")
                 self._env3d = None
 
+        # Load creature DB from CSVs if provided
+        self._creature_db = None
+        if creature_csv_dir:
+            from sim.creature_db import CreatureDB
+            self._creature_db = CreatureDB(creature_csv_dir, quiet=True)
+
         self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed,
-                                    terrain=self._terrain, env3d=self._env3d)
+                                    terrain=self._terrain, env3d=self._env3d,
+                                    creature_db=self._creature_db)
         self.last_state = None
         self._step_count = 0
         self._max_steps = 4000  # episode timeout
@@ -81,7 +90,8 @@ class WoWSimEnv(gym.Env):
         if seed is not None:
             self._seed = seed
         self.sim = CombatSimulation(num_mobs=self.num_mobs, seed=self._seed,
-                                    terrain=self._terrain, env3d=self._env3d)
+                                    terrain=self._terrain, env3d=self._env3d,
+                                    creature_db=self._creature_db)
         if self._seed is not None:
             self._seed += 1  # vary each episode
         self._step_count = 0
