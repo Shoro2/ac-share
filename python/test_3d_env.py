@@ -1258,10 +1258,7 @@ class WoW3DEnvironment:
         tile = self.loaded_tiles.get(key)
 
         if tile is None:
-            # Tile nicht geladen — versuche es on-demand zu laden
-            tile = self.load_map_tile(map_id, gx, gy)
-            if tile is None:
-                return 0
+            return 0  # only use pre-loaded tiles (no disk I/O during training)
 
         if tile.area_map is None:
             return tile.grid_area  # Einheitliche Area für das ganze Tile
