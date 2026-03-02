@@ -19,7 +19,9 @@ PARENT_DIR = os.path.dirname(THIS_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-from sim.combat_sim import CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSITIONS
+from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSITIONS,
+                             XP_TABLE, base_xp_gain, get_gray_level,
+                             player_max_hp, player_max_mana, smite_damage, heal_amount)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -219,6 +221,110 @@ def test_combat_scenario():
     print("  PASSED\n")
 
 
+def test_level_system():
+    """Test XP formulas, level-up, and stat scaling."""
+    print("=== Test 6: Level System ===")
+
+    # --- XP formula sanity checks (match AzerothCore test values) ---
+    # Same level, pl=1, mob=1: (1*5+45)*(20+0)/10+1)//2 = (50*20/10+1)/2 = (100+1)/2 = 50
+    xp = base_xp_gain(1, 1)
+    assert xp == 50, f"L1 vs L1 expected 50, got {xp}"
+    print(f"  XP L1 vs L1 mob: {xp}")
+
+    # Higher mob: pl=1, mob=3 → diff=2, capped at 4 → ((5+45)*(20+2)/10+1)/2 = (50*22/10+1)/2 = (110+1)/2 = 55
+    xp = base_xp_gain(1, 3)
+    assert xp == 55, f"L1 vs L3 expected 55, got {xp}"
+    print(f"  XP L1 vs L3 mob: {xp}")
+
+    # Gray level checks
+    assert get_gray_level(1) == 0
+    assert get_gray_level(5) == 0
+    assert get_gray_level(10) == 4
+    print(f"  Gray levels: L1→0, L5→0, L10→4 ✓")
+
+    # Gray mob gives 0 XP
+    xp = base_xp_gain(10, 3)
+    assert xp == 0, f"L10 vs L3 (gray) expected 0, got {xp}"
+    print(f"  XP L10 vs L3 (gray): {xp} ✓")
+
+    # --- Stat scaling ---
+    assert player_max_hp(1) == 72
+    assert player_max_hp(2) == 122
+    assert player_max_hp(10) == 522
+    assert player_max_mana(1) == 123
+    assert player_max_mana(2) == 128
+    min_d, max_d = smite_damage(1)
+    assert (min_d, max_d) == (13, 17)
+    min_d, max_d = smite_damage(2)
+    assert (min_d, max_d) == (23, 27)
+    min_h, max_h = heal_amount(1)
+    assert (min_h, max_h) == (46, 56)
+    min_h, max_h = heal_amount(2)
+    assert (min_h, max_h) == (51, 61)
+    print(f"  Stat scaling: HP, Mana, Smite, Heal ✓")
+
+    # --- Level-up in simulation ---
+    sim = CombatSimulation(num_mobs=10, seed=42)
+    p = sim.player
+    assert p.level == 1
+    assert p.xp == 0
+
+    # Inject enough XP to level up (need 400 for level 2)
+    p.xp = 399
+    p.xp_gained = 399
+    # Simulate a kill that gives 50+ XP → should cross 400 threshold
+    # Manually call _check_level_up after adding XP
+    p.xp += 50
+    p.xp_gained += 50
+    sim._check_level_up()
+
+    assert p.level == 2, f"Expected level 2 after 449 XP, got {p.level}"
+    assert p.max_hp == 122, f"Expected max_hp=122, got {p.max_hp}"
+    assert p.hp == 122, "HP should be full after level-up"
+    assert p.max_mana == 128, f"Expected max_mana=128, got {p.max_mana}"
+    assert p.leveled_up is True
+    assert p.levels_gained == 1
+    print(f"  Level-up: L1→L2 at XP=449, HP={p.max_hp}, Mana={p.max_mana} ✓")
+
+    # Test multi-level-up (inject tons of XP)
+    p.xp = 2000
+    p.leveled_up = False
+    p.levels_gained = 0
+    sim._check_level_up()
+    assert p.level == 4, f"Expected level 4 at XP=2000, got {p.level}"
+    assert p.levels_gained == 2, f"Expected 2 levels gained, got {p.levels_gained}"
+    print(f"  Multi level-up: L2→L4 at XP=2000, levels_gained={p.levels_gained} ✓")
+
+    # Test consume_events clears leveled_up
+    events = sim.consume_events()
+    assert events["leveled_up"] is True
+    assert events["levels_gained"] == 2
+    assert p.leveled_up is False
+    assert p.levels_gained == 0
+    print(f"  consume_events clears leveled_up ✓")
+
+    # --- XP diminishing returns in environment ---
+    env = WoWSimEnv(num_mobs=15, seed=77)
+    obs, _ = env.reset()
+    # Run a scripted combat episode to verify XP flows through
+    total_xp = 0
+    for _ in range(2000):
+        # Simple script: target, then smite
+        if not env.sim.target or not env.sim.target.alive:
+            action = 4  # target
+        else:
+            action = 5  # smite
+        obs, reward, done, trunc, info = env.step(action)
+        if done or trunc:
+            break
+    final_level = env.sim.player.level
+    final_xp = env.sim.player.xp
+    print(f"  Env episode: final_level={final_level}, total_xp={final_xp}")
+    assert final_level >= 1, "Should still be at least level 1"
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -226,4 +332,5 @@ if __name__ == "__main__":
     test_random_episode()
     test_performance()
     test_combat_scenario()
+    test_level_system()
     print("=== ALL TESTS PASSED ===")

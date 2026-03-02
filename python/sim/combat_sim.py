@@ -1,8 +1,9 @@
 """
 WoW Combat Simulation Engine — Pure Python, no server needed.
 
-Simulates a Level 1 Human Priest in Northshire Valley fighting mobs.
+Simulates a Human Priest in Northshire Valley fighting mobs.
 All values derived from AzerothCore DB exports and game mechanics.
+Supports leveling from 1–79 with AzerothCore XP formulas.
 
 Tick-based: 1 tick = 0.5 seconds (matches WoWEnv decision interval).
 """
@@ -15,6 +16,180 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from sim.terrain import SimTerrain
     from sim.creature_db import CreatureDB
+
+
+# ─── XP Table (cumulative XP needed to reach level N) ────────────────
+# Index = level, value = total XP required.  XP_TABLE[1] = 0 (start).
+XP_TABLE = [
+    0,       # 0  (unused)
+    0,       # 1  (start level)
+    400,     # 2
+    900,     # 3
+    1400,    # 4
+    2100,    # 5
+    2800,    # 6
+    3600,    # 7
+    4500,    # 8
+    5400,    # 9
+    6500,    # 10
+    7600,    # 11
+    8700,    # 12
+    9800,    # 13
+    11000,   # 14
+    12300,   # 15
+    13600,   # 16
+    15000,   # 17
+    16400,   # 18
+    17800,   # 19
+    19300,   # 20
+    20800,   # 21
+    22400,   # 22
+    24000,   # 23
+    25500,   # 24
+    27200,   # 25
+    28900,   # 26
+    30500,   # 27
+    32200,   # 28
+    33900,   # 29
+    36300,   # 30
+    38800,   # 31
+    41600,   # 32
+    44600,   # 33
+    48000,   # 34
+    51400,   # 35
+    55000,   # 36
+    58700,   # 37
+    62400,   # 38
+    66200,   # 39
+    70200,   # 40
+    74300,   # 41
+    78500,   # 42
+    82800,   # 43
+    87100,   # 44
+    91600,   # 45
+    96300,   # 46
+    101000,  # 47
+    105800,  # 48
+    110700,  # 49
+    115700,  # 50
+    120900,  # 51
+    126100,  # 52
+    131500,  # 53
+    137000,  # 54
+    142500,  # 55
+    148200,  # 56
+    154000,  # 57
+    159900,  # 58
+    165800,  # 59
+    172000,  # 60
+    290000,  # 61
+    317000,  # 62
+    349000,  # 63
+    386000,  # 64
+    428000,  # 65
+    475000,  # 66
+    527000,  # 67
+    585000,  # 68
+    648000,  # 69
+    717000,  # 70
+    1523800, # 71
+    1539600, # 72
+    1555700, # 73
+    1571800, # 74
+    1587900, # 75
+    1604200, # 76
+    1620700, # 77
+    1637400, # 78
+    1653900, # 79
+    1670800, # 80 (cap)
+]
+
+MAX_LEVEL = len(XP_TABLE) - 1  # 80
+
+
+# ─── AzerothCore XP-per-kill formulas ─────────────────────────────────
+
+def get_gray_level(pl_level: int) -> int:
+    """Mob level at or below which the mob gives zero XP."""
+    if pl_level <= 5:
+        return 0
+    elif pl_level <= 39:
+        return pl_level - 5 - pl_level // 10
+    elif pl_level <= 59:
+        return pl_level - 1 - pl_level // 5
+    else:
+        return pl_level - 9
+
+
+def get_zero_difference(pl_level: int) -> int:
+    """ZD value used in the lower-level XP formula."""
+    if pl_level < 8:
+        return 5
+    elif pl_level < 10:
+        return 6
+    elif pl_level < 12:
+        return 7
+    elif pl_level < 16:
+        return 8
+    elif pl_level < 20:
+        return 9
+    elif pl_level < 30:
+        return 11
+    elif pl_level < 40:
+        return 12
+    elif pl_level < 45:
+        return 13
+    elif pl_level < 50:
+        return 14
+    elif pl_level < 55:
+        return 15
+    elif pl_level < 60:
+        return 16
+    else:
+        return 17
+
+
+def base_xp_gain(pl_level: int, mob_level: int) -> int:
+    """Calculate base XP for killing a mob (AzerothCore formula).
+
+    Uses CONTENT_1_60 (nBaseExp=45) for all levels — simplified for sim.
+    """
+    n_base_exp = 45
+
+    if mob_level >= pl_level:
+        level_diff = min(mob_level - pl_level, 4)
+        return ((pl_level * 5 + n_base_exp) * (20 + level_diff) // 10 + 1) // 2
+    else:
+        gray = get_gray_level(pl_level)
+        if mob_level > gray:
+            zd = get_zero_difference(pl_level)
+            return (pl_level * 5 + n_base_exp) * (zd + mob_level - pl_level) // zd
+        else:
+            return 0
+
+
+# ─── Per-level stat scaling ───────────────────────────────────────────
+
+def player_max_hp(level: int) -> int:
+    """Base HP 72 + 50 per level gained."""
+    return 72 + (level - 1) * 50
+
+
+def player_max_mana(level: int) -> int:
+    """Base mana 123 + 5 per level gained."""
+    return 123 + (level - 1) * 5
+
+
+def smite_damage(level: int) -> tuple[int, int]:
+    """Smite damage range: base (13-17) + 10 per level gained."""
+    bonus = (level - 1) * 10
+    return (13 + bonus, 17 + bonus)
+
+
+def heal_amount(level: int) -> tuple[int, int]:
+    """Lesser Heal range: base (46-56) + 5 per level gained."""
+    bonus = (level - 1) * 5
+    return (46 + bonus, 56 + bonus)
 
 
 # ─── Spell Definitions ───────────────────────────────────────────────
@@ -174,6 +349,7 @@ class Player:
     mana: int = 123
     max_mana: int = 123
     level: int = 1
+    xp: int = 0               # cumulative XP (persists across consume_events)
     x: float = -8921.09
     y: float = -119.135
     z: float = 82.025
@@ -192,6 +368,8 @@ class Player:
     loot_copper: int = 0
     loot_score: int = 0
     equipped_upgrade: bool = False
+    leveled_up: bool = False    # set True on level-up, consumed on read
+    levels_gained: int = 0      # how many levels gained this tick (consumed on read)
     # Regen tracking
     combat_timer: int = 0       # ticks since last combat action (for OOC regen)
     ooc_regen_accumulator: float = 0.0
@@ -662,13 +840,15 @@ class CombatSimulation:
         """Apply spell effect when cast completes."""
         spell = SPELLS[spell_id]
 
-        if spell_id == 585:  # Smite
+        if spell_id == 585:  # Smite — level-scaled damage
             if self.target and self.target.alive:
-                dmg = self.rng.randint(spell.min_damage, spell.max_damage)
+                min_dmg, max_dmg = smite_damage(self.player.level)
+                dmg = self.rng.randint(min_dmg, max_dmg)
                 self._damage_mob(self.target, dmg)
 
-        elif spell_id == 2050:  # Lesser Heal
-            heal = self.rng.randint(spell.min_heal, spell.max_heal)
+        elif spell_id == 2050:  # Lesser Heal — level-scaled
+            min_h, max_h = heal_amount(self.player.level)
+            heal = self.rng.randint(min_h, max_h)
             self.player.hp = min(self.player.max_hp, self.player.hp + heal)
 
         elif spell_id == 589:  # SW:Pain
@@ -697,8 +877,12 @@ class CombatSimulation:
             mob.target_player = False
             mob.respawn_timer = self.RESPAWN_TICKS
             self.kills += 1
-            # XP reward
-            self.player.xp_gained += mob.template.xp_reward
+            # XP reward — AzerothCore formula based on level difference
+            xp = base_xp_gain(self.player.level, mob.level)
+            self.player.xp_gained += xp
+            self.player.xp += xp
+            # Level-up check
+            self._check_level_up()
             # Check if player leaves combat
             self._check_combat_end()
 
@@ -708,6 +892,24 @@ class CombatSimulation:
             if mob.alive and mob.target_player:
                 return
         self.player.in_combat = False
+
+    def _check_level_up(self):
+        """Check if accumulated XP is enough for a level-up. May level multiple times."""
+        p = self.player
+        while p.level < MAX_LEVEL and p.xp >= XP_TABLE[p.level + 1]:
+            p.level += 1
+            p.leveled_up = True
+            p.levels_gained += 1
+            self._apply_level_stats()
+
+    def _apply_level_stats(self):
+        """Update player stats after level-up. Heals to full."""
+        p = self.player
+        p.max_hp = player_max_hp(p.level)
+        p.max_mana = player_max_mana(p.level)
+        # Full heal on level-up (matches WoW behaviour)
+        p.hp = p.max_hp
+        p.mana = p.max_mana
 
     # ─── Tick Processing ──────────────────────────────────────────
 
@@ -951,7 +1153,7 @@ class CombatSimulation:
             "xp_gained": p.xp_gained,
             "loot_copper": p.loot_copper,
             "loot_score": p.loot_score,
-            "leveled_up": "false",
+            "leveled_up": "true" if p.leveled_up else "false",
             "tx": t_info["x"],
             "ty": t_info["y"],
             "tz": t_info["z"],
@@ -981,6 +1183,8 @@ class CombatSimulation:
             "loot_copper": p.loot_copper,
             "loot_score": p.loot_score,
             "equipped_upgrade": p.equipped_upgrade,
+            "leveled_up": p.leveled_up,
+            "levels_gained": p.levels_gained,
             "new_areas": self._new_areas,
             "new_zones": self._new_zones,
             "new_maps": self._new_maps,
@@ -989,6 +1193,8 @@ class CombatSimulation:
         p.loot_copper = 0
         p.loot_score = 0
         p.equipped_upgrade = False
+        p.leveled_up = False
+        p.levels_gained = 0
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0

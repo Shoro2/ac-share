@@ -227,13 +227,21 @@ Simuliert das komplette WoW-Kampfsystem in reinem Python:
 - **Mob-AI**: Aggro-Range (10–20 Units), Chase, Melee-Angriff, Leash (60 Units)
 - **Loot-System**: Copper-Drops, vereinfachtes Item-Score-System
 - **Respawn**: Tote Mobs respawnen nach 60s am Original-Spawnpunkt
-- **XP**: Formelbasiert nach Mob-Level (50–120 XP pro Kill)
+- **XP**: AzerothCore-Formel `BaseGain()` mit Gray-Level, ZeroDifference — Mobs unter Gray-Level geben 0 XP
+- **Level-System**: Level 1–79 mit XP-Tabelle, pro Level +10 Smite-Damage, +5 Heal, +50 HP, +5 Mana
 - **Exploration**: Drei-Ebenen-Tracking (`visited_areas`, `visited_zones`, `visited_maps`)
   - Echte WoW Area/Zone/Map-IDs aus AreaTable.dbc wenn `env3d` + DBC vorhanden
   - Grid-Fallback ohne 3D-Daten: Areas=50×50 Units, Zones=200×200 Units
   - `_new_areas`/`_new_zones`/`_new_maps` Counter (consume-on-read wie XP/Loot)
 - **3D-Terrain** (optional via `terrain` Parameter): Z-Koordinaten, Walkability-Checks, LOS-Prüfung bei Spells
 - **State-Dict**: Identisch zum TCP-JSON des Live-Servers
+
+**XP-Formel** (aus AzerothCore `Formulas.h`/`.cpp`):
+- **Mob ≥ Player-Level**: `((pl*5 + 45) * (20 + min(diff, 4)) / 10 + 1) / 2`
+- **Mob > Gray-Level**: `(pl*5 + 45) * (ZD + mob - pl) / ZD`
+- **Mob ≤ Gray-Level**: `0 XP`
+
+**Stat-Skalierung pro Level**: HP: 72 + (L-1)×50, Mana: 123 + (L-1)×5, Smite: (13-17) + (L-1)×10, Heal: (46-56) + (L-1)×5
 
 **Initialisierung**: `CombatSimulation(num_mobs=None, seed=None, terrain=None, env3d=None)`
 - `num_mobs=None`: Alle 84 Spawn-Positionen nutzen (vorher: 15 zufällige)
@@ -520,7 +528,7 @@ Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Los
 | **nearby_mobs Cache-Bug** | C++ Modul | kritisch | `_cachedNearbyMobsJson` wird nur für den ersten Spieler berechnet — alle Bots sehen dieselbe Mob-Liste |
 | **run_bot.py kaputt** | Script | niedrig | Syntax-Fehler (fehlende Anführungszeichen, Doppelpunkte, Klammern) — nicht nutzbar |
 | **run_model.py referenziert wow_bot_v1** | Script | niedrig | Modell existiert nicht, nur wow_bot_interrupted.zip vorhanden |
-| **Kein Level-Up in der Sim** | Sim | niedrig | Level-Up Reward (+15.0) wird nie ausgelöst, da Sim nur Level 1 simuliert (Parity mit Live, wo Bots auch auf L1 zurückgesetzt werden) |
+| **Level-System vereinfacht** | Sim | niedrig | Stat-Skalierung ist linear (nicht DB-basiert), Level-Cap 79, nur 4 Mob-Typen (L1–3) |
 | **Vendor-System vereinfacht** | Sim | niedrig | Sim hat keine echten Vendors — Sell-Action räumt nur Slots frei, ohne Copper-Gewinn |
 | **Keine Trainings-Artefakte** | Training | info | Weder models/ noch logs/ Verzeichnisse existieren aktuell — kein abgeschlossener Sim-Trainingslauf vorhanden |
 
