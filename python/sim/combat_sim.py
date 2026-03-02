@@ -249,12 +249,13 @@ class CombatSimulation:
     LOOT_CHANCE = 0.7         # probability of getting loot
     ITEM_SCORE_RANGE = (5, 25)
     UPGRADE_CHANCE = 0.15     # chance that looted item is an upgrade
+    # Exploration grid sizes (for area/zone discovery tracking)
+    AREA_CELL_SIZE = 50.0     # ~50x50 units per area cell
+    ZONE_CELL_SIZE = 200.0    # ~200x200 units per zone cell
 
-    def __init__(self, num_mobs: int = 15, seed: Optional[int] = None,
-                 terrain: Optional['SimTerrain'] = None):
+    def __init__(self, num_mobs: int = None, seed: Optional[int] = None):
         self.rng = random.Random(seed)
-        self.num_mobs = num_mobs
-        self.terrain = terrain
+        self.num_mobs = num_mobs  # None = all spawns
         self.player = Player()
         if self.terrain:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
@@ -264,7 +265,13 @@ class CombatSimulation:
         self.damage_dealt: int = 0
         self.kills: int = 0
         self._next_uid = 1
+        # Exploration tracking
+        self.visited_areas: set = set()   # (area_x, area_y) cells visited
+        self.visited_zones: set = set()   # (zone_x, zone_y) cells visited
+        self._new_areas: int = 0          # consumed on read
+        self._new_zones: int = 0          # consumed on read
         self._spawn_mobs()
+        self._update_exploration()  # register spawn position
 
     def _new_uid(self) -> int:
         uid = self._next_uid
@@ -272,7 +279,7 @@ class CombatSimulation:
         return uid
 
     def _spawn_mobs(self):
-        """Spawn mobs from real DB positions, picking a random subset."""
+        """Spawn mobs from real DB positions. num_mobs=None uses all spawns."""
         self.mobs.clear()
         all_spawns = []
         for entry, positions in SPAWN_POSITIONS.items():
@@ -280,8 +287,12 @@ class CombatSimulation:
             for (x, y) in positions:
                 all_spawns.append((template, x, y))
 
-        # Pick a subset
-        selected = self.rng.sample(all_spawns, min(self.num_mobs, len(all_spawns)))
+        # Pick a subset (or all if num_mobs is None)
+        if self.num_mobs is not None:
+            selected = self.rng.sample(all_spawns, min(self.num_mobs, len(all_spawns)))
+        else:
+            selected = all_spawns
+            self.rng.shuffle(selected)
         for template, x, y in selected:
             level = self.rng.randint(template.min_level, template.max_level)
             # Scale HP by level
@@ -307,7 +318,25 @@ class CombatSimulation:
         self.target = None
         self.tick_count = 0
         self._next_uid = 1
+        self.visited_areas.clear()
+        self.visited_zones.clear()
+        self._new_areas = 0
+        self._new_zones = 0
         self._spawn_mobs()
+        self._update_exploration()
+
+    def _update_exploration(self):
+        """Track area/zone discovery based on player position."""
+        p = self.player
+        area_key = (int(p.x // self.AREA_CELL_SIZE), int(p.y // self.AREA_CELL_SIZE))
+        zone_key = (int(p.x // self.ZONE_CELL_SIZE), int(p.y // self.ZONE_CELL_SIZE))
+
+        if area_key not in self.visited_areas:
+            self.visited_areas.add(area_key)
+            self._new_areas += 1
+        if zone_key not in self.visited_zones:
+            self.visited_zones.add(zone_key)
+            self._new_zones += 1
 
     def _dist(self, x1: float, y1: float, x2: float, y2: float) -> float:
         dx = x2 - x1
@@ -533,6 +562,7 @@ class CombatSimulation:
         """Advance simulation by one tick (0.5 seconds)."""
         self.tick_count += 1
         p = self.player
+        self._update_exploration()
 
         # --- Cast completion ---
         if p.is_casting:
@@ -776,9 +806,13 @@ class CombatSimulation:
             "loot_copper": p.loot_copper,
             "loot_score": p.loot_score,
             "equipped_upgrade": p.equipped_upgrade,
+            "new_areas": self._new_areas,
+            "new_zones": self._new_zones,
         }
         p.xp_gained = 0
         p.loot_copper = 0
         p.loot_score = 0
         p.equipped_upgrade = False
+        self._new_areas = 0
+        self._new_zones = 0
         return events

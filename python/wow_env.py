@@ -15,6 +15,8 @@ DEFAULT_MEMORY_FILE = "npc_memory.json"
 DEBUG_EVENTS = False
 
 class WoWEnv(gym.Env):
+    MAX_EPISODE_STEPS = 4000
+
     def __init__(self, host='127.0.0.1', port=5000, bot_name=None):
         super(WoWEnv, self).__init__()
         try:
@@ -585,9 +587,14 @@ class WoWEnv(gym.Env):
         self._ep_reward += reward
         self._ep_length += 1
 
-        # --- Episode-Stats bei Termination mitgeben ---
+        # --- Truncation bei max_episode_steps ---
+        truncated = False
+        if not terminated and self._ep_length >= self.MAX_EPISODE_STEPS:
+            truncated = True
+
+        # --- Episode-Stats bei Termination/Truncation mitgeben ---
         info = {}
-        if terminated:
+        if terminated or truncated:
             info["episode_stats"] = {
                 "kills": self._ep_kills,
                 "xp": self._ep_xp,
@@ -599,7 +606,7 @@ class WoWEnv(gym.Env):
             }
 
         self.last_state = data
-        return obs, reward, terminated, False, info
+        return obs, reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)

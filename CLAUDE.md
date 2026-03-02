@@ -1,6 +1,14 @@
 # CLAUDE.md — Projektdokumentation für ac-share
 
-Dieses Repository ist ein experimentelles, lokales WoW-Bot-Training-Setup basierend auf AzerothCore. Ein C++-Modul im Worldserver streamt Spielzustand per TCP an Python, wo ein RL-Agent (PPO) lernt, einen serverseitig gespawnten Bot-Charakter zu steuern.
+Dieses Repository ist ein experimentelles WoW-Bot-Training-Setup. Der **aktuelle Hauptfokus** liegt auf der Python-Simulation (`python/sim/`), die eine vollständige Trainingsumgebung ohne laufenden WoW-Server bereitstellt. Parallel dazu existiert ein C++-Modul für AzerothCore (Live-Server-Anbindung), das später zum Einsatz kommt.
+
+## Aktueller Fokus: Python-Simulation
+
+Die Sim-Umgebung (`python/sim/`) repliziert das WoW-Kampfsystem in reinem Python:
+- **~1000x schneller** als Live-Server-Training (kein TCP, kein Server nötig)
+- **Identische Schnittstelle** zu `wow_env.py` (gleicher Obs/Action Space, gleiche Rewards)
+- **Optionale 3D-Terrain-Daten** aus echten WoW-Dateien (maps/vmaps) via `test_3d_env.py`
+- **Ziel**: Alle Grundfunktionen (Combat, Targeting, Loot, Spells, Movement) in der Sim validieren, bevor auf den Live-Server übertragen wird
 
 ## Repository-Struktur
 
@@ -10,8 +18,14 @@ ac-share/
 ├── README.md                    ← ausführliche Projekt-Doku (Protokoll, Architektur, Workflow)
 ├── .gitattributes
 ├── python/                      ← Python RL-Training, Inference & Utilities
-│   ├── wow_env.py               ← Gymnasium-Environment (Kern)
-│   ├── train.py                 ← Multi-Bot PPO-Training (Stable-Baselines3)
+│   ├── sim/                     ← ★ HAUPTFOKUS: Offline-Simulation ★
+│   │   ├── combat_sim.py        ← Kampfsystem-Simulation (Mobs, Spells, Loot, Movement)
+│   │   ├── wow_sim_env.py       ← Gymnasium-Environment für die Sim
+│   │   ├── train_sim.py         ← PPO-Training auf der Sim (5 Bots, kein Server nötig)
+│   │   └── __init__.py
+│   ├── test_3d_env.py           ← 3D-Terrain/VMAP/LOS aus echten WoW-Daten
+│   ├── wow_env.py               ← Gymnasium-Environment (Live-Server via TCP)
+│   ├── train.py                 ← Multi-Bot PPO-Training (Live-Server)
 │   ├── run_model.py             ← Inference-Loop (trained model)
 │   ├── auto_grind.py            ← Hybrid-Runner: Route + RL-Policy
 │   ├── get_gps.py               ← GPS-Koordinaten-Logger (für Routen)
@@ -22,7 +36,7 @@ ac-share/
 │   ├── npc_memory_*.json        ← Bot-spezifische NPC-Memory-Dateien
 │   ├── models/PPO/              ← Gespeicherte PPO-Modelle (.zip)
 │   │   └── wow_bot_interrupted.zip  ← letzter Checkpoint (Training abgebrochen)
-│   └── logs/PPO_0/              ← TensorBoard-Logs
+│   └── logs/                    ← TensorBoard-Logs (PPO_0=live, PPO_2=sim)
 ├── src_module-ai-controller/    ← C++ AzerothCore-Modul (2 Dateien)
 │   ├── AIControllerHook.cpp     ← Gesamte Logik (1008 Zeilen): TCP-Server,
 │   │                               Bot-Spawning, Kommando-Verarbeitung, State-Publishing
@@ -42,43 +56,40 @@ ac-share/
 
 ## Architektur-Überblick
 
+### Dual-Pfad: Sim (Hauptfokus) + Live-Server (später)
+
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                   AzerothCore worldserver                    │
-│                 (C++, mit AI-Controller-Modul)               │
-│                                                              │
-│  OnStartup() → startet TCP-Server-Thread auf Port 5000      │
-│  OnUpdate()  → alle 400ms: baut JSON-State & publisht       │
-│              → alle 2000ms: scannt nearby_mobs               │
-│              → alle 150ms: dreht Spieler zu Target           │
-│              → verarbeitet Command-Queue                     │
-│                                                              │
-│  PlayerScript-Hooks:                                         │
-│    OnPlayerGiveXP      → trackt XP für Reward                │
-│    OnPlayerLevelChanged → setzt Level auf 1 zurück           │
-│    OnPlayerMoneyChanged → trackt Copper für Reward           │
-│    OnPlayerBeforeSendChatMessage → #spawn / #spawnbots       │
-└───────────────────────┬──────────────────────────────────────┘
-                        │ TCP :5000 (localhost, plaintext)
-                        │ Newline-delimited JSON
-                        │
-         ┌──────────────▼───────────────┐
-         │     WoWEnv (Gymnasium)       │
-         │     python/wow_env.py        │
-         ├──────────────────────────────┤
-         │ Action Space:  Discrete(9)   │
-         │ Obs Space:     Box(10,)      │
-         │ Override-Logik (Vendor,      │
-         │   Aggro, Cast-Guard, Loot)   │
-         │ NPC Memory + Blacklist       │
-         └──────┬─────────┬─────────┬───┘
-                │         │         │
-       ┌────────▼──┐ ┌───▼──────┐ ┌▼──────────────┐
-       │ train.py  │ │run_model │ │ auto_grind.py  │
-       │ 5 Bots    │ │ .py      │ │ Route + RL     │
-       │ PPO 10k   │ │ Inference│ │ Hybrid         │
-       └───────────┘ └──────────┘ └────────────────┘
+  ★ AKTUELLER FOKUS ★                    │  SPÄTERE PHASE
+                                          │
+  ┌──────────────────────────┐            │  ┌──────────────────────────────────┐
+  │    CombatSimulation      │            │  │   AzerothCore worldserver        │
+  │    python/sim/combat_sim │            │  │   (C++, AI-Controller-Modul)     │
+  ├──────────────────────────┤            │  │   TCP :5000, JSON State-Stream   │
+  │ 84 Mobs, Spell-System   │            │  └────────────────┬─────────────────┘
+  │ Exploration, Combat, XP  │            │                   │ TCP
+  │ Optional: 3D-Terrain    │            │                   │
+  │ (test_3d_env.py)        │            │  ┌────────────────▼─────────────────┐
+  └────────────┬─────────────┘            │  │   WoWEnv (python/wow_env.py)     │
+               │ direkt (in-process)      │  │   Action: Discrete(11)           │
+               │                          │  │   Obs:    Box(17,)               │
+  ┌────────────▼─────────────┐            │  └────────────────┬─────────────────┘
+  │  WoWSimEnv (Gymnasium)   │            │                   │
+  │  python/sim/wow_sim_env  │            │          ┌────────▼──────────┐
+  ├──────────────────────────┤            │          │ train.py / etc.   │
+  │ Action: Discrete(11)    │            │          └───────────────────┘
+  │ Obs:    Box(17,)        │            │
+  │ Gleiche Override-Logik   │            │
+  │ Gleiche Rewards          │◄───────────┤  ★ Identische Schnittstelle ★
+  └──────────┬───────────────┘            │
+             │                            │
+    ┌────────▼──────────┐                 │
+    │  train_sim.py     │                 │
+    │  5 Bots, PPO      │                 │
+    │  ~5000 FPS        │                 │
+    └───────────────────┘                 │
 ```
+
+### Ziel: Modelle in der Sim trainieren, dann auf Live-Server transferieren.
 
 ## TCP-Protokoll
 
@@ -180,23 +191,7 @@ Format: `<playerName>:<actionType>:<value>\n`
 | 8 | reserviert (immer 0) | 0 |
 | 9 | free_slots / 20 | 0–1 |
 
-**Reward-Shaping**:
-| Signal | Wert |
-|---|---|
-| Step-Penalty (pro Tick) | -0.01 |
-| Neuer Mob entdeckt | +0.5 |
-| Equipment-Upgrade | +100 |
-| XP gewonnen | +100 + (xp × 2) |
-| Level-Up (terminiert Episode) | +2000 |
-| Loot | +(copper × 0.1) + (score × 2) |
-| Inventar freigeräumt (Verkauf) | +50 |
-| Smite mit Target | +0.5 |
-| Smite ohne Target | -0.1 |
-| Heal bei HP > 80% | -0.5 |
-| Bewegen/Drehen im Kampf | -0.5 |
-| Drehen Richtung Target im Kampf | +0.6 |
-| Tod (HP=0, terminiert) | -100 |
-| Mana < 5% (terminiert) | -10 |
+**Reward-Shaping**: Siehe einheitliche Reward-Tabelle oben (gilt für Sim und Live identisch).
 
 **Override-Logik** (überlagert RL-Entscheidungen):
 1. **Vendor-Modus**: Bei `free_slots < 2` und nicht im Kampf → navigiert zum nächsten Vendor aus NPC-Memory, verkauft automatisch
@@ -218,7 +213,79 @@ Format: `<playerName>:<actionType>:<value>\n`
 Jeder Bot dreht beim Reset in eine andere Richtung, um Verteilung zu verbessern:
 - Autoai: 0 Schritte, Bota: 2, Botb: 4, Botc: 6, Botd: 8, Bote: 10 (je ~0.5 rad)
 
-### train.py — PPO-Training
+## Python-Simulation im Detail (Hauptfokus)
+
+### combat_sim.py — Kampfsystem-Simulation
+
+**Klasse**: `CombatSimulation`
+
+Simuliert das komplette WoW-Kampfsystem in reinem Python:
+- **84 Mobs** aus echten AzerothCore DB-Spawn-Positionen (4 Mob-Typen, Level 1–3)
+- **Natürlicher Schwierigkeitsgradient**: Wölfe (L1) im Norden → Kobolde (L1–3) im Süden/Osten
+- **Priest-Spells**: Smite (585), Heal (2050), SW:Pain (589), PW:Shield (17)
+- **Mob-AI**: Aggro-Range (10–20 Units), Chase, Melee-Angriff, Leash (60 Units)
+- **Loot-System**: Copper-Drops, vereinfachtes Item-Score-System
+- **Respawn**: Tote Mobs respawnen nach 60s am Original-Spawnpunkt
+- **XP**: Formelbasiert nach Mob-Level (50–120 XP pro Kill)
+- **Exploration**: Grid-basiertes Area/Zone-Discovery-System (50×50 / 200×200 Units)
+- **State-Dict**: Identisch zum TCP-JSON des Live-Servers
+
+### wow_sim_env.py — Gymnasium Sim-Environment
+
+Drop-in Replacement für `wow_env.py`:
+- **Gleicher Action Space**: `Discrete(11)` — No-op, Move, Turn×2, Target, Smite, Heal, Loot, Sell, SW:Pain, PW:Shield
+- **Gleicher Obs Space**: `Box(17,)` — HP%, Mana%, Target-HP, Combat, Distance, Angle, etc.
+- **Gleiche Rewards**: Synchronisiert mit `wow_env.py` (Skala ~[-5, +15])
+- **Gleiche Override-Logik**: Vendor, Aggro, Cast-Guard, Loot-Automatik, Range-Management
+- **max_episode_steps**: 4000
+
+### train_sim.py — Sim-Training
+
+- **5 Bots** in `SubprocVecEnv`
+- **PPO** mit `ent_coef=0.01`, `n_steps=256`, `batch_size=128`
+- **TensorBoard-Logs** in `logs/PPO_2/`
+- **Episode-Callbacks** mit Kills, XP, Deaths
+- **~5000+ FPS** (ohne 3D-Terrain)
+
+### test_3d_env.py — 3D-Terrain aus echten WoW-Daten
+
+Liest die originalen WoW-Dateien (maps/, vmaps/):
+- **Terrain-Höhen**: 129×129 Height-Grid pro Tile, Triangle-Interpolation
+- **LOS (Line of Sight)**: VMAP-Spawns (Gebäude, Bäume) mit AABB-Ray-Intersection
+- **HeightCache**: Vorberechnetes numpy-Grid für O(1) Höhen-Lookups (~100x schneller)
+- **SpatialLOSChecker**: Räumlich indizierter LOS-Check (~100-500x schneller als brute-force)
+
+### Reward-Tabelle (gilt für Sim UND Live identisch)
+
+| Signal | Wert | Anmerkung |
+|---|---|---|
+| Step-Penalty | -0.01 | pro Tick |
+| Idle-Penalty | -0.03 | Noop ohne Casting |
+| Mob entdeckt | +0.25 | 0.5 × 0.5 Skalierung |
+| Approach | clip(delta×0.05, -0.2, +0.3) | näher an Target |
+| Damage dealt | min(dmg×0.03, 1.0) | Schaden am Target |
+| Facing Target | facing_quality × 0.08 | im Kampf |
+| XP/Kill | 3.0 + min(xp×0.05, 2.0) | ~3–5 pro Kill |
+| Level-Up | +15.0 | terminal |
+| Equipment-Upgrade | +3.0 | |
+| Loot | min((copper×0.01)+(score×0.2), 3.0) | gedeckelt |
+| Verkauf | +2.0 | Slots freigeräumt |
+| Smite mit Target | +0.3 | |
+| Smite ohne Target | -0.1 | |
+| Heal bei HP<50% | +0.5 | |
+| Heal bei HP>80% | -0.3 | |
+| SW:Pain (frisch) | +0.5 | |
+| SW:Pain (doppelt) | -0.2 | |
+| PW:Shield (Kampf) | +0.4 | |
+| PW:Shield (aktiv) | -0.2 | |
+| Bewegen im Kampf | -0.3 | |
+| Drehen zu Target | +0.4 | im Kampf |
+| Neues Area betreten | +0.5 | pro 50×50 Zelle (einmalig) |
+| Neue Zone betreten | +2.0 | pro 200×200 Zelle (einmalig) |
+| Tod | -5.0 | terminal, überschreibt |
+| OOM (<5% Mana) | -2.0 | terminal |
+
+### train.py — PPO-Training (Live-Server)
 
 - **Bots**: `["Bota", "Botb", "Botc", "Botd", "Bote"]` (5 parallele Environments)
 - **Vectorization**: `SubprocVecEnv` (separate Prozesse pro Bot)
@@ -334,13 +401,32 @@ Das Modul besteht aus 2 Dateien ohne eigene Header oder CMakeLists:
 
 ## Workflow
 
-### Voraussetzungen
+### Sim-Training (Hauptfokus — kein Server nötig)
+
+**Voraussetzungen**: Python 3.x mit `gymnasium`, `numpy`, `stable-baselines3`
+
+```bash
+# Standard-Training (reine Sim)
+python -m sim.train_sim --steps 500000
+
+# Mit 3D-Terrain aus echten WoW-Daten
+python -m sim.train_sim --data-root /pfad/zu/Data --steps 500000
+
+# TensorBoard
+tensorboard --logdir python/logs/
+```
+
+Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Loss.
+
+### Live-Server-Training (spätere Phase)
+
+**Voraussetzungen**:
 1. AzerothCore aus `src_azeroth_core/` bauen (Standard-CMake-Build)
 2. AI-Controller-Modul aus `src_module-ai-controller/` in die AzerothCore-Module integrieren
 3. Bot-Characters in der Character-DB anlegen (Namen müssen matchen)
 4. Python 3.x mit `gymnasium`, `numpy`, `stable-baselines3`
 
-### Ablauf
+**Ablauf**:
 1. `worldserver` starten → Modul startet TCP auf Port 5000
 2. GM-Character einloggen, `#spawnbots` oder `#spawn <Name>` eingeben
 3. Python starten:
@@ -349,14 +435,6 @@ Das Modul besteht aus 2 Dateien ohne eigene Header oder CMakeLists:
    - **Hybrid-Grind**: `python python/auto_grind.py` (nutzt `wow_bot_interrupted.zip`)
    - **GPS-Logger**: `python python/get_gps.py` (zum Erstellen neuer Routen)
    - **Multi-Bot-Test**: `python python/test_multibot.py`
-
-### TensorBoard
-
-```bash
-tensorboard --logdir python/logs/
-```
-
-Zeigt: FPS, KL-Divergenz, Clipping, Entropy, Value-Loss, Policy-Loss, Explained Variance.
 
 ## Coding-Konventionen
 
