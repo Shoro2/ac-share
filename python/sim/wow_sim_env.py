@@ -86,6 +86,9 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_discoveries = 0
         self._ep_approach_reward = 0.0
+        self._ep_facing_reward = 0.0
+        self._ep_exploration_reward = 0.0
+        self._ep_action_reward = 0.0
         self._last_nearby_guids = set()
 
     def reset(self, seed=None, options=None):
@@ -109,6 +112,9 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_discoveries = 0
         self._ep_approach_reward = 0.0
+        self._ep_facing_reward = 0.0
+        self._ep_exploration_reward = 0.0
+        self._ep_action_reward = 0.0
         self._last_nearby_guids = set()
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
@@ -179,7 +185,8 @@ class WoWSimEnv(gym.Env):
             elif action == 9 and self.sim.target and self.sim.target.dot_remaining > 0:
                 override_action = 0  # block SW:Pain if already active
 
-        # ─── Execute Action ───────────────────────────────────────
+        # ─── Execute Action (track success for reward gating) ────
+        action_ok = True  # whether the action actually succeeded
         if override_action == 0:
             self.sim.do_noop()
         elif override_action == 1:
@@ -191,17 +198,17 @@ class WoWSimEnv(gym.Env):
         elif override_action == 4:
             self.sim.do_target_nearest()
         elif override_action == 5:
-            self.sim.do_cast_smite()
+            action_ok = self.sim.do_cast_smite()
         elif override_action == 6:
-            self.sim.do_cast_heal()
+            action_ok = self.sim.do_cast_heal()
         elif override_action == 7:
-            self.sim.do_loot()
+            action_ok = self.sim.do_loot()
         elif override_action == 8:
-            self.sim.do_sell()
+            action_ok = self.sim.do_sell()
         elif override_action == 9:
-            self.sim.do_cast_sw_pain()
+            action_ok = self.sim.do_cast_sw_pain()
         elif override_action == 10:
-            self.sim.do_cast_pw_shield()
+            action_ok = self.sim.do_cast_pw_shield()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -282,10 +289,12 @@ class WoWSimEnv(gym.Env):
                 reward += min(damage * 0.03, 1.0)
                 self._ep_damage_dealt += damage
 
-        # 6. Facing-Reward (face target in combat)
-        if in_combat_now and t_exists > 0.5:
+        # 6. Facing-Reward (face target in combat — capped per episode)
+        if in_combat_now and t_exists > 0.5 and self._ep_facing_reward < 30.0:
             facing_quality = 1.0 - abs(angle_norm)
-            reward += facing_quality * 0.08
+            facing_r = facing_quality * 0.08
+            self._ep_facing_reward += facing_r
+            reward += facing_r
 
         # 7. XP/Kill
         xp = events["xp_gained"]
@@ -318,38 +327,50 @@ class WoWSimEnv(gym.Env):
         new_zones = events.get("new_zones", 0)
         new_maps = events.get("new_maps", 0)
         if new_areas > 0:
-            reward += new_areas * 1.0
+            r = new_areas * 1.0
+            reward += r
             self._ep_areas += new_areas
+            self._ep_exploration_reward += r
         if new_zones > 0:
-            reward += new_zones * 3.0
+            r = new_zones * 3.0
+            reward += r
             self._ep_zones += new_zones
+            self._ep_exploration_reward += r
         if new_maps > 0:
-            reward += new_maps * 10.0
+            r = new_maps * 10.0
+            reward += r
             self._ep_maps += new_maps
+            self._ep_exploration_reward += r
 
-        # 12. Action-specific rewards
+        # 12. Action-specific rewards (ONLY when the action actually succeeded)
         if override_action == 5:  # Smite
-            if t_exists > 0.5:
+            if action_ok and t_exists > 0.5:
                 reward += 0.3
+            elif not action_ok:
+                pass  # failed cast — no reward, no penalty
             else:
-                reward -= 0.1
+                reward -= 0.1  # smite without target
         elif override_action == 6:  # Heal
-            if hp_pct < 0.5:
-                reward += 0.5
-            elif hp_pct > 0.8:
-                reward -= 0.3
+            if action_ok:
+                if hp_pct < 0.5:
+                    reward += 0.5
+                elif hp_pct > 0.8:
+                    reward -= 0.3
         elif override_action == 9:  # SW:Pain
-            if t_exists > 0.5 and state.get('target_has_sw_pain') != 'true':
+            if action_ok and t_exists > 0.5:
                 reward += 0.5
+            elif not action_ok:
+                pass  # failed cast
             elif t_exists > 0.5:
                 reward -= 0.2
             else:
                 reward -= 0.1
         elif override_action == 10:  # PW:Shield
-            if in_combat_now and state.get('has_shield') != 'true':
-                reward += 0.4
+            if action_ok:
+                if in_combat_now:
+                    reward += 0.4
             elif state.get('has_shield') == 'true':
-                reward -= 0.2
+                reward -= 0.2  # still penalize selecting shield when active
 
         # 13. Movement in combat
         if in_combat_now and t_exists > 0.5:
@@ -397,6 +418,11 @@ class WoWSimEnv(gym.Env):
                 "areas_explored": self._ep_areas,
                 "zones_explored": self._ep_zones,
                 "maps_explored": self._ep_maps,
+                # Reward breakdown for debugging
+                "rw_approach": self._ep_approach_reward,
+                "rw_facing": self._ep_facing_reward,
+                "rw_explore": self._ep_exploration_reward,
+                "rw_discovery": self._ep_discoveries,
             }
 
         return obs, reward, terminated, truncated, info
