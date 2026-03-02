@@ -42,7 +42,7 @@ class WoWSimEnv(gym.Env):
         self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed)
         self.last_state = None
         self._step_count = 0
-        self._max_steps = 2000  # episode timeout
+        self._max_steps = 4000  # episode timeout
         self._ep_reward = 0.0
         self._ep_xp = 0
         self._ep_loot = 0
