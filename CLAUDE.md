@@ -65,8 +65,8 @@ ac-share/
   │    CombatSimulation      │            │  │   AzerothCore worldserver        │
   │    python/sim/combat_sim │            │  │   (C++, AI-Controller-Modul)     │
   ├──────────────────────────┤            │  │   TCP :5000, JSON State-Stream   │
-  │ 15 Mobs, Spell-System   │            │  └────────────────┬─────────────────┘
-  │ Loot, XP, Movement      │            │                   │ TCP
+  │ 84 Mobs, Spell-System   │            │  └────────────────┬─────────────────┘
+  │ Exploration, Combat, XP  │            │                   │ TCP
   │ Optional: 3D-Terrain    │            │                   │
   │ (test_3d_env.py)        │            │  ┌────────────────▼─────────────────┐
   └────────────┬─────────────┘            │  │   WoWEnv (python/wow_env.py)     │
@@ -220,12 +220,14 @@ Jeder Bot dreht beim Reset in eine andere Richtung, um Verteilung zu verbessern:
 **Klasse**: `CombatSimulation`
 
 Simuliert das komplette WoW-Kampfsystem in reinem Python:
-- **15 Mobs** um den Spawnpunkt mit zufälligen Positionen und Stats
+- **84 Mobs** aus echten AzerothCore DB-Spawn-Positionen (4 Mob-Typen, Level 1–3)
+- **Natürlicher Schwierigkeitsgradient**: Wölfe (L1) im Norden → Kobolde (L1–3) im Süden/Osten
 - **Priest-Spells**: Smite (585), Heal (2050), SW:Pain (589), PW:Shield (17)
-- **Mob-AI**: Aggro-Range (8 Units), Chase, Melee-Angriff, Leash (40 Units)
-- **Loot-System**: Copper + Items mit Score, Auto-Equip wenn besser
-- **Respawn**: Tote Mobs respawnen nach 30s an neuer Position
-- **XP**: Formelbasiert nach Mob-Level
+- **Mob-AI**: Aggro-Range (10–20 Units), Chase, Melee-Angriff, Leash (60 Units)
+- **Loot-System**: Copper-Drops, vereinfachtes Item-Score-System
+- **Respawn**: Tote Mobs respawnen nach 60s am Original-Spawnpunkt
+- **XP**: Formelbasiert nach Mob-Level (50–120 XP pro Kill)
+- **Exploration**: Grid-basiertes Area/Zone-Discovery-System (50×50 / 200×200 Units)
 - **State-Dict**: Identisch zum TCP-JSON des Live-Servers
 
 ### wow_sim_env.py — Gymnasium Sim-Environment
@@ -278,6 +280,8 @@ Liest die originalen WoW-Dateien (maps/, vmaps/):
 | PW:Shield (aktiv) | -0.2 | |
 | Bewegen im Kampf | -0.3 | |
 | Drehen zu Target | +0.4 | im Kampf |
+| Neues Area betreten | +0.5 | pro 50×50 Zelle (einmalig) |
+| Neue Zone betreten | +2.0 | pro 200×200 Zelle (einmalig) |
 | Tod | -5.0 | terminal, überschreibt |
 | OOM (<5% Mana) | -2.0 | terminal |
 

@@ -28,7 +28,7 @@ class WoWSimEnv(gym.Env):
 
     metadata = {"render_modes": []}
 
-    def __init__(self, bot_name: str = "SimBot", num_mobs: int = 15, seed: int = None):
+    def __init__(self, bot_name: str = "SimBot", num_mobs: int = None, seed: int = None):
         super().__init__()
 
         self.action_space = spaces.Discrete(11)
@@ -48,6 +48,8 @@ class WoWSimEnv(gym.Env):
         self._ep_loot = 0
         self._ep_kills = 0
         self._ep_damage_dealt = 0
+        self._ep_areas = 0
+        self._ep_zones = 0
         self._prev_dist_to_target = None
         self._prev_target_hp = None
 
@@ -64,6 +66,8 @@ class WoWSimEnv(gym.Env):
         self._ep_loot = 0
         self._ep_kills = 0
         self._ep_damage_dealt = 0
+        self._ep_areas = 0
+        self._ep_zones = 0
         self._prev_dist_to_target = None
         self._prev_target_hp = None
         self.last_state = self.sim.get_state_dict()
@@ -260,6 +264,16 @@ class WoWSimEnv(gym.Env):
         if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
             reward += 2.0
 
+        # 11b. Exploration (new area/zone discovered)
+        new_areas = events.get("new_areas", 0)
+        new_zones = events.get("new_zones", 0)
+        if new_areas > 0:
+            reward += new_areas * 0.5
+            self._ep_areas += new_areas
+        if new_zones > 0:
+            reward += new_zones * 2.0
+            self._ep_zones += new_zones
+
         # 12. Action-specific rewards
         if override_action == 5:  # Smite
             if t_exists > 0.5:
@@ -326,6 +340,8 @@ class WoWSimEnv(gym.Env):
                 "loot": self._ep_loot,
                 "damage_dealt": self.sim.damage_dealt,
                 "death": 1 if self.sim.player.hp <= 0 else 0,
+                "areas_explored": self._ep_areas,
+                "zones_explored": self._ep_zones,
             }
 
         return obs, reward, terminated, truncated, info

@@ -71,6 +71,8 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_loot_copper", stats["loot"], step)
                 self._writer.add_scalar("gameplay/ep_damage_dealt", stats["damage_dealt"], step)
                 self._writer.add_scalar("gameplay/ep_death", stats["death"], step)
+                self._writer.add_scalar("gameplay/ep_areas_explored", stats.get("areas_explored", 0), step)
+                self._writer.add_scalar("gameplay/ep_zones_explored", stats.get("zones_explored", 0), step)
 
                 self._writer.add_scalar("gameplay/total_episodes", self._episode_count, step)
                 self._writer.add_scalar("gameplay/total_kills", self._total_kills, step)
@@ -83,9 +85,12 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.flush()
 
             if self.verbose:
+                areas = stats.get('areas_explored', 0)
+                zones = stats.get('zones_explored', 0)
                 print(f"  [Episode {self._episode_count}] "
                       f"reward={stats['reward']:.1f} kills={stats['kills']} "
                       f"xp={stats['xp']} deaths={stats['death']} "
+                      f"areas={areas} zones={zones} "
                       f"len={stats['length']}")
 
         return True
@@ -98,7 +103,7 @@ class GameplayMetricsCallback(BaseCallback):
 
 def make_env(bot_name: str, seed: int):
     def _init():
-        return WoWSimEnv(bot_name=bot_name, num_mobs=15, seed=seed)
+        return WoWSimEnv(bot_name=bot_name, seed=seed)
     return _init
 
 
