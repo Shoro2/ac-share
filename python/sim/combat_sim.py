@@ -10,7 +10,10 @@ Tick-based: 1 tick = 0.5 seconds (matches WoWEnv decision interval).
 import math
 import random
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sim.terrain import SimTerrain
 
 
 # ─── Spell Definitions ───────────────────────────────────────────────
@@ -172,6 +175,7 @@ class Player:
     level: int = 1
     x: float = -8921.09
     y: float = -119.135
+    z: float = 82.025
     orientation: float = 5.82
     in_combat: bool = False
     is_casting: bool = False
@@ -204,6 +208,7 @@ class Mob:
     level: int
     x: float
     y: float
+    z: float = 82.0
     alive: bool = True
     in_combat: bool = False
     target_player: bool = False
@@ -216,6 +221,7 @@ class Mob:
     looted: bool = False
     spawn_x: float = 0.0
     spawn_y: float = 0.0
+    spawn_z: float = 82.0
 
 
 # ─── Combat Simulation ───────────────────────────────────────────────
@@ -251,6 +257,8 @@ class CombatSimulation:
         self.rng = random.Random(seed)
         self.num_mobs = num_mobs  # None = all spawns
         self.player = Player()
+        if self.terrain:
+            self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.mobs: list[Mob] = []
         self.target: Optional[Mob] = None
         self.tick_count: int = 0
@@ -290,20 +298,23 @@ class CombatSimulation:
             # Scale HP by level
             hp_by_level = {1: 42, 2: 55, 3: 71}
             base_hp = hp_by_level.get(level, 42)
+            z = self.terrain.get_height(x, y) if self.terrain else 82.0
             mob = Mob(
                 uid=self._new_uid(),
                 template=template,
                 hp=base_hp,
                 max_hp=base_hp,
                 level=level,
-                x=x, y=y,
-                spawn_x=x, spawn_y=y,
+                x=x, y=y, z=z,
+                spawn_x=x, spawn_y=y, spawn_z=z,
             )
             self.mobs.append(mob)
 
     def reset(self) -> None:
         """Reset player and mobs to initial state."""
         self.player = Player()
+        if self.terrain:
+            self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.target = None
         self.tick_count = 0
         self._next_uid = 1
@@ -356,8 +367,18 @@ class CombatSimulation:
         """Move 3 units in current orientation direction."""
         if self.player.is_casting:
             return
-        self.player.x += math.cos(self.player.orientation) * self.MOVE_SPEED
-        self.player.y += math.sin(self.player.orientation) * self.MOVE_SPEED
+        p = self.player
+        new_x = p.x + math.cos(p.orientation) * self.MOVE_SPEED
+        new_y = p.y + math.sin(p.orientation) * self.MOVE_SPEED
+
+        if self.terrain:
+            new_z = self.terrain.get_height(new_x, new_y)
+            if not self.terrain.check_walkable(p.x, p.y, p.z, new_x, new_y, new_z):
+                return  # blocked by terrain slope/step
+            p.z = new_z
+
+        p.x = new_x
+        p.y = new_y
 
     def do_turn_left(self):
         if self.player.is_casting:
@@ -455,6 +476,13 @@ class CombatSimulation:
                 return False
             if self._dist_to_mob(self.target) > spell.spell_range:
                 return False
+            # LOS check
+            if self.terrain:
+                if not self.terrain.check_los(
+                    self.player.x, self.player.y, self.player.z,
+                    self.target.x, self.target.y, self.target.z
+                ):
+                    return False
 
         # Shield: check if already shielded
         if spell_id == 17 and self.player.shield_remaining > 0:
@@ -578,8 +606,18 @@ class CombatSimulation:
                     dx = p.x - mob.x
                     dy = p.y - mob.y
                     move = min(self.MOB_SPEED, dist - 1.5)
-                    mob.x += (dx / dist) * move
-                    mob.y += (dy / dist) * move
+                    new_mx = mob.x + (dx / dist) * move
+                    new_my = mob.y + (dy / dist) * move
+                    if self.terrain:
+                        new_mz = self.terrain.get_height(new_mx, new_my)
+                        if self.terrain.check_walkable(mob.x, mob.y, mob.z, new_mx, new_my, new_mz):
+                            mob.x = new_mx
+                            mob.y = new_my
+                            mob.z = new_mz
+                        # else: mob can't move (blocked), stays in place
+                    else:
+                        mob.x = new_mx
+                        mob.y = new_my
                     dist = self._dist_to_mob(mob)
 
                 # Melee attack
@@ -651,6 +689,7 @@ class CombatSimulation:
         mob.looted = False
         mob.x = mob.spawn_x
         mob.y = mob.spawn_y
+        mob.z = mob.spawn_z
         mob.attack_timer = 0
         mob.dot_remaining = 0
         mob.dot_timer = 0
@@ -664,6 +703,7 @@ class CombatSimulation:
         mob.hp = mob.max_hp
         mob.x = mob.spawn_x
         mob.y = mob.spawn_y
+        mob.z = mob.spawn_z
         mob.attack_timer = 0
         mob.dot_remaining = 0
         self._check_combat_end()
@@ -686,6 +726,7 @@ class CombatSimulation:
                     "alive": mob.alive,
                     "x": mob.x,
                     "y": mob.y,
+                    "z": mob.z,
                     "dist": d,
                     "target_player": mob.target_player,
                     "looted": mob.looted,
@@ -696,7 +737,7 @@ class CombatSimulation:
     def get_target_info(self) -> dict:
         """Get info about current target."""
         if self.target is None:
-            return {"status": "none", "hp": 0, "x": 0, "y": 0, "level": 0}
+            return {"status": "none", "hp": 0, "x": 0, "y": 0, "z": 82.0, "level": 0}
         status = "alive" if self.target.alive else "dead"
         return {
             "status": status,
@@ -704,6 +745,7 @@ class CombatSimulation:
             "max_hp": self.target.max_hp,
             "x": self.target.x,
             "y": self.target.y,
+            "z": self.target.z,
             "level": self.target.level,
             "has_sw_pain": self.target.dot_remaining > 0,
         }
@@ -722,7 +764,7 @@ class CombatSimulation:
             "level": p.level,
             "x": p.x,
             "y": p.y,
-            "z": 82.0,
+            "z": p.z,
             "o": p.orientation,
             "combat": "true" if p.in_combat else "false",
             "casting": "true" if p.is_casting else "false",
@@ -737,7 +779,7 @@ class CombatSimulation:
             "leveled_up": "false",
             "tx": t_info["x"],
             "ty": t_info["y"],
-            "tz": 82.0,
+            "tz": t_info["z"],
             "has_shield": "true" if p.shield_remaining > 0 else "false",
             "target_has_sw_pain": "true" if t_info.get("has_sw_pain") else "false",
             "nearby_mobs": [

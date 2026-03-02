@@ -14,6 +14,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import math
+from typing import Optional
 
 from sim.combat_sim import CombatSimulation, SPELLS
 
@@ -39,7 +40,15 @@ class WoWSimEnv(gym.Env):
         self.bot_name = bot_name
         self.num_mobs = num_mobs
         self._seed = seed
-        self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed)
+        self._data_root = data_root
+
+        # Load 3D terrain if data_root provided
+        self._terrain = None
+        if data_root:
+            from sim.terrain import SimTerrain
+            self._terrain = SimTerrain(data_root, quiet=True)
+
+        self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed, terrain=self._terrain)
         self.last_state = None
         self._step_count = 0
         self._max_steps = 4000  # episode timeout
@@ -57,7 +66,8 @@ class WoWSimEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self._seed = seed
-        self.sim = CombatSimulation(num_mobs=self.num_mobs, seed=self._seed)
+        self.sim = CombatSimulation(num_mobs=self.num_mobs, seed=self._seed,
+                                    terrain=self._terrain)
         if self._seed is not None:
             self._seed += 1  # vary each episode
         self._step_count = 0

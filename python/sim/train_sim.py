@@ -101,7 +101,7 @@ class GameplayMetricsCallback(BaseCallback):
             self._writer = None
 
 
-def make_env(bot_name: str, seed: int):
+def make_env(bot_name: str, seed: int, data_root: str = None):
     def _init():
         return WoWSimEnv(bot_name=bot_name, seed=seed)
     return _init
@@ -116,6 +116,8 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--resume", type=str, default=None, help="Path to model to resume from")
     parser.add_argument("--output", type=str, default=None, help="Output model path")
+    parser.add_argument("--data-root", type=str, default=None,
+                        help="Path to Data/ directory (maps/, vmaps/) for 3D terrain")
     args = parser.parse_args()
 
     models_dir = os.path.join(PARENT_DIR, "models", "PPO")
@@ -124,14 +126,18 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
 
     bot_names = [f"SimBot{i}" for i in range(args.bots)]
+    data_root = args.data_root
     print(f">>> Starting sim training: {args.bots} bots, {args.steps} timesteps <<<")
     print(f">>> n_steps={args.n_steps}, batch_size={args.batch_size}, lr={args.lr} <<<")
+    if data_root:
+        print(f">>> 3D terrain enabled: {data_root} <<<")
 
     start_method = "fork" if sys.platform != "win32" else "spawn"
 
     try:
         env = SubprocVecEnv(
-            [make_env(name, seed=i * 1000) for i, name in enumerate(bot_names)],
+            [make_env(name, seed=i * 1000, data_root=data_root)
+             for i, name in enumerate(bot_names)],
             start_method=start_method,
         )
     except Exception as e:
