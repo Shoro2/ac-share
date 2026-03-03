@@ -19,8 +19,15 @@ from multiprocessing import freeze_support
 # Ensure parent dir is on path for sim package imports
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(THIS_DIR)
+REPO_ROOT = os.path.dirname(PARENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
+
+# Auto-detect data paths relative to repo root
+_DEFAULT_DATA_DIR = os.path.join(REPO_ROOT, "data")
+_DEFAULT_CREATURE_DATA = _DEFAULT_DATA_DIR if os.path.isfile(
+    os.path.join(_DEFAULT_DATA_DIR, "creature.csv")) else None
+_DEFAULT_LOG_DIR = os.path.join(PARENT_DIR, "sim_episodes")
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
@@ -152,21 +159,22 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--resume", type=str, default=None, help="Path to model to resume from")
     parser.add_argument("--output", type=str, default=None, help="Output model path")
-    parser.add_argument("--data-root", type=str,
-                        default=r"C:\wowstuff\WoWKI_serv\Data",
+    parser.add_argument("--data-root", type=str, default=None,
                         help="Path to Data/ directory (maps/, vmaps/) for 3D terrain")
-    parser.add_argument("--creature-data", type=str,
-                        default=r"C:\wowstuff\WoWKI_serv\python\dbexport",
+    parser.add_argument("--creature-data", type=str, default=_DEFAULT_CREATURE_DATA,
                         help="Path to directory with creature.csv and creature_template.csv "
-                             "(enables full-world creature spawning via spatial chunks)")
-    parser.add_argument("--log-dir", type=str,
-                        default=r"C:\wowstuff\WoWKI_serv\python\sim_episodes",
+                             "(auto-detected from data/). Use --no-creatures to disable.")
+    parser.add_argument("--no-creatures", action="store_true",
+                        help="Disable creature DB loading even if CSVs are available")
+    parser.add_argument("--log-dir", type=str, default=_DEFAULT_LOG_DIR,
                         help="Directory for episode trail logs (for offline visualization). "
                              "Negligible performance impact.")
     parser.add_argument("--log-interval", type=int, default=1,
                         help="Record trail every N steps (default: 1 = every step)")
-    parser.add_argument("--enable-quests", action="store_true",
-                        help="Enable quest system (quest NPCs, objectives, rewards)")
+    parser.add_argument("--enable-quests", action="store_true", default=True,
+                        help="Enable quest system (default: on)")
+    parser.add_argument("--no-quests", action="store_true",
+                        help="Disable quest system")
     args = parser.parse_args()
 
     models_dir = os.path.join(PARENT_DIR, "models", "PPO")
@@ -176,9 +184,10 @@ def main():
 
     bot_names = [f"SimBot{i}" for i in range(args.bots)]
     data_root = args.data_root
-    creature_csv_dir = args.creature_data
+    creature_csv_dir = None if args.no_creatures else args.creature_data
     vis_log_dir = args.log_dir
     vis_log_interval = args.log_interval
+    enable_quests = args.enable_quests and not args.no_quests
     print(f">>> Starting sim training: {args.bots} bots, {args.steps} timesteps <<<")
     print(f">>> n_steps={args.n_steps}, batch_size={args.batch_size}, lr={args.lr} <<<")
     if data_root:
@@ -187,7 +196,7 @@ def main():
         print(f">>> Full-world creatures enabled: {creature_csv_dir} <<<")
     if vis_log_dir:
         print(f">>> Episode trail logging enabled: {vis_log_dir} (interval={vis_log_interval}) <<<")
-    if args.enable_quests:
+    if enable_quests:
         print(f">>> Quest system enabled: Northshire quests with kill/collect/explore objectives <<<")
 
     start_method = "fork" if sys.platform != "win32" else "spawn"
@@ -197,7 +206,7 @@ def main():
             [make_env(name, seed=i * 1000, data_root=data_root,
                       creature_csv_dir=creature_csv_dir,
                       log_dir=vis_log_dir, log_interval=vis_log_interval,
-                      enable_quests=args.enable_quests)
+                      enable_quests=enable_quests)
              for i, name in enumerate(bot_names)],
             start_method=start_method,
         )
