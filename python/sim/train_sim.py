@@ -177,7 +177,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train PPO on WoW Combat Sim")
     parser.add_argument("--bots", type=int, default=5, help="Number of parallel bots")
     parser.add_argument("--steps", type=int, default=100_000, help="Total training timesteps")
-    parser.add_argument("--n-steps", type=int, default=256, help="Steps per rollout per env")
+    parser.add_argument("--n-steps", type=int, default=512, help="Steps per rollout per env")
     parser.add_argument("--batch-size", type=int, default=128, help="Minibatch size")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--resume", type=str, default=None, help="Path to model to resume from")
@@ -259,9 +259,9 @@ def main():
                 n_steps=args.n_steps,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
-                ent_coef=0.1,
+                ent_coef=0.01,
                 clip_range=0.2,
-                n_epochs=4,
+                n_epochs=8,
                 gamma=0.97,
                 gae_lambda=0.95,
             )
