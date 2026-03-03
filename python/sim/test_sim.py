@@ -656,18 +656,20 @@ def test_loot_tables():
 
 
 def test_vendor_system():
-    """Test vendor NPCs, navigation, and sell mechanics."""
+    """Test vendor NPCs, navigation, sell mechanics, and dynamic spawning."""
+    import tempfile
+    import csv
+
     print("=== Test 8: Vendor System ===")
 
     sim = CombatSimulation(num_mobs=10, seed=42)
 
-    # --- Test 8a: Vendors are spawned ---
+    # --- Test 8a: Fallback vendors are spawned without creature_db ---
     assert len(sim.vendors) == len(VENDOR_DATA), \
-        f"Expected {len(VENDOR_DATA)} vendors, got {len(sim.vendors)}"
-    print(f"  8a: {len(sim.vendors)} vendor NPCs spawned ✓")
+        f"Expected {len(VENDOR_DATA)} fallback vendors, got {len(sim.vendors)}"
+    print(f"  8a: {len(sim.vendors)} fallback vendor NPCs spawned ✓")
 
     # --- Test 8b: Vendors appear in nearby_mobs with vendor flag ---
-    # Move player close to vendors (Northshire Abbey area)
     sim.player.x = VENDOR_DATA[0]["x"]
     sim.player.y = VENDOR_DATA[0]["y"]
     nearby = sim.get_nearby_mobs()
@@ -693,11 +695,9 @@ def test_vendor_system():
     target_x, target_y = start_x + 10, start_y + 10
     moved = sim2.do_move_to(target_x, target_y)
     assert moved, "do_move_to should succeed"
-    # Player should be closer to target than before
     old_dist = math.sqrt((target_x - start_x)**2 + (target_y - start_y)**2)
     new_dist = math.sqrt((target_x - sim2.player.x)**2 + (target_y - sim2.player.y)**2)
     assert new_dist < old_dist, "Player should be closer to target"
-    # Should have moved exactly MOVE_SPEED units
     moved_dist = math.sqrt((sim2.player.x - start_x)**2 + (sim2.player.y - start_y)**2)
     assert abs(moved_dist - sim2.MOVE_SPEED) < 0.01, \
         f"Should move {sim2.MOVE_SPEED} units, moved {moved_dist:.2f}"
@@ -706,14 +706,11 @@ def test_vendor_system():
     # --- Test 8f: Sell with inventory items gives copper ---
     sim3 = CombatSimulation(num_mobs=5, seed=42)
     p = sim3.player
-    # Add items with known sell prices
     p.inventory.append(InventoryItem(entry=1, name="Junk", quality=0,
                                      sell_price=25, score=5.0, inventory_type=0))
     p.inventory.append(InventoryItem(entry=2, name="Cloth", quality=1,
                                      sell_price=50, score=10.0, inventory_type=0))
     p.free_slots = INVENTORY_SLOTS - 2
-
-    # Position at vendor
     v = VENDOR_DATA[0]
     p.x = v["x"]
     p.y = v["y"]
@@ -723,17 +720,116 @@ def test_vendor_system():
     assert p.sell_copper == 75, f"Expected sell_copper=75, got {p.sell_copper}"
     assert p.free_slots == INVENTORY_SLOTS
     assert len(p.inventory) == 0
-
-    # Consume events should report sell_copper
     events = sim3.consume_events()
-    assert events["sell_copper"] == 75, f"Expected sell_copper=75 in events, got {events['sell_copper']}"
-    assert p.sell_copper == 0, "sell_copper should be cleared after consume"
+    assert events["sell_copper"] == 75
+    assert p.sell_copper == 0
     print(f"  8f: Sell copper: 25+50={events['sell_copper']} copper ✓")
 
     # --- Test 8g: Vendors persist after reset ---
     sim.reset()
     assert len(sim.vendors) == len(VENDOR_DATA), "Vendors should be re-spawned after reset"
     print(f"  8g: Vendors persist after reset ✓")
+
+    # --- Test 8h: Dynamic vendor spawning from creature_db ---
+    tmpdir = tempfile.mkdtemp()
+
+    # Create creature_template with one attackable mob and one vendor
+    tmpl_header = ['entry', 'name', 'minlevel', 'maxlevel', 'faction', 'npcflag',
+                   'detection_range', 'rank', 'BaseAttackTime', 'mingold', 'maxgold',
+                   'HealthModifier', 'DamageModifier', 'ExperienceModifier',
+                   'unit_class', 'unit_flags', 'type', 'lootid']
+    templates = [
+        # Attackable mob (wolf)
+        {'entry': '100', 'name': 'Test Wolf', 'minlevel': '1', 'maxlevel': '2',
+         'faction': '14', 'npcflag': '0', 'detection_range': '20',
+         'rank': '0', 'BaseAttackTime': '2000', 'mingold': '0', 'maxgold': '5',
+         'HealthModifier': '1.0', 'DamageModifier': '1.0', 'ExperienceModifier': '1.0',
+         'unit_class': '1', 'unit_flags': '0', 'type': '1', 'lootid': '100'},
+        # Vendor NPC (friendly, npcflag=128)
+        {'entry': '200', 'name': 'Test Merchant', 'minlevel': '5', 'maxlevel': '5',
+         'faction': '11', 'npcflag': '128', 'detection_range': '0',
+         'rank': '0', 'BaseAttackTime': '2000', 'mingold': '0', 'maxgold': '0',
+         'HealthModifier': '1.0', 'DamageModifier': '1.0', 'ExperienceModifier': '1.0',
+         'unit_class': '1', 'unit_flags': '0', 'type': '7', 'lootid': '0'},
+        # Another vendor with combined flags (vendor + repair = 128+4096)
+        {'entry': '201', 'name': 'Test Blacksmith', 'minlevel': '10', 'maxlevel': '10',
+         'faction': '55', 'npcflag': '4224', 'detection_range': '0',
+         'rank': '0', 'BaseAttackTime': '2000', 'mingold': '0', 'maxgold': '0',
+         'HealthModifier': '1.0', 'DamageModifier': '1.0', 'ExperienceModifier': '1.0',
+         'unit_class': '1', 'unit_flags': '0', 'type': '7', 'lootid': '0'},
+    ]
+    tmpl_path = os.path.join(tmpdir, 'creature_template.csv')
+    with open(tmpl_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=tmpl_header, delimiter=';',
+                           quotechar='"', quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for t in templates:
+            w.writerow(t)
+
+    # Create creature.csv with spawns near player start (-8921, -119)
+    spawn_header = ['guid', 'id1', 'map', 'position_x', 'position_y', 'position_z',
+                    'orientation', 'npcflag', 'unit_flags']
+    spawns = [
+        # Wolf spawn
+        {'guid': '1', 'id1': '100', 'map': '0',
+         'position_x': '-8900', 'position_y': '-110', 'position_z': '82',
+         'orientation': '0', 'npcflag': '0', 'unit_flags': '0'},
+        # Vendor spawn
+        {'guid': '2', 'id1': '200', 'map': '0',
+         'position_x': '-8910', 'position_y': '-105', 'position_z': '82',
+         'orientation': '0', 'npcflag': '0', 'unit_flags': '0'},
+        # Blacksmith spawn
+        {'guid': '3', 'id1': '201', 'map': '0',
+         'position_x': '-8905', 'position_y': '-115', 'position_z': '82',
+         'orientation': '0', 'npcflag': '0', 'unit_flags': '0'},
+    ]
+    spawn_path = os.path.join(tmpdir, 'creature.csv')
+    with open(spawn_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=spawn_header, delimiter=';',
+                           quotechar='"', quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for s in spawns:
+            w.writerow(s)
+
+    from sim.creature_db import CreatureDB
+    db = CreatureDB(tmpdir, quiet=True)
+
+    # Verify vendor detection
+    assert db.templates[200].is_vendor, "Test Merchant should be a vendor"
+    assert db.templates[201].is_vendor, "Test Blacksmith should be a vendor (128 in 4224)"
+    assert not db.templates[100].is_vendor, "Test Wolf should not be a vendor"
+    assert db.templates[100].is_attackable, "Test Wolf should be attackable"
+    assert not db.templates[200].is_attackable, "Test Merchant should not be attackable"
+
+    total_vendor_spawns = sum(len(v) for v in db.vendor_index.values())
+    assert total_vendor_spawns == 2, f"Expected 2 vendor spawns, got {total_vendor_spawns}"
+    print(f"  8h: CreatureDB: {total_vendor_spawns} vendor spawns detected ✓")
+
+    # --- Test 8i: Dynamic vendors in CombatSimulation ---
+    sim_db = CombatSimulation(seed=42, creature_db=db)
+    # With creature_db, vendors come from chunks not VENDOR_DATA
+    assert len(sim_db.vendors) >= 2, \
+        f"Expected ≥2 dynamic vendors, got {len(sim_db.vendors)}"
+    vendor_names = {v.name for v in sim_db.vendors}
+    assert "Test Merchant" in vendor_names, "Test Merchant should be spawned"
+    assert "Test Blacksmith" in vendor_names, "Test Blacksmith should be spawned"
+    print(f"  8i: Dynamic vendors from creature_db: {sorted(vendor_names)} ✓")
+
+    # --- Test 8j: Sell works at dynamically spawned vendor ---
+    sim_db.player.inventory.append(InventoryItem(
+        entry=1, name="Junk", quality=0, sell_price=30, score=5.0, inventory_type=0))
+    sim_db.player.free_slots = INVENTORY_SLOTS - 1
+    nv = sim_db.get_nearest_vendor()
+    sim_db.player.x = nv.x
+    sim_db.player.y = nv.y
+    sold = sim_db.do_sell()
+    assert sold, "Sell should work at dynamic vendor"
+    assert sim_db.player.copper == 30, f"Expected 30 copper, got {sim_db.player.copper}"
+    print(f"  8j: Sell at dynamic vendor: copper={sim_db.player.copper} ✓")
+
+    # Cleanup
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
     print("  PASSED\n")
 

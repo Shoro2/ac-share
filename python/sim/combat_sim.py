@@ -518,6 +518,7 @@ class CombatSimulation:
         self._player_chunk: Optional[tuple] = None  # (map, cx, cy)
         self._active_chunks: set[tuple] = set()
         self._chunk_mobs: dict[tuple, list[Mob]] = {}
+        self._chunk_vendors: dict[tuple, list[VendorNPC]] = {}
         self._spawn_vendors()
         if self.creature_db:
             self._update_chunks()
@@ -563,8 +564,10 @@ class CombatSimulation:
             self.mobs.append(mob)
 
     def _spawn_vendors(self):
-        """Spawn vendor NPCs from VENDOR_DATA."""
+        """Spawn vendor NPCs. Uses creature_db chunks when available, else VENDOR_DATA fallback."""
         self.vendors.clear()
+        if self.creature_db:
+            return  # vendors loaded via _activate_chunk
         for vdata in VENDOR_DATA:
             z = vdata["z"]
             if self.terrain:
@@ -611,6 +614,7 @@ class CombatSimulation:
         self._player_chunk = None
         self._active_chunks.clear()
         self._chunk_mobs.clear()
+        self._chunk_vendors.clear()
         self.mobs.clear()
         self._spawn_vendors()
         if self.creature_db:
@@ -698,6 +702,7 @@ class CombatSimulation:
             for mob in self._chunk_mobs.pop(key, []):
                 if self.target is mob:
                     self.target = None
+            self._chunk_vendors.pop(key, None)
 
         # Activate new chunks
         for key in needed - self._active_chunks:
@@ -709,6 +714,11 @@ class CombatSimulation:
         self.mobs = []
         for key in self._active_chunks:
             self.mobs.extend(self._chunk_mobs.get(key, []))
+
+        # Rebuild vendors list from active chunks
+        self.vendors = []
+        for key in self._active_chunks:
+            self.vendors.extend(self._chunk_vendors.get(key, []))
 
     def _activate_chunk(self, chunk_key: tuple):
         """Spawn mobs for a newly activated chunk from creature_db."""
@@ -753,6 +763,22 @@ class CombatSimulation:
             chunk_mobs.append(mob)
 
         self._chunk_mobs[chunk_key] = chunk_mobs
+
+        # Spawn vendors from this chunk
+        vendor_spawns = self.creature_db.vendor_index.get(chunk_key, [])
+        chunk_vendors: list[VendorNPC] = []
+        for sp in vendor_spawns:
+            tmpl = self.creature_db.templates.get(sp.entry)
+            if tmpl is None:
+                continue
+            z = self.terrain.get_height(sp.x, sp.y) if self.terrain else sp.z
+            chunk_vendors.append(VendorNPC(
+                uid=self._new_uid(),
+                name=tmpl.name,
+                level=tmpl.min_level,
+                x=sp.x, y=sp.y, z=z,
+            ))
+        self._chunk_vendors[chunk_key] = chunk_vendors
 
     def _dist(self, x1: float, y1: float, x2: float, y2: float) -> float:
         dx = x2 - x1
