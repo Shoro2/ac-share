@@ -1,102 +1,118 @@
-# CLAUDE.md — Projektdokumentation für ac-share
+# CLAUDE.md — Project Documentation for ac-share
 
-Dieses Repository ist ein experimentelles WoW-Bot-Training-Setup. Der **aktuelle Hauptfokus** liegt auf der Python-Simulation (`python/sim/`), die eine vollständige Trainingsumgebung ohne laufenden WoW-Server bereitstellt. Parallel dazu existiert ein C++-Modul für AzerothCore (Live-Server-Anbindung), das später zum Einsatz kommt.
+This repository is an experimental WoW bot training setup. The **current main focus** is on the Python simulation (`python/sim/`), which provides a complete training environment without a running WoW server. A C++ module for AzerothCore (live server integration) exists in parallel and will be used in a later phase.
 
-## Aktueller Fokus: Python-Simulation
+## Current Focus: Python Simulation
 
-Die Sim-Umgebung (`python/sim/`) repliziert das WoW-Kampfsystem in reinem Python:
-- **~1000x schneller** als Live-Server-Training (kein TCP, kein Server nötig)
-- **Identische Schnittstelle** zu `wow_env.py` (gleicher Obs/Action Space, gleiche Rewards)
-- **Optionale 3D-Terrain-Daten** aus echten WoW-Dateien (maps/vmaps) via `test_3d_env.py`
-- **Ziel**: Alle Grundfunktionen (Combat, Targeting, Loot, Spells, Movement) in der Sim validieren, bevor auf den Live-Server übertragen wird
+The sim environment (`python/sim/`) replicates the WoW combat system in pure Python:
+- **~1000x faster** than live server training (no TCP, no server needed)
+- **Identical interface** to `wow_env.py` (same Obs/Action Space)
+- **Optional 3D terrain data** from real WoW files (maps/vmaps) via `test_3d_env.py`
+- **Full-world creature spawning** from AzerothCore CSV exports via `creature_db.py`
+- **Episode logging & visualization** via `sim_logger.py` and `visualize.py`
+- **Goal**: Validate all core features (Combat, Targeting, Loot, Spells, Movement, Leveling) in the sim before transferring to the live server
 
-## Repository-Struktur
+## Repository Structure
 
 ```
 ac-share/
-├── CLAUDE.md                    ← diese Datei
-├── README.md                    ← ausführliche Projekt-Doku (Protokoll, Architektur, Workflow)
+├── CLAUDE.md                    <- this file
+├── README.md                    <- project overview (architecture, workflow)
+├── EVALUATION.md                <- project evaluation & improvement suggestions
 ├── .gitattributes
-├── python/                      ← Python RL-Training, Inference & Utilities
-│   ├── sim/                     ← ★ HAUPTFOKUS: Offline-Simulation ★
-│   │   ├── combat_sim.py        ← Kampfsystem-Simulation (Mobs, Spells, Loot, Movement, Exploration)
-│   │   ├── wow_sim_env.py       ← Gymnasium-Environment für die Sim
-│   │   ├── train_sim.py         ← PPO-Training auf der Sim (5 Bots, kein Server nötig)
-│   │   ├── terrain.py           ← SimTerrain-Wrapper für 3D-Terrain in der Sim
+├── data/                        <- WoW game data files
+│   ├── creature.csv             <- All NPC/mob spawns (AzerothCore DB export, 11 MB)
+│   ├── creature_template.csv    <- NPC stat templates (3.9 MB)
+│   ├── spell_dbc.csv            <- Spell data export (30 MB)
+│   ├── map_dbc.csv              <- Map metadata from DBC files
+│   ├── 000.vmtree               <- VMAP binary index for collision/LOS
+│   ├── 000_27_29.vmtile         <- Sample terrain tile VMAP
+│   ├── 0002035.map              <- Binary map tile data
+│   └── 000.mmap                 <- Map heightfield data
+├── python/                      <- Python RL training, inference & utilities
+│   ├── sim/                     <- ** MAIN FOCUS: Offline Simulation **
+│   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling)
+│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim
+│   │   ├── train_sim.py         <- PPO training on the sim (5 bots, no server needed)
+│   │   ├── test_sim.py          <- Validation tests (6 tests: engine, spaces, episode, benchmark, combat, levels)
+│   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
+│   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
+│   │   ├── sim_logger.py        <- Episode logging for visualization (zero I/O during sim)
+│   │   ├── visualize.py         <- Interactive map viewer with episode browser
 │   │   └── __init__.py
-│   ├── test_3d_env.py           ← 3D-Terrain/VMAP/LOS/AreaTable aus echten WoW-Daten
-│   ├── wow_env.py               ← Gymnasium-Environment (Live-Server via TCP)
-│   ├── train.py                 ← Multi-Bot PPO-Training (Live-Server)
-│   ├── run_model.py             ← Inference-Loop (trained model)
-│   ├── auto_grind.py            ← Hybrid-Runner: Route + RL-Policy
-│   ├── get_gps.py               ← GPS-Koordinaten-Logger (für Routen)
-│   ├── check_env.py             ← Schneller Env-Validierungstest
-│   ├── test_multibot.py         ← Multi-Bot-Steuerung mit Scripted-Logic
-│   ├── run_bot.py               ← BROKEN — Syntax-Fehler, nicht nutzbar
-│   ├── npc_memory.json          ← Gemeinsame NPC-Datenbank (Baseline)
-│   ├── npc_memory_*.json        ← Bot-spezifische NPC-Memory-Dateien
-│   ├── models/PPO/              ← Gespeicherte PPO-Modelle (.zip)
-│   │   └── wow_bot_interrupted.zip  ← letzter Checkpoint (Training abgebrochen)
-│   └── logs/                    ← TensorBoard-Logs (PPO_0=live, PPO_2=sim)
-├── src_module-ai-controller/    ← C++ AzerothCore-Modul (2 Dateien)
-│   ├── AIControllerHook.cpp     ← Gesamte Logik (1008 Zeilen): TCP-Server,
-│   │                               Bot-Spawning, Kommando-Verarbeitung, State-Publishing
-│   └── AIControllerLoader.cpp   ← Modul-Registrierung (14 Zeilen)
-└── src_azeroth_core/            ← Vollständiger AzerothCore-Source-Tree
-    ├── cmake/                   ← Build-System
-    ├── common/                  ← Shared Libraries (Threading, Crypto, Config)
-    ├── server/                  ← Server-Kern
-    │   ├── apps/                ← worldserver & authserver
-    │   ├── game/                ← 51 Subsysteme (Entities, AI, Spells, Maps, ...)
-    │   ├── scripts/             ← Content-Scripts
-    │   ├── shared/              ← Netzwerk/Protokoll
-    │   └── database/            ← DB-Abstraktion
-    ├── test/                    ← Tests
-    └── tools/                   ← Externe Tools
+│   ├── test_3d_env.py           <- 3D terrain/VMAP/LOS/AreaTable from real WoW data
+│   ├── wow_env.py               <- Gymnasium environment (live server via TCP)
+│   ├── train.py                 <- Multi-bot PPO training (live server)
+│   ├── run_model.py             <- Inference loop (trained model)
+│   ├── auto_grind.py            <- Hybrid runner: Route + RL policy
+│   ├── get_gps.py               <- GPS coordinate logger (for routes)
+│   ├── check_env.py             <- Quick env validation test
+│   ├── test_multibot.py         <- Multi-bot control with scripted logic
+│   ├── run_bot.py               <- BROKEN — syntax errors, not usable
+│   ├── npc_memory.json          <- Shared NPC database (baseline)
+│   └── npc_memory_*.json        <- Bot-specific NPC memory files
+├── src_module-ai-controller/    <- C++ AzerothCore module (2 files)
+│   ├── AIControllerHook.cpp     <- All logic (~1025 lines): TCP server,
+│   │                               bot spawning, command processing, state publishing
+│   └── AIControllerLoader.cpp   <- Module registration (14 lines)
+└── src_azeroth_core/            <- Full AzerothCore source tree
+    ├── cmake/                   <- Build system
+    ├── common/                  <- Shared libraries (Threading, Crypto, Config)
+    ├── server/                  <- Server core
+    │   ├── apps/                <- worldserver & authserver
+    │   ├── game/                <- 51 subsystems (Entities, AI, Spells, Maps, ...)
+    │   ├── scripts/             <- Content scripts
+    │   ├── shared/              <- Network/protocol
+    │   └── database/            <- DB abstraction
+    ├── test/                    <- Tests
+    └── tools/                   <- External tools
 ```
 
-## Architektur-Überblick
+**Note**: `models/` and `logs/` directories are created dynamically during training and are not stored in the repository.
 
-### Dual-Pfad: Sim (Hauptfokus) + Live-Server (später)
+## Architecture Overview
+
+### Dual-Path: Sim (Main Focus) + Live Server (Later)
 
 ```
-  ★ AKTUELLER FOKUS ★                    │  SPÄTERE PHASE
-                                          │
-  ┌──────────────────────────┐            │  ┌──────────────────────────────────┐
-  │    CombatSimulation      │            │  │   AzerothCore worldserver        │
-  │    python/sim/combat_sim │            │  │   (C++, AI-Controller-Modul)     │
-  ├──────────────────────────┤            │  │   TCP :5000, JSON State-Stream   │
-  │ 84 Mobs, Spell-System   │            │  └────────────────┬─────────────────┘
-  │ Exploration, Combat, XP  │            │                   │ TCP
-  │ Optional: 3D-Terrain    │            │                   │
-  │ (test_3d_env.py)        │            │  ┌────────────────▼─────────────────┐
-  └────────────┬─────────────┘            │  │   WoWEnv (python/wow_env.py)     │
-               │ direkt (in-process)      │  │   Action: Discrete(11)           │
-               │                          │  │   Obs:    Box(17,)               │
-  ┌────────────▼─────────────┐            │  └────────────────┬─────────────────┘
-  │  WoWSimEnv (Gymnasium)   │            │                   │
-  │  python/sim/wow_sim_env  │            │          ┌────────▼──────────┐
-  ├──────────────────────────┤            │          │ train.py / etc.   │
-  │ Action: Discrete(11)    │            │          └───────────────────┘
-  │ Obs:    Box(17,)        │            │
-  │ Gleiche Override-Logik   │            │
-  │ Gleiche Rewards          │◄───────────┤  ★ Identische Schnittstelle ★
-  └──────────┬───────────────┘            │
-             │                            │
-    ┌────────▼──────────┐                 │
-    │  train_sim.py     │                 │
-    │  5 Bots, PPO      │                 │
-    │  ~5000 FPS        │                 │
-    └───────────────────┘                 │
+  ** CURRENT FOCUS **                     |  LATER PHASE
+                                          |
+  +----------------------------+          |  +----------------------------------+
+  |    CombatSimulation        |          |  |   AzerothCore worldserver        |
+  |    python/sim/combat_sim   |          |  |   (C++, AI controller module)    |
+  +----------------------------+          |  |   TCP :5000, JSON state stream   |
+  | 119 hardcoded spawns       |          |  +----------------+-----------------+
+  | + CreatureDB (full world)  |          |                   | TCP
+  | 4 Spells, Mob-AI, Loot, XP |          |                   |
+  | Level 1-80, Exploration    |          |  +----------------v-----------------+
+  | Optional: 3D terrain       |          |  |   WoWEnv (python/wow_env.py)     |
+  +------------+---------------+          |  |   Action: Discrete(11)           |
+               | direct (in-process)      |  |   Obs:    Box(17,)               |
+               |                          |  +----------------+-----------------+
+  +------------v---------------+          |                   |
+  |  WoWSimEnv (Gymnasium)     |          |          +--------v----------+
+  |  python/sim/wow_sim_env    |          |          | train.py / etc.   |
+  +----------------------------+          |          +-------------------+
+  | Action: Discrete(11)      |          |
+  | Obs:    Box(17,)           |          |
+  | Similar override logic     |          |
+  | Sparse reward design       |<---------+  ** Same interface **
+  +----------+-----------------+          |
+             |                            |
+    +--------v----------+                 |
+    |  train_sim.py     |                 |
+    |  5 bots, PPO      |                 |
+    |  ~5000 FPS        |                 |
+    +-------------------+                 |
 ```
 
-### Ziel: Modelle in der Sim trainieren, dann auf Live-Server transferieren.
+### Goal: Train models in the sim, then transfer to the live server.
 
-## TCP-Protokoll
+## TCP Protocol
 
-### Server → Python (State-Stream)
+### Server -> Python (State Stream)
 
-Alle 400ms (oder 500ms Keepalive) sendet der Server eine JSON-Zeile:
+Every 400ms (or 500ms keepalive) the server sends a JSON line:
 
 ```json
 {
@@ -113,10 +129,13 @@ Alle 400ms (oder 500ms Keepalive) sendet der Server eine JSON-Zeile:
       "equipped_upgrade": "false",
       "target_status": "alive",
       "target_hp": 42,
+      "target_level": 1,
       "xp_gained": 0,
       "loot_copper": 0,
       "loot_score": 0,
       "leveled_up": "false",
+      "has_shield": "false",
+      "target_has_sw_pain": "false",
       "tx": -8900.0, "ty": -110.0, "tz": 81.0,
       "nearby_mobs": [
         {
@@ -135,461 +154,557 @@ Alle 400ms (oder 500ms Keepalive) sendet der Server eine JSON-Zeile:
 }
 ```
 
-**Wichtig**: `combat`, `casting`, `equipped_upgrade`, `leveled_up` sind Strings (`"true"`/`"false"`), keine JSON-Booleans. `xp_gained`, `loot_copper`, `loot_score` werden nach dem Senden zurückgesetzt (consume-on-read).
+**Important**: `combat`, `casting`, `equipped_upgrade`, `leveled_up`, `has_shield`, `target_has_sw_pain` are strings (`"true"`/`"false"`), not JSON booleans. `xp_gained`, `loot_copper`, `loot_score` are reset after sending (consume-on-read).
 
-### Python → Server (Kommandos)
+### Python -> Server (Commands)
 
 Format: `<playerName>:<actionType>:<value>\n`
 
-| Kommando | Beschreibung |
+| Command | Description |
 |---|---|
-| `say:<text>` | Spieler sagt Text im Chat |
-| `stop:0` | Stoppt Bewegung |
-| `turn_left:0` / `turn_right:0` | Dreht Orientierung um ±0.5 rad |
-| `move_forward:0` | Bewegt 3 Units nach vorne (Ground-Z-Korrektur) |
-| `move_to:<x>:<y>:<z>` | Bewegt zu Koordinaten |
-| `target_nearest:<range>` | Wählt nächstes gültiges Ziel (default 30) |
-| `target_guid:<guid>` | Wählt Einheit per GUID |
-| `cast:<spellId>` | Zaubert Spell (585=Smite auto-targets Feind, 2050=Heal auto-targets self) |
-| `loot_guid:<guid>` | Lootet tote Kreatur (≤10 Units), auto-equip wenn besser |
-| `sell_grey:<vendorGuid>` | Verkauft alle Items mit SellPrice>0 (außer Hearthstone 6948) |
-| `reset:0` | Volle Heilung, Cooldown-Reset, Teleport zu Homebind |
+| `say:<text>` | Player says text in chat |
+| `stop:0` | Stops movement |
+| `turn_left:0` / `turn_right:0` | Rotates orientation by +/-0.5 rad |
+| `move_forward:0` | Moves 3 units forward (ground Z correction) |
+| `move_to:<x>:<y>:<z>` | Moves to coordinates |
+| `target_nearest:<range>` | Selects nearest valid target (default 30) |
+| `target_guid:<guid>` | Selects unit by GUID |
+| `cast:<spellId>` | Casts spell (585=Smite auto-targets enemy, 2050=Heal auto-targets self, 17=PW:Shield auto-targets self) |
+| `loot_guid:<guid>` | Loots dead creature (<=10 units), auto-equip if better |
+| `sell_grey:<vendorGuid>` | Sells all items with SellPrice>0 (except Hearthstone 6948) |
+| `reset:0` | Full heal, cooldown reset, teleport to homebind |
 
-## Python-Komponenten im Detail
+## Python Components in Detail
 
-### wow_env.py — Gymnasium-Environment
+### wow_env.py — Gymnasium Environment (Live Server)
 
-**Klasse**: `WoWEnv(gym.Env)`
+**Class**: `WoWEnv(gym.Env)`
 
-**Initialisierung**: `WoWEnv(host='127.0.0.1', port=5000, bot_name=None)`
-- `bot_name=None`: adoptiert ersten Spieler im Stream
-- `bot_name="Bota"`: filtert explizit nach diesem Namen
+**Initialization**: `WoWEnv(host='127.0.0.1', port=5000, bot_name=None)`
+- `bot_name=None`: adopts the first player in the stream
+- `bot_name="Bota"`: explicitly filters for this name
 
-**Action Space** — `Discrete(9)`:
-| ID | Aktion |
+**Action Space** — `Discrete(11)`:
+| ID | Action |
 |---|---|
-| 0 | No-op (warten) |
+| 0 | No-op (wait) |
 | 1 | move_forward |
 | 2 | turn_left |
 | 3 | turn_right |
-| 4 | Target Mob (nächster aus nearby_mobs per target_guid) |
+| 4 | Target mob (nearest from nearby_mobs via target_guid) |
 | 5 | Cast Smite (Spell 585) |
 | 6 | Cast Heal (Spell 2050) |
-| 7 | Loot (nächste tote Kreatur per loot_guid) |
-| 8 | Sell (zum Vendor, nur im Vendor-Modus) |
+| 7 | Loot (nearest dead creature via loot_guid) |
+| 8 | Sell (to vendor, only in vendor mode) |
+| 9 | Cast SW:Pain (Spell 589) |
+| 10 | Cast PW:Shield (Spell 17) |
 
-**Observation Vector** — `Box(shape=(10,), dtype=float32)`:
-| Index | Wert | Bereich |
+**Observation Vector** — `Box(shape=(17,), dtype=float32)`:
+| Index | Value | Range |
 |---|---|---|
-| 0 | hp_pct (HP/MaxHP) | 0–1 |
-| 1 | mana_pct (Mana/MaxMana) | 0–1 |
-| 2 | target_hp / 100 | 0–∞ |
-| 3 | target_exists (1=alive, 0=sonst) | 0/1 |
+| 0 | hp_pct (HP/MaxHP) | 0-1 |
+| 1 | mana_pct (Mana/MaxMana) | 0-1 |
+| 2 | target_hp / 100 | 0-inf |
+| 3 | target_exists (1=alive, 0=else) | 0/1 |
 | 4 | in_combat | 0/1 |
-| 5 | target_distance / 40 (clamped) | 0–1 |
-| 6 | relative_angle / π | -1–1 |
+| 5 | target_distance / 40 (clamped) | 0-1 |
+| 6 | relative_angle / pi | -1 to 1 |
 | 7 | is_casting | 0/1 |
-| 8 | reserviert (immer 0) | 0 |
-| 9 | free_slots / 20 | 0–1 |
+| 8 | mob_count (nearby mobs / 10) | 0-inf |
+| 9 | free_slots / 20 | 0-1 |
+| 10 | closest_mob_distance / 40 | 0-1 |
+| 11 | closest_mob_angle / pi | -1 to 1 |
+| 12 | num_attackers / 5 | 0-inf |
+| 13 | target_level / 10 | 0-inf |
+| 14 | player_level / 10 | 0-inf |
+| 15 | has_shield | 0/1 |
+| 16 | target_has_sw_pain | 0/1 |
 
-**Reward-Shaping**: Siehe Reward-Tabelle unten (Abschnitt `wow_sim_env.py`).
+**Override Logic** (overrides RL decisions):
+1. **Vendor Mode**: If `free_slots < 2` and not in combat -> navigates to nearest vendor from NPC memory, sells automatically
+2. **Aggro Recovery**: In combat without target -> finds mob attacking the bot, targets it
+3. **Cast Guard**: During casting, movement/turning/other casts are suppressed
+4. **Loot Automation**: Dead target -> approaches, loots automatically at <=6 units
+5. **Range Management**: Stops forward movement at <25 units to target
+6. **Heal Block**: Heal is blocked at HP > 85%
+7. **Shield Block**: PW:Shield blocked if already shielded
+8. **SW:Pain Block**: SW:Pain blocked if already active on target
+9. **Sell Block**: Action 8 only allowed in vendor mode
 
-**Override-Logik** (überlagert RL-Entscheidungen):
-1. **Vendor-Modus**: Bei `free_slots < 2` und nicht im Kampf → navigiert zum nächsten Vendor aus NPC-Memory, verkauft automatisch
-2. **Aggro-Recovery**: Im Kampf ohne Target → sucht Mob der den Bot angreift, targeted ihn
-3. **Cast-Schutz**: Während Casting werden Bewegung/Drehen/andere Casts unterdrückt
-4. **Loot-Automatik**: Totes Target → nähert sich an, lootet automatisch bei ≤3 Units
-5. **Range-Management**: Stoppt Vorwärtsbewegung bei <25 Units zum Target
-6. **Heal-Sperre**: Heal wird bei HP > 85% unterdrückt
-7. **Sell-Sperre**: Action 8 nur im Vendor-Modus erlaubt
+**NPC Memory System**:
+- File: `npc_memory_{bot_name}.json` (isolated per bot)
+- Stores all encountered mobs with position, level, vendor flag, etc.
+- Blacklist: Dead/looted mobs are ignored for 15 minutes
+- Auto-save every 30 seconds (atomic via .tmp file)
+- Used by `auto_grind.py` for memory-based targeting
 
-**NPC-Memory-System**:
-- Datei: `npc_memory_{bot_name}.json` (pro Bot isoliert)
-- Speichert alle gesichteten Mobs mit Position, Level, Vendor-Flag etc.
-- Blacklist: Tote/gelootete Mobs werden 15 Minuten ignoriert
-- Auto-Save alle 30 Sekunden (atomar via .tmp-Datei)
-- Wird von `auto_grind.py` für Memory-basiertes Targeting genutzt
+**Deterministic Initial Heading** (`_initial_heading_kick`):
+Each bot rotates in a different direction on reset to improve distribution:
+- Autoai: 0 steps, Bota: 2, Botb: 4, Botc: 6, Botd: 8, Bote: 10 (each ~0.5 rad)
 
-**Deterministische Startdrehung** (`_initial_heading_kick`):
-Jeder Bot dreht beim Reset in eine andere Richtung, um Verteilung zu verbessern:
-- Autoai: 0 Schritte, Bota: 2, Botb: 4, Botc: 6, Botd: 8, Bote: 10 (je ~0.5 rad)
+## Python Simulation in Detail (Main Focus)
 
-## Python-Simulation im Detail (Hauptfokus)
+### combat_sim.py — Combat System Simulation
 
-### combat_sim.py — Kampfsystem-Simulation
+**Class**: `CombatSimulation`
 
-**Klasse**: `CombatSimulation`
+Simulates the complete WoW combat system in pure Python:
+- **119 hardcoded mob spawns** from real AzerothCore DB spawn positions (4 mob types, Level 1-3)
+- **Full-world creature spawning** via `CreatureDB` from CSV exports (chunk-based spatial indexing, 100-unit chunks)
+- **Natural difficulty gradient**: Wolves (L1) in the north -> Kobolds (L1-3) in the south/east
+- **Priest Spells**: Smite (585), Heal (2050), SW:Pain (589), PW:Shield (17)
+- **Mob AI**: Aggro range (10-20 units), chase, melee attack, leash (60 units)
+- **Loot System**: Copper drops, simplified item score system
+- **Respawn**: Dead mobs respawn after 60s at original spawn point
+- **XP**: AzerothCore formula `BaseGain()` with gray level, ZeroDifference — mobs below gray level give 0 XP
+- **Level System**: Level 1-80 with XP table, per level +10 Smite damage, +5 Heal, +50 HP, +5 Mana
+- **Exploration**: Three-tier tracking (`visited_areas`, `visited_zones`, `visited_maps`)
+  - Real WoW Area/Zone/Map IDs from AreaTable.dbc when `env3d` + DBC available
+  - Grid fallback without 3D data: Areas=50x50 units, Zones=200x200 units
+  - `_new_areas`/`_new_zones`/`_new_maps` counters (consume-on-read like XP/Loot)
+- **3D Terrain** (optional via `terrain` parameter): Z coordinates, walkability checks, LOS checks for spells
+- **State Dict**: Identical to the TCP JSON of the live server
+- **Regen System**: HP regen 0.67/tick OOC (after 6s combat delay), Mana regen 2.75/tick while not casting
 
-Simuliert das komplette WoW-Kampfsystem in reinem Python:
-- **84 Mobs** aus echten AzerothCore DB-Spawn-Positionen (4 Mob-Typen, Level 1–3)
-- **Natürlicher Schwierigkeitsgradient**: Wölfe (L1) im Norden → Kobolde (L1–3) im Süden/Osten
-- **Priest-Spells**: Smite (585), Heal (2050), SW:Pain (589), PW:Shield (17)
-- **Mob-AI**: Aggro-Range (10–20 Units), Chase, Melee-Angriff, Leash (60 Units)
-- **Loot-System**: Copper-Drops, vereinfachtes Item-Score-System
-- **Respawn**: Tote Mobs respawnen nach 60s am Original-Spawnpunkt
-- **XP**: AzerothCore-Formel `BaseGain()` mit Gray-Level, ZeroDifference — Mobs unter Gray-Level geben 0 XP
-- **Level-System**: Level 1–79 mit XP-Tabelle, pro Level +10 Smite-Damage, +5 Heal, +50 HP, +5 Mana
-- **Exploration**: Drei-Ebenen-Tracking (`visited_areas`, `visited_zones`, `visited_maps`)
-  - Echte WoW Area/Zone/Map-IDs aus AreaTable.dbc wenn `env3d` + DBC vorhanden
-  - Grid-Fallback ohne 3D-Daten: Areas=50×50 Units, Zones=200×200 Units
-  - `_new_areas`/`_new_zones`/`_new_maps` Counter (consume-on-read wie XP/Loot)
-- **3D-Terrain** (optional via `terrain` Parameter): Z-Koordinaten, Walkability-Checks, LOS-Prüfung bei Spells
-- **State-Dict**: Identisch zum TCP-JSON des Live-Servers
+**XP Formula** (from AzerothCore `Formulas.h`/`.cpp`):
+- **Mob >= Player Level**: `((pl*5 + 45) * (20 + min(diff, 4)) / 10 + 1) / 2`
+- **Mob > Gray Level**: `(pl*5 + 45) * (ZD + mob - pl) / ZD`
+- **Mob <= Gray Level**: `0 XP`
 
-**XP-Formel** (aus AzerothCore `Formulas.h`/`.cpp`):
-- **Mob ≥ Player-Level**: `((pl*5 + 45) * (20 + min(diff, 4)) / 10 + 1) / 2`
-- **Mob > Gray-Level**: `(pl*5 + 45) * (ZD + mob - pl) / ZD`
-- **Mob ≤ Gray-Level**: `0 XP`
+**Stat Scaling per Level**: HP: 72 + (L-1)*50, Mana: 123 + (L-1)*5, Smite: (13-17) + (L-1)*10, Heal: (46-56) + (L-1)*5
 
-**Stat-Skalierung pro Level**: HP: 72 + (L-1)×50, Mana: 123 + (L-1)×5, Smite: (13-17) + (L-1)×10, Heal: (46-56) + (L-1)×5
+**Initialization**: `CombatSimulation(num_mobs=None, seed=None, terrain=None, env3d=None, creature_db=None)`
+- `num_mobs=None`: Uses all 119 hardcoded spawn positions
+- `terrain`: `SimTerrain` instance for heights, LOS, walkability
+- `env3d`: `WoW3DEnvironment` instance for Area/Zone lookups via AreaTable.dbc
+- `creature_db`: `CreatureDB` instance for full-world chunk-based mob spawning
 
-**Initialisierung**: `CombatSimulation(num_mobs=None, seed=None, terrain=None, env3d=None)`
-- `num_mobs=None`: Alle 84 Spawn-Positionen nutzen (vorher: 15 zufällige)
-- `terrain`: `SimTerrain`-Instanz für Höhen, LOS, Walkability
-- `env3d`: `WoW3DEnvironment`-Instanz für Area/Zone-Lookups via AreaTable.dbc
+### creature_db.py — Creature Database Loader
 
-### wow_sim_env.py — Gymnasium Sim-Environment
+Loads AzerothCore CSV exports for full-world creature spawning with spatial indexing:
+- **Loads**: `creature_template.csv` (stat templates) and `creature.csv` (spawn positions)
+- **Spatial Index**: Dict `(map, chunk_x, chunk_y) -> [SpawnPoint]` for O(1) chunk lookups
+- **Chunk Size**: 100 world-units per chunk
+- **Stat Interpolation**: HP, damage, XP anchored by level (1-83), interpolated for arbitrary levels
+- **Filters**: Skips friendly factions (Stormwind, etc.), critters, totems, non-combat pets, gas clouds
+- **Data Classes**: `CreatureTemplate` (entry, name, level range, faction, npc flags, stats) and `SpawnPoint` (guid, entry, map, position)
 
-Drop-in Replacement für `wow_env.py`:
-- **Gleicher Action Space**: `Discrete(11)` — No-op, Move, Turn×2, Target, Smite, Heal, Loot, Sell, SW:Pain, PW:Shield
-- **Gleicher Obs Space**: `Box(17,)` — HP%, Mana%, Target-HP, Combat, Distance, Angle, etc.
-- **Gleiche Rewards**: Synchronisiert mit `wow_env.py` (Skala ~[-5, +15])
-- **Gleiche Override-Logik**: Vendor, Aggro, Cast-Guard, Loot-Automatik, Range-Management
-- **Exploration-Rewards**: Area (+0.5), Zone (+2.0), Map (+5.0) — einmalig pro Episode
-- **max_episode_steps**: 4000
+### wow_sim_env.py — Gymnasium Sim Environment
 
-**Initialisierung**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None)`
-- `data_root`: Pfad zu WoW `Data/`-Verzeichnis → aktiviert 3D-Terrain (`SimTerrain`) + Area-Lookups (`WoW3DEnvironment` mit AreaTable.dbc)
-- Ohne `data_root`: Flaches Terrain, Grid-basierte Exploration-Erkennung
+Drop-in replacement for `wow_env.py`:
+- **Same Action Space**: `Discrete(11)` — No-op, Move, Turn x2, Target, Smite, Heal, Loot, Sell, SW:Pain, PW:Shield
+- **Same Obs Space**: `Box(17,)` — HP%, Mana%, Target-HP, Combat, Distance, Angle, etc.
+- **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
+- **Similar Override Logic**: Aggro, Cast-Guard, Range-Management, Heal/Shield/DoT blocks
+- **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
+- **Stall Detection**: Truncates episode after 100,000 steps without XP gain
+- **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
-### train_sim.py — Sim-Training
+**Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1)`
+- `data_root`: Path to WoW `Data/` directory -> enables 3D terrain (`SimTerrain`) + area lookups (`WoW3DEnvironment` with AreaTable.dbc)
+- `creature_csv_dir`: Path to directory containing `creature.csv` + `creature_template.csv` -> enables full-world creature spawning
+- `log_dir`: Path for episode JSONL logs (used by `visualize.py`)
+- Without `data_root`: Flat terrain, grid-based exploration detection
 
-- **5 Bots** in `SubprocVecEnv`
-- **PPO** mit `ent_coef=0.01`, `n_steps=256`, `batch_size=128`
-- **TensorBoard-Logs** in `logs/PPO_2/`
-- **Episode-Callbacks** mit Kills, XP, Deaths, Areas/Zones/Maps explored
-- **TensorBoard-Metriken**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`
-- **~5000+ FPS** (ohne 3D-Terrain)
-- **`--data-root`**: Optional, aktiviert 3D-Terrain + echte WoW Area-IDs im Training
+### Reward Tables
 
-### test_3d_env.py — 3D-Terrain + Area-System aus echten WoW-Daten
+#### Sim Rewards (wow_sim_env.py — Sparse Design)
 
-Liest die originalen WoW-Dateien (maps/, vmaps/, dbc/):
-- **Terrain-Höhen**: 129×129 Height-Grid pro Tile, Triangle-Interpolation
-- **LOS (Line of Sight)**: VMAP-Spawns (Gebäude, Bäume) mit AABB-Ray-Intersection
-- **AreaTable.dbc-Parser** (`parse_area_table_dbc()`): Liest binäre WDBC-Datei → Dict `{area_id: AreaTableEntry}` mit Name, Zone, Map, Level, ExploreFlag
-- **`AreaTableEntry`**: Dataclass mit `id`, `map_id`, `zone`, `explore_flag`, `flags`, `area_level`, `name`
-- **Area-Lookup**: `get_area_id(map, x, y)` → echte WoW Area-ID aus 16×16 Grid pro Tile
-- **Zone-Lookup**: `get_zone_id(map, x, y)` → Parent-Zone via AreaTable-Hierarchie
-- **Area-Info**: `get_area_info(map, x, y)` → vollständiges Dict mit `area_name`, `zone_name`, `area_level` etc.
-- **Dynamisches Tile-Loading**: Tiles werden on-demand geladen wenn der Bot neue Gebiete betritt — die KI ist nicht auf vorgeladene Bereiche beschränkt
-- **HeightCache**: Vorberechnetes numpy-Grid für O(1) Höhen-Lookups (~100x schneller)
-- **SpatialLOSChecker**: Räumlich indizierter LOS-Check (~100-500x schneller als brute-force)
+| Signal | Value | Notes |
+|---|---|---|
+| Step Penalty | -0.01 | per tick |
+| Idle Penalty | -0.03 | Noop without casting |
+| Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
+| XP/Kill | 10.0 + xp * 0.2 | ~20 per 50-XP kill, scales with XP |
+| Level-Up | +15.0 * levels | per level gained |
+| Equipment Upgrade | +3.0 | |
+| Loot | min((copper * 0.01) + (score * 0.2), 3.0) | capped |
+| Sell | +2.0 | slots freed |
+| New Area Entered | +1.0 | real WoW Area ID or grid fallback (once per episode) |
+| New Zone Entered | +3.0 | real WoW Zone ID (once per episode) |
+| New Map Entered | +10.0 | real WoW Map ID (once per episode) |
+| Death | -30.0 | terminal, overrides all other rewards |
 
-### terrain.py — SimTerrain-Wrapper
+#### Live Rewards (wow_env.py — More Shaped)
 
-Leichtgewichtiger Wrapper um `WoW3DEnvironment` für die Sim:
-- **`SimTerrain(data_root)`**: Lädt vmtree (BIH-Index, einmalig) + initiale Tiles um Spawn
-- **`ensure_loaded(x, y)`**: Lädt Map-Tiles + VMAPs on-demand wenn der Spieler ein neues Tile betritt (3×3 um Position). Cheap no-op wenn auf demselben Tile.
-- **`get_height(x, y)`**: Terrain-Höhe an Weltkoordinaten (Fallback auf 82.025 ohne Daten)
-- **`check_los(x1,y1,z1, x2,y2,z2)`**: Line-of-Sight-Check mit Eye-Height-Offset (+1.7)
-- **`check_walkable(x1,y1,z1, x2,y2,z2)`**: Terrain-Walkability (Steigung/Stufen-Check)
-- **Dynamisches Tile-Loading**: Tiles werden on-demand geladen wenn der Bot neue Gebiete betritt — die KI ist nicht auf vorgeladene Bereiche beschränkt. Geladene Tiles bleiben im Cache (werden nie entladen).
+| Signal | Value | Notes |
+|---|---|---|
+| Step Penalty | -0.01 | per tick |
+| Idle Penalty | -0.03 | Noop without casting |
+| Discovery | +0.5 | new mob GUID added to memory |
+| Approach | clip(delta * 0.05, -0.2, +0.3) | potential-based, closer to target |
+| Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
+| Facing | quality * 0.08 | in combat, facing target |
+| XP/Kill | 3.0 + min(xp * 0.05, 2.0) | ~5 per kill |
+| Level-Up | +15.0 | terminal |
+| Equipment Upgrade | +3.0 | |
+| Loot | min((copper * 0.01) + (score * 0.2), 3.0) | capped |
+| Sell | +2.0 | slots freed |
+| Action-Specific | +/-0.1 to 0.5 | context-based bonuses for Smite/Heal/SW:Pain/PW:Shield |
+| Death | -5.0 | terminal |
+| OOM (<5% Mana) | -2.0 | terminal |
 
-**Exploration-Hierarchie** (echte WoW-Daten):
+**Key Differences**: The sim uses a **sparse reward** design (only real outcomes matter), while the live env uses **more reward shaping** (approach, facing, discovery, action-specific bonuses). The sim has a much harsher death penalty (-30 vs -5) and higher XP/kill reward (10+xp*0.2 vs 3+xp*0.05). OOM is only terminal in the live env.
+
+### sim_logger.py — Episode Logging System
+
+Lightweight episode logger for training visualization:
+- **Zero I/O during simulation**: All data buffered in memory
+- **JSONL format**: One JSON object per episode, written at episode end
+- **Trail data**: Step-by-step bot position, HP%, level, combat state, orientation
+- **Event data**: Kills, deaths, level-ups with position and step number
+- **Mob snapshot**: All mob spawn positions for map overlay
+- **Configurable interval**: Record every N steps (default 1)
+- **Atomic writes**: Uses file append, no temp files needed
+- **`load_episodes()`**: Utility function for reading JSONL files
+
+### visualize.py — Interactive Map Viewer
+
+Interactive map visualization for analyzing training episodes:
+- **Primary mode**: Reads from JSONL log files (`--log-dir`)
+- **Fallback mode**: `--run` flag runs simulation directly
+- **Interactive controls**: Episode slider, bot checkboxes, zoom slider (0.1-10x), right-click drag panning, scroll-wheel zoom
+- **Keyboard**: Arrow keys navigate episodes, 'r' resets view
+- **Visualization**: Color-coded trails with time progression, mob spawn overlays, event markers (kills=red X, level-ups=gold star, deaths=red X)
+- **Log panel**: Toggleable event log showing kills/deaths/level-ups
+- **Static export**: `--output` flag saves map to PNG
+
+### train_sim.py — Sim Training
+
+- **5 bots** in `SubprocVecEnv`
+- **PPO** with `ent_coef=0.05`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`
+- **TensorBoard Logs** in `logs/PPO_2/`
+- **Episode Callbacks** with kills, XP, deaths, areas/zones/maps explored, levels gained, final level
+- **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`
+- **Real per-iteration FPS tracking** (not cumulative)
+- **~5000+ FPS** (without 3D terrain)
+- **Model versioning**: Auto-increments `wow_bot_sim_v1.zip`, `v2.zip`, etc. Interrupt save: `wow_bot_sim_interrupted.zip`
+- **`--data-root`**: Optional, enables 3D terrain + real WoW area IDs
+- **`--creature-data`**: Optional, enables full-world creature spawning from CSV
+- **`--log-dir`**: Optional, enables episode trail logging for visualization
+- **`--log-interval`**: How often to write episode logs (default: every episode)
+
+### test_sim.py — Validation Tests
+
+6 test functions:
+1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting
+2. **test_gym_env()**: Gymnasium spaces validation — Box(17,) obs, Discrete(11) actions
+3. **test_random_episode()**: 1000-step episode with random actions
+4. **test_performance()**: FPS benchmark (~5000+ FPS single-env)
+5. **test_combat_scenario()**: Scripted combat with targeting and spell rotation
+6. **test_level_system()**: XP formulas, level-up mechanics, stat scaling, multi-level-up
+
+### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
+
+Reads original WoW files (maps/, vmaps/, dbc/):
+- **Terrain Heights**: 129x129 height grid per tile, triangle interpolation
+- **LOS (Line of Sight)**: VMAP spawns (buildings, trees) with AABB ray intersection
+- **AreaTable.dbc Parser** (`parse_area_table_dbc()`): Reads binary WDBC file -> Dict `{area_id: AreaTableEntry}` with name, zone, map, level, explore flag
+- **`AreaTableEntry`**: Dataclass with `id`, `map_id`, `zone`, `explore_flag`, `flags`, `area_level`, `name`
+- **Area Lookup**: `get_area_id(map, x, y)` -> real WoW Area ID from 16x16 grid per tile
+- **Zone Lookup**: `get_zone_id(map, x, y)` -> parent zone via AreaTable hierarchy
+- **Area Info**: `get_area_info(map, x, y)` -> full dict with `area_name`, `zone_name`, `area_level` etc.
+- **Dynamic Tile Loading**: Tiles loaded on-demand as the bot enters new areas — AI is not limited to pre-loaded regions
+- **HeightCache**: Pre-computed numpy grid for O(1) height lookups (~100x faster)
+- **SpatialLOSChecker**: Spatially indexed LOS check (~100-500x faster than brute force)
+
+### terrain.py — SimTerrain Wrapper
+
+Lightweight wrapper around `WoW3DEnvironment` for the sim:
+- **`SimTerrain(data_root)`**: Loads vmtree (BIH index, once) + initial tiles around spawn
+- **`ensure_loaded(x, y)`**: Loads map tiles + VMAPs on-demand when the player enters a new tile (3x3 around position). Cheap no-op when on the same tile.
+- **`get_height(x, y)`**: Terrain height at world coordinates (fallback to 82.025 without data)
+- **`check_los(x1,y1,z1, x2,y2,z2)`**: Line-of-sight check with eye height offset (+1.7)
+- **`check_walkable(x1,y1,z1, x2,y2,z2)`**: Terrain walkability (slope/step check)
+- **Dynamic Tile Loading**: Tiles loaded on-demand as the bot enters new areas. Loaded tiles remain in cache (never unloaded).
+
+**Exploration Hierarchy** (real WoW data):
 ```
 Map 0 (Eastern Kingdoms)
-  └─ Zone 12 (Elwynn Forest)
-       ├─ Area 9 (Northshire Valley)
-       ├─ Area 87 (Goldshire)
-       ├─ Area 57 (Crystal Lake)
-       └─ ...
-  └─ Zone 40 (Westfall)
-       ├─ Area 108 (Sentinel Hill)
-       └─ ...
+  +- Zone 12 (Elwynn Forest)
+       +- Area 9 (Northshire Valley)
+       +- Area 87 (Goldshire)
+       +- Area 57 (Crystal Lake)
+       +- ...
+  +- Zone 40 (Westfall)
+       +- Area 108 (Sentinel Hill)
+       +- ...
 ```
 
-### Reward-Tabelle (gilt für Sim, Quelle: `wow_sim_env.py`)
+### train.py — PPO Training (Live Server)
 
-| Signal | Wert | Anmerkung |
-|---|---|---|
-| Step-Penalty | -0.01 | pro Tick |
-| Idle-Penalty | -0.03 | Noop ohne Casting |
-| Damage dealt | min(dmg×0.03, 1.0) | Schaden am Target |
-| XP/Kill | 10.0 + xp×0.2 | ~20 pro 50-XP Kill, skaliert mit XP |
-| Level-Up | +15.0 × levels | |
-| Equipment-Upgrade | +3.0 | |
-| Loot | min((copper×0.01)+(score×0.2), 3.0) | gedeckelt |
-| Verkauf | +2.0 | Slots freigeräumt |
-| Neues Area betreten | +1.0 | echte WoW Area-ID oder Grid-Fallback (einmalig) |
-| Neue Zone betreten | +3.0 | echte WoW Zone-ID (einmalig) |
-| Neue Map betreten | +10.0 | echte WoW Map-ID (einmalig) |
-| Tod | -30.0 | terminal, überschreibt alle anderen Rewards |
-| OOM (<5% Mana) | -15.0 | terminal |
-
-### train.py — PPO-Training (Live-Server)
-
-- **Bots**: `["Bota", "Botb", "Botc", "Botd", "Bote"]` (5 parallele Environments)
-- **Vectorization**: `SubprocVecEnv` (separate Prozesse pro Bot)
-- **Algorithmus**: PPO mit `MlpPolicy` (2-Layer FC-Netz)
-- **Hyperparameter**: `n_steps=128`, `batch_size=64`, `total_timesteps=10000`
+- **Bots**: `["Bota", "Botb", "Botc", "Botd", "Bote"]` (5 parallel environments)
+- **Vectorization**: `SubprocVecEnv` (separate processes per bot)
+- **Algorithm**: PPO with `MlpPolicy` (2-layer FC network)
+- **Hyperparameters**: `n_steps=128`, `batch_size=64`, `ent_coef=0.01`, `total_timesteps=10000`
 - **Logs**: TensorBoard in `logs/PPO_0/`
-- **Modell-Speicherung**: `models/PPO/wow_bot_v1.zip` (bei Abschluss), `wow_bot_interrupted.zip` (bei Ctrl+C)
-- **Status**: Nur `wow_bot_interrupted.zip` existiert — Training wurde nie vollständig abgeschlossen
+- **Model Saving**: `models/PPO/wow_bot_v1.zip` (on completion), `wow_bot_interrupted.zip` (on Ctrl+C)
+- **Status**: Only `wow_bot_interrupted.zip` would exist — training was never fully completed
 
 ### run_model.py — Inference
 
-- Lädt `models/PPO/wow_bot_v1` (existiert aktuell nicht!)
-- Endlos-Loop: `model.predict(obs)` → `env.step(action)` → bei `done` reset
-- Stochastische Policy (nicht deterministisch)
+- Loads `models/PPO/wow_bot_v1` (**does not exist!**)
+- Infinite loop: `model.predict(obs)` -> `env.step(action)` -> reset on `done`
+- Stochastic policy (not deterministic)
 
-### auto_grind.py — Hybrid-Runner
+### auto_grind.py — Hybrid Runner
 
-- Lädt `models/PPO/wow_bot_interrupted`
-- **Farm-Route**: 3 Waypoints (Koordinaten in Northshire/Elwynn)
-- **Entscheidungslogik**:
-  - Im Kampf / Target alive → RL-Policy (deterministisch)
-  - Kein Kampf → prüft NPC-Memory nach nächstem bekannten Mob
-  - Kein Mob bekannt → folgt der Farm-Route zum nächsten Waypoint
-- **Navigation**: `move_to` mit Salami-Slicing (max 50 Units pro Schritt)
-- **Scan**: Alle 0.5s `target_nearest:0` als Hintergrund-Scan
-- **Tick-Rate**: 0.5s Entscheidungsintervall
+- Loads `models/PPO/wow_bot_interrupted`
+- **Farm Route**: 3 waypoints (coordinates in Northshire/Elwynn)
+- **Decision Logic**:
+  - In combat / target alive -> RL policy (deterministic)
+  - No combat -> checks NPC memory for nearest known mob
+  - No mob known -> follows farm route to next waypoint
+- **Navigation**: `move_to` with salami-slicing (max 50 units per step)
+- **Scan**: Every 0.5s `target_nearest:0` as background scan
+- **Tick Rate**: 0.5s decision interval
 
-### Weitere Scripts
+### Other Scripts
 
-| Script | Zweck |
+| Script | Purpose |
 |---|---|
-| `get_gps.py` | Verbindet zum Server, gibt laufend `{"x", "y", "z"}` des ersten Spielers aus. Nützlich zum Erstellen von Farm-Routen. |
-| `check_env.py` | Führt 10 zufällige Schritte aus (Actions 0–5), validiert Socket-Verbindung und Reward-Signale. |
-| `test_multibot.py` | Steuert 6 Bots (`Autoai` + 5) mit einfacher Scripted-Logic (Heal wenn HP<50%, Smite wenn Target, sonst Target suchen). |
-| `run_bot.py` | **BROKEN** — enthält Syntax-Fehler (fehlende Anführungszeichen, Doppelpunkte). Nicht nutzbar. |
+| `get_gps.py` | Connects to server, continuously outputs `{"x", "y", "z"}` of the first player. Useful for creating farm routes. |
+| `check_env.py` | Runs 10 random steps (actions 0-5), validates socket connection and reward signals. |
+| `test_multibot.py` | Controls 6 bots (`Autoai` + 5) with simple scripted logic (Heal if HP<50%, PW:Shield if in combat, SW:Pain if no DoT, Smite if target, else target search). |
+| `run_bot.py` | **BROKEN** — contains syntax errors (missing quotes, colons). Not usable. |
 
-## C++ Modul im Detail
+## C++ Module in Detail
 
-### Architektur
+### Architecture
 
-Das Modul besteht aus 2 Dateien ohne eigene Header oder CMakeLists:
+The module consists of 2 files without its own header or CMakeLists:
 
-- **AIControllerLoader.cpp**: Exportiert `Addmod_ai_controllerScripts()` → ruft `AddAIControllerScripts()` auf
-- **AIControllerHook.cpp**: Enthält die gesamte Logik in 1008 Zeilen
+- **AIControllerLoader.cpp**: Exports `Addmod_ai_controllerScripts()` -> calls `AddAIControllerScripts()`
+- **AIControllerHook.cpp**: Contains all logic in ~1025 lines
 
-### Klassen und Komponenten
+### Classes and Components
 
-**`BotLoginQueryHolder`** — Async-DB-Query-Holder für Bot-Login:
-- Lädt 16 PreparedStatements (Character-Daten, Spells, Inventory, Talents, Homebind, etc.)
-- Pattern analog zum normalen AzerothCore-LoginQueryHolder
+**`BotLoginQueryHolder`** — Async DB query holder for bot login:
+- Loads 16 PreparedStatements (character data, spells, inventory, talents, homebind, etc.)
+- Pattern analogous to the normal AzerothCore LoginQueryHolder
 
-**`AIControllerWorldScript`** (erbt `WorldScript`) — Haupt-Update-Loop:
-- `OnStartup()`: Startet TCP-Server-Thread
-- `OnUpdate(diff)`: Drei Timer-gesteuerte Pfade:
-  - **150ms** (`_faceTimer`): Dreht Spieler im Kampf/Casting zum Target
-  - **400ms** (`_fastTimer`): Baut JSON-State aus allen Online-Spielern, publisht via `g_CurrentJsonState`
-  - **2000ms** (`_slowTimer`): Scannt nearby_mobs per `Cell::VisitObjects` (50 Units Radius)
-- Verarbeitet `g_CommandQueue` synchron im Game-Thread
+**`AIControllerWorldScript`** (inherits `WorldScript`) — Main update loop:
+- `OnStartup()`: Starts TCP server thread
+- `OnUpdate(diff)`: Three timer-driven paths:
+  - **150ms** (`_faceTimer`): Rotates player in combat/casting to face target
+  - **400ms** (`_fastTimer`): Builds JSON state from all online players, publishes via `g_CurrentJsonState`
+  - **2000ms** (`_slowTimer`): Scans nearby_mobs per player via `Cell::VisitObjects` (50 units radius)
+- Processes `g_CommandQueue` synchronously in the game thread
 
-**`AIControllerPlayerScript`** (erbt `PlayerScript`) — Chat-Commands & Event-Hooks:
-- `#spawn <Name>`: Spawnt einzelnen Bot
-- `#spawnbots`: Spawnt Bota–Bote
-- `OnPlayerGiveXP()`: Sammelt XP-Events
-- `OnPlayerLevelChanged()`: Setzt Level auf 1 zurück bei Level-Up
-- `OnPlayerMoneyChanged()`: Sammelt Copper-Events
+**`AIControllerPlayerScript`** (inherits `PlayerScript`) — Chat commands & event hooks:
+- `#spawn <Name>`: Spawns a single bot
+- `#spawnbots`: Spawns Bota-Bote
+- `OnPlayerGiveXP()`: Collects XP events
+- `OnPlayerLevelChanged()`: Resets level to 1 on level-up
+- `OnPlayerMoneyChanged()`: Collects copper events
 
-### Bot-Spawning-Prozess
+### Bot Spawning Process
 
-1. Character-GUID aus `sCharacterCache` per Name laden
-2. Account-ID ermitteln, prüfen dass nicht bereits eingeloggt
-3. `WorldSession` erstellen (ohne echten Client/Socket)
-4. `BotLoginQueryHolder` mit 16 DB-Queries async ausführen
-5. Im Callback: `Player` erstellen, `LoadFromDB()`, zur Map hinzufügen
-6. Initial-Packets senden, in DB als online markieren
-7. Teleport zum Hardcoded-Spawnpunkt: Map 0 (Eastern Kingdoms), (-8921.037, -120.485, 82.025)
+1. Load character GUID from `sCharacterCache` by name
+2. Determine account ID, check not already logged in
+3. Create `WorldSession` (without real client/socket)
+4. Execute `BotLoginQueryHolder` with 16 DB queries async
+5. In callback: Create `Player`, `LoadFromDB()`, add to map
+6. Send initial packets, mark as online in DB
+7. Teleport to hardcoded spawn point: Map 0 (Eastern Kingdoms), (-8921.037, -120.485, 82.025)
 
-### Globale Variablen (Thread-Safety)
+### Global Variables (Thread Safety)
 
-| Variable | Mutex | Zweck |
+| Variable | Mutex | Purpose |
 |---|---|---|
-| `g_CurrentJsonState` | `g_Mutex` | Aktueller JSON-State-String |
-| `g_CommandQueue` | `g_Mutex` | Warteschlange eingehender Python-Kommandos |
-| `g_StateVersion` | atomic | Versionszähler für State-Updates |
-| `g_PlayerEvents` | `g_EventMutex` | Per-Player XP/Loot/Level-Event-Akkumulator |
-| `g_BotSessions` | `g_BotSessionsMutex` | Account-ID → WorldSession Mapping |
+| `g_CurrentJsonState` | `g_Mutex` | Current JSON state string |
+| `g_CommandQueue` | `g_Mutex` | Queue of incoming Python commands |
+| `g_StateVersion` | atomic | Version counter for state updates |
+| `g_PlayerEvents` | `g_EventMutex` | Per-player XP/loot/level event accumulator |
+| `g_BotSessions` | `g_BotSessionsMutex` | Account-ID -> WorldSession mapping |
 
-### Hilfs-Funktionen
+### Helper Functions
 
-- **`GetItemScore(ItemTemplate*)`**: Berechnet Score = (Quality×10) + ItemLevel + Armor + Weapon-DPS + (Stats×2)
-- **`TryEquipIfBetter(Player*, srcPos)`**: Vergleicht neues Item mit ausgerüstetem, tauscht wenn besser
-- **`CreatureCollector`**: GridNotifier der Kreaturen im Umkreis sammelt (filtert Totems, Pets, Critters)
-- **`GetFreeBagSlots(Player*)`**: Zählt freie Inventory-Slots (Rucksack + Taschen)
-- **`IsBotControlledPlayer(Player*)`**: Prüft ob Spieler ein Bot ist (via `g_BotSessions`)
+- **`GetItemScore(ItemTemplate*)`**: Calculates score = (Quality*10) + ItemLevel + Armor + Weapon-DPS + (Stats*2)
+- **`TryEquipIfBetter(Player*, srcPos)`**: Compares new item with equipped, swaps if better
+- **`CreatureCollector`**: GridNotifier that collects creatures in radius (filters totems, pets, critters)
+- **`GetFreeBagSlots(Player*)`**: Counts free inventory slots (backpack + bags)
+- **`IsBotControlledPlayer(Player*)`**: Checks if player is a bot (via `g_BotSessions`)
 
-## Bekannte Probleme & Einschränkungen
+## Known Issues & Limitations
 
-### Kritisch
-- **nearby_mobs Cache-Bug**: `_cachedNearbyMobsJson` wird nur für den **ersten** Online-Spieler berechnet (das `break` in der Schleife). Alle Spieler im JSON erhalten dieselbe Mob-Liste, auch wenn sie auf verschiedenen Teilen der Map sind.
-- **Timer-Bug (behoben?)**: Der README erwähnt, dass `_fastTimer` und `_faceTimer` sich früher gegenseitig blockiert haben. Im aktuellen Code sind sie getrennt (`_faceTimer` für 150ms, `_fastTimer` für 400ms).
+### Design Decisions
+- **Level-1 Sandbox**: Bots are reset to level 1 on level-up on the live server — intended for repeated low-level training
+- **sell_grey Misnomer**: Sells all items with `SellPrice > 0`, not just gray items. Hearthstone (6948) is excluded.
+- **No Security**: TCP is plaintext without authentication — use only on localhost
+- **Multiple TCP Connections**: Server accepts multiple clients (one thread each), but the state is globally the same
+- **run_bot.py is Broken**: Contains multiple syntax errors and is not executable
 
-### Design-Entscheidungen
-- **Level-1-Sandbox**: Bots werden bei Level-Up auf Level 1 zurückgesetzt — gewollt für wiederholtes Niedrigstufentraining
-- **sell_grey Fehlbenennung**: Verkauft alle Items mit `SellPrice > 0`, nicht nur graue Items. Hearthstone (6948) ist ausgenommen.
-- **Kein Security**: TCP ist Klartext ohne Authentifizierung — nur auf localhost verwenden
-- **Eine TCP-Verbindung**: Server akzeptiert mehrere Clients (je ein Thread), aber der State ist global gleich
-- **run_bot.py ist kaputt**: Enthält mehrere Syntax-Fehler und ist nicht ausführbar
+### Reward Parity Gap
+- The sim uses **sparse reward design** (only real outcomes: XP, kills, deaths, exploration)
+- The live env uses **more shaping** (approach, facing, discovery, action-specific bonuses)
+- XP/kill reward differs: sim=10+xp*0.2, live=3+xp*0.05
+- Death penalty differs: sim=-30, live=-5
+- OOM: sim=not terminal, live=-2 terminal
+- When transferring sim-trained models to live, reward behavior will differ
 
-### Limitierungen
-- Hardcoded Spawn-Position (Northshire Abbey / Elwynn Forest) — Sim startet immer dort
-- Hardcoded Bot-Namen (Bota–Bote, plus Autoai im Test-Script)
-- Character muss in der DB existieren bevor `#spawn` funktioniert
-- Python-Environment ist teilweise gescriptet (Override-Logik) — gelernte Policy ist abhängig davon
-- Terrain-Tiles werden on-demand geladen, aber nur für Map 0 (Eastern Kingdoms) — Map-Transfer noch nicht implementiert
+### Limitations
+- Hardcoded spawn position (Northshire Abbey / Elwynn Forest) — sim always starts there
+- Hardcoded bot names (Bota-Bote, plus Autoai in test script)
+- Character must exist in the DB before `#spawn` works
+- Python environment is partially scripted (override logic) — learned policy depends on it
+- Terrain tiles are loaded on-demand, but only for Map 0 (Eastern Kingdoms) — map transfer not yet implemented
+- Exploration rewards not yet implemented in `wow_env.py` (only in sim)
 
 ## Workflow
 
-### Sim-Training (Hauptfokus — kein Server nötig)
+### Sim Training (Main Focus — No Server Needed)
 
-**Voraussetzungen**: Python 3.x mit `gymnasium`, `numpy`, `stable-baselines3`
+**Prerequisites**: Python 3.x with `gymnasium`, `numpy`, `stable-baselines3`
 
 ```bash
-# Standard-Training (reine Sim)
+# Standard training (pure sim)
 python -m sim.train_sim --steps 500000
 
-# Mit 3D-Terrain aus echten WoW-Daten
-python -m sim.train_sim --data-root /pfad/zu/Data --steps 500000
+# With 3D terrain from real WoW data
+python -m sim.train_sim --data-root /path/to/Data --steps 500000
+
+# With full-world creature spawning
+python -m sim.train_sim --creature-data /path/to/data --steps 500000
+
+# With episode logging for visualization
+python -m sim.train_sim --log-dir logs/episodes --steps 500000
+
+# Visualize training episodes
+python -m sim.visualize --log-dir logs/episodes
 
 # TensorBoard
 tensorboard --logdir python/logs/
 ```
 
-Logs landen in `logs/PPO_2/`. Zeigt: FPS, Rewards, KL, Entropy, Value/Policy-Loss + Gameplay-Metriken (Kills, XP, Deaths, Areas/Zones/Maps explored).
+Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + Gameplay Metrics (Kills, XP, Deaths, Areas/Zones/Maps explored, Levels gained, Final level).
 
-### Live-Server-Training (spätere Phase)
+### Live Server Training (Later Phase)
 
-**Voraussetzungen**:
-1. AzerothCore aus `src_azeroth_core/` bauen (Standard-CMake-Build)
-2. AI-Controller-Modul aus `src_module-ai-controller/` in die AzerothCore-Module integrieren
-3. Bot-Characters in der Character-DB anlegen (Namen müssen matchen)
-4. Python 3.x mit `gymnasium`, `numpy`, `stable-baselines3`
+**Prerequisites**:
+1. Build AzerothCore from `src_azeroth_core/` (standard CMake build)
+2. Integrate AI controller module from `src_module-ai-controller/` into AzerothCore modules
+3. Create bot characters in the character DB (names must match)
+4. Python 3.x with `gymnasium`, `numpy`, `stable-baselines3`
 
-**Ablauf**:
-1. `worldserver` starten → Modul startet TCP auf Port 5000
-2. GM-Character einloggen, `#spawnbots` oder `#spawn <Name>` eingeben
-3. Python starten:
+**Process**:
+1. Start `worldserver` -> module starts TCP on port 5000
+2. Log in with GM character, type `#spawnbots` or `#spawn <Name>`
+3. Start Python:
    - **Training**: `python python/train.py`
-   - **Inference**: `python python/run_model.py` (benötigt `wow_bot_v1.zip`)
-   - **Hybrid-Grind**: `python python/auto_grind.py` (nutzt `wow_bot_interrupted.zip`)
-   - **GPS-Logger**: `python python/get_gps.py` (zum Erstellen neuer Routen)
-   - **Multi-Bot-Test**: `python python/test_multibot.py`
+   - **Inference**: `python python/run_model.py` (needs `wow_bot_v1.zip`)
+   - **Hybrid Grind**: `python python/auto_grind.py` (uses `wow_bot_interrupted.zip`)
+   - **GPS Logger**: `python python/get_gps.py` (for creating new routes)
+   - **Multi-Bot Test**: `python python/test_multibot.py`
 
-## Coding-Konventionen
+## Coding Conventions
 
-- **C++**: AzerothCore-Standard (camelCase Methoden, UPPER_CASE Konstanten, Boost.Asio für Netzwerk)
-- **Python**: Standard-Python mit `snake_case`, Type Hints fehlen weitgehend
-- **Kein Build-System im Modul**: `src_module-ai-controller/` hat keine eigene CMakeLists.txt — muss manuell in den AzerothCore-Module-Build integriert werden
-- **Sprache**: Code-Kommentare teilweise auf Deutsch ("Lausche auf Port 5000", "WICHTIG", "ACHTUNG")
-- **Keine Tests**: Kein Unit-Test-Framework, nur `check_env.py` (Live) und `sim/test_sim.py` (Sim) als Smoke-Tests
+- **C++**: AzerothCore standard (camelCase methods, UPPER_CASE constants, Boost.Asio for networking)
+- **Python**: Standard Python with `snake_case`, type hints are mostly missing
+- **No Build System in Module**: `src_module-ai-controller/` has no CMakeLists.txt — must be manually integrated into the AzerothCore module build
+- **Language**: Code comments partially in German ("Lausche auf Port 5000", "WICHTIG", "ACHTUNG")
+- **Tests**: `sim/test_sim.py` (6 tests for sim validation), `check_env.py` (live env smoke test)
 
-## Arbeitsfortschritt & Status
+## Progress & Status
 
-### Was funktioniert (erledigt)
+### What Works (Completed)
 
-| Komponente | Status | Details |
+| Component | Status | Details |
 |---|---|---|
-| **CombatSimulation Engine** | ✅ fertig | 84 Mobs, 4 Spells, Mob-AI, Loot, XP, Respawn, Exploration-Tracking |
-| **WoWSimEnv (Gym-Interface)** | ✅ fertig | Discrete(11) Actions, Box(17) Obs, identische Rewards wie Live |
-| **train_sim.py (PPO-Training)** | ✅ fertig | 5 Bots, SubprocVecEnv, TensorBoard, Gameplay-Metriken |
-| **test_sim.py (Validierung)** | ✅ fertig | 5 Tests: Engine, Gym-Spaces, Random-Episode, Benchmark, Scripted-Combat |
-| **3D-Terrain-System** | ✅ fertig | Maps/VMAPs Parser, HeightCache, SpatialLOSChecker, SimTerrain-Wrapper |
-| **AreaTable.dbc-Parser** | ✅ fertig | Liest alle Areas/Zones/Maps der WoW-Welt, on-demand Tile-Loading |
-| **Exploration-System** | ✅ fertig | 3-Tier Tracking (Area/Zone/Map), Rewards, TensorBoard-Metriken |
-| **Reward-Synchronisation** | ✅ fertig | Sim und Live haben identische Reward-Tabelle |
-| **Override-Logik** | ✅ fertig | Vendor, Aggro, Cast-Guard, Loot, Range-Mgmt — in beiden Envs identisch |
-| **wow_env.py (Live-Server)** | ✅ fertig | TCP-Anbindung, NPC-Memory, Blacklist, Override-Logik |
-| **C++ AI-Controller-Modul** | ✅ fertig | Bot-Spawning, TCP-Server, State-Publishing, Kommando-Verarbeitung |
-| **auto_grind.py** | ✅ fertig | Hybrid-Runner mit Farm-Route + RL-Policy |
-| **train.py (Live-Training)** | ✅ fertig | Multi-Bot PPO, aber bisher nur abgebrochene Runs (wow_bot_interrupted.zip) |
+| **CombatSimulation Engine** | done | 119 spawns + CreatureDB, 4 spells, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
+| **WoWSimEnv (Gym Interface)** | done | Discrete(11) actions, Box(17) obs, sparse rewards, stall detection |
+| **train_sim.py (PPO Training)** | done | 5 bots, SubprocVecEnv, TensorBoard, gameplay metrics, episode logging |
+| **test_sim.py (Validation)** | done | 6 tests: engine, gym spaces, random episode, benchmark, scripted combat, level system |
+| **3D Terrain System** | done | Maps/VMAPs parser, HeightCache, SpatialLOSChecker, SimTerrain wrapper |
+| **AreaTable.dbc Parser** | done | Reads all areas/zones/maps of the WoW world, on-demand tile loading |
+| **Exploration System** | done | 3-tier tracking (Area/Zone/Map), rewards, TensorBoard metrics |
+| **CreatureDB (Full World)** | done | CSV loader, spatial index, stat interpolation, attackability checks |
+| **Episode Logger** | done | Zero-I/O JSONL logger, trail data, events, mob snapshots |
+| **Visualization** | done | Interactive map viewer with episode slider, zoom, bot filters, event log |
+| **Override Logic** | done | Vendor, aggro, cast guard, loot, range mgmt — in both envs |
+| **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, override logic, shaped rewards |
+| **C++ AI Controller Module** | done | Bot spawning, TCP server, state publishing, command processing, per-player mob lists |
+| **auto_grind.py** | done | Hybrid runner with farm route + RL policy |
+| **train.py (Live Training)** | done | Multi-bot PPO, but only interrupted runs so far |
 
-### Bekannte Lücken & Paritäts-Differenzen
+### Known Gaps & Parity Differences
 
-| Problem | Bereich | Schwere | Details |
+| Problem | Area | Severity | Details |
 |---|---|---|---|
-| **Exploration fehlt in wow_env.py** | Live-Env | mittel | Sim hat Area/Zone/Map Exploration-Rewards, Live-Env noch nicht — bei Sim→Live Transfer werden diese Rewards fehlen |
-| **nearby_mobs Cache-Bug** | C++ Modul | kritisch | `_cachedNearbyMobsJson` wird nur für den ersten Spieler berechnet — alle Bots sehen dieselbe Mob-Liste |
-| **run_bot.py kaputt** | Script | niedrig | Syntax-Fehler (fehlende Anführungszeichen, Doppelpunkte, Klammern) — nicht nutzbar |
-| **run_model.py referenziert wow_bot_v1** | Script | niedrig | Modell existiert nicht, nur wow_bot_interrupted.zip vorhanden |
-| **Level-System vereinfacht** | Sim | niedrig | Stat-Skalierung ist linear (nicht DB-basiert), Level-Cap 79, nur 4 Mob-Typen (L1–3) |
-| **Vendor-System vereinfacht** | Sim | niedrig | Sim hat keine echten Vendors — Sell-Action räumt nur Slots frei, ohne Copper-Gewinn |
-| **Keine Trainings-Artefakte** | Training | info | Weder models/ noch logs/ Verzeichnisse existieren aktuell — kein abgeschlossener Sim-Trainingslauf vorhanden |
+| **Exploration missing in wow_env.py** | Live Env | medium | Sim has Area/Zone/Map exploration rewards, live env does not yet — these rewards will be missing during sim->live transfer |
+| **Reward parity gap** | Both Envs | medium | Sim uses sparse design (XP=10+xp*0.2, death=-30), live uses more shaping (XP=3+xp*0.05, death=-5) — trained model may not transfer cleanly |
+| **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
+| **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
+| **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain |
+| **No training artifacts** | Training | info | Neither models/ nor logs/ directories exist currently — no completed training run stored |
 
-## Nächste Schritte (Roadmap)
+## Roadmap
 
-### Phase 1: Sim-Training validieren (aktuell)
+### Phase 1: Validate Sim Training (Current)
 
-**Ziel**: Ein stabiles PPO-Modell in der Sim trainieren, das grundlegende Combat-Skills zeigt.
+**Goal**: Train a stable PPO model in the sim that demonstrates basic combat skills and leveling.
 
-1. **Erster vollständiger Trainingslauf**
-   - `python -m sim.train_sim --steps 500000` ausführen
-   - TensorBoard-Metriken prüfen: steigen Kills/XP pro Episode? Sinkt die Death-Rate?
-   - Checkpoint als `wow_sim_v1.zip` speichern
+1. **First complete training run**
+   - Run `python -m sim.train_sim --steps 500000`
+   - Check TensorBoard metrics: are kills/XP per episode rising? Is the death rate falling?
+   - Save checkpoint as `wow_bot_sim_v1.zip`
 
-2. **Hyperparameter-Tuning**
-   - `ent_coef` variieren (0.005–0.05) — zu wenig Exploration vs. zu viel Zufall
-   - `n_steps` und `batch_size` anpassen je nach Reward-Kurve
-   - `total_timesteps` auf 1M–5M erhöhen wenn Reward noch steigt
+2. **Hyperparameter tuning**
+   - Vary `ent_coef` (0.01-0.1) — too little exploration vs. too much randomness
+   - Adjust `n_steps` and `batch_size` based on reward curve
+   - Increase `total_timesteps` to 1M-5M if reward is still rising
 
-3. **Trainings-Metriken auswerten**
-   - Kill-Rate pro Episode sollte >2 erreichen
-   - Death-Rate sollte unter 30% fallen
-   - Areas-explored als Indikator für Bewegungsverhalten
+3. **Evaluate training metrics**
+   - Kill rate per episode should reach >2
+   - Death rate should fall below 30%
+   - Areas explored as indicator for movement behavior
+   - Final level as indicator for sustained survival
 
-### Phase 2: Sim-Qualität verbessern
+### Phase 2: Improve Sim Quality
 
-4. **3D-Terrain im Training testen**
-   - `--data-root` Training durchführen, FPS-Impact messen
-   - Vergleich: lernt der Bot mit Terrain besser/anders als ohne?
-   - LOS-Blockaden und Walkability als zusätzliche Lern-Signale nutzen
+4. **Test 3D terrain in training**
+   - Run `--data-root` training, measure FPS impact
+   - Compare: does the bot learn better/differently with terrain?
+   - Use LOS blockages and walkability as additional learning signals
 
-5. **Exploration-Rewards in wow_env.py nachziehen**
-   - Area/Zone/Map Tracking analog zur Sim implementieren
-   - Benötigt entweder: (a) C++ Modul sendet Area-IDs mit, oder (b) Python-seitig aus Koordinaten berechnen
-   - Reward-Parität sicherstellen für Transfer Sim→Live
+5. **Synchronize rewards between sim and live**
+   - Either bring live env closer to sparse design, or vice versa
+   - Add exploration tracking to `wow_env.py`
+   - Ensure reward parity for sim->live transfer
 
-6. **Kampf-Balancing prüfen**
-   - Mob-Damage, Spell-Damage, Mana-Kosten vs. echte WoW-Werte abgleichen
-   - Aggro-Range und Leash-Distance feintunen
-   - Mehrfach-Aggro-Situationen testen (2+ Mobs gleichzeitig)
+6. **Check combat balancing**
+   - Mob damage, spell damage, mana costs vs. real WoW values
+   - Fine-tune aggro range and leash distance
+   - Test multi-aggro situations (2+ mobs simultaneously)
 
-### Phase 3: Transfer auf Live-Server
+### Phase 3: Transfer to Live Server
 
-7. **Sim-Modell auf Live-Server testen**
-   - Trainiertes `wow_sim_v1.zip` mit `auto_grind.py` oder `run_model.py` gegen echten Server laufen lassen
-   - Beobachten: welche Verhaltensweisen transferieren, welche nicht?
-   - Delta-Analyse: wo weicht Sim-Verhalten vom Live-Verhalten ab?
+7. **Test sim model on live server**
+   - Run trained `wow_bot_sim_v1.zip` with `auto_grind.py` or `run_model.py` against real server
+   - Observe: which behaviors transfer, which don't?
+   - Delta analysis: where does sim behavior deviate from live behavior?
 
-8. **nearby_mobs Cache-Bug fixen** (C++)
-   - `_cachedNearbyMobsJson` muss pro Spieler berechnet werden, nicht nur für den ersten
-   - Ohne Fix sind Multi-Bot-Runs auf dem Live-Server unzuverlässig
+8. **Live training with sim-pretrained model**
+   - `train.py --resume models/PPO/wow_bot_sim_v1.zip` — fine-tuning on real server
+   - Lower learning rate for fine-tuning (1e-4 instead of 3e-4)
+   - Compare: sim-pretrained vs. from-scratch on live
 
-9. **Live-Training mit Sim-Pretrained-Modell**
-   - `train.py --resume models/PPO/wow_sim_v1.zip` — Fine-Tuning auf echtem Server
-   - Niedrigere Learning-Rate für Fine-Tuning (1e-4 statt 3e-4)
-   - Vergleich: Sim-Pretrained vs. From-Scratch auf Live
+### Phase 4: Extensions (Later)
 
-### Phase 4: Erweiterungen (später)
+9. **More spells / higher levels**
+    - Additional Priest spells from level 4+ (Renew, Mind Blast, Fade)
+    - Mob types with special abilities (ranged, caster, runners)
 
-10. **Mehr Spells / höhere Level**
-    - Weitere Priest-Spells ab Level 4+ (Renew, Mind Blast, Fade)
-    - Level-Cap in der Sim erhöhen (aktuell nur Level 1)
-    - Mob-Typen mit speziellen Fähigkeiten (Ranged, Caster, Runners)
+10. **Multi-zone navigation**
+    - Bot should independently explore Elwynn Forest (not just Northshire)
+    - Waypoint system or curiosity-driven exploration
+    - Zone-specific mob scaling
 
-11. **Multi-Zone Navigation**
-    - Bot soll selbstständig Elwynn Forest erkunden (nicht nur Northshire)
-    - Waypoint-System oder curiosity-driven Exploration
-    - Zonen-spezifisches Mob-Scaling
+11. **run_bot.py repair or replace**
+    - Fix syntax errors or replace with clean script
+    - Simple inference runner that supports both sim and live
 
-12. **run_bot.py reparieren oder ersetzen**
-    - Syntax-Fehler fixen oder durch sauberes Script ersetzen
-    - Einfacher Inference-Runner der sowohl Sim als auch Live unterstützt
-
-13. **Automatisierte Tests**
-    - CI-Pipeline mit `test_sim.py` als Mindestanforderung
-    - Regressions-Tests für Reward-Parität (Sim vs. Live)
-    - Performance-Benchmark als Gate (FPS darf nicht unter X fallen)
+12. **Automated tests**
+    - CI pipeline with `test_sim.py` as minimum requirement
+    - Regression tests for reward parity (sim vs. live)
+    - Performance benchmark as gate (FPS must not fall below threshold)
