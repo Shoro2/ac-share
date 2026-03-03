@@ -14,6 +14,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import math
+import os
 import random
 from typing import Optional
 
@@ -76,9 +77,19 @@ class WoWSimEnv(gym.Env):
             from sim.creature_db import CreatureDB
             self._creature_db = CreatureDB(creature_csv_dir, quiet=True)
 
+        # Load loot tables (auto-discover from creature_csv_dir or data/)
+        self._loot_db = None
+        loot_dir = creature_csv_dir or (os.path.dirname(data_root) if data_root else None)
+        if loot_dir:
+            from sim.loot_db import LootDB
+            loot_db = LootDB(loot_dir, quiet=True)
+            if loot_db.loaded:
+                self._loot_db = loot_db
+
         self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed,
                                     terrain=self._terrain, env3d=self._env3d,
-                                    creature_db=self._creature_db)
+                                    creature_db=self._creature_db,
+                                    loot_db=self._loot_db)
         self.last_state = None
         self._step_count = 0
         # No step limit — episode runs until death (bot should level as far as possible)
