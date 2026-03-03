@@ -192,7 +192,7 @@ Format: `<playerName>:<actionType>:<value>\n`
 | 8 | reserviert (immer 0) | 0 |
 | 9 | free_slots / 20 | 0–1 |
 
-**Reward-Shaping**: Siehe einheitliche Reward-Tabelle oben (gilt für Sim und Live identisch).
+**Reward-Shaping**: Siehe Reward-Tabelle unten (Abschnitt `wow_sim_env.py`).
 
 **Override-Logik** (überlagert RL-Entscheidungen):
 1. **Vendor-Modus**: Bei `free_slots < 2` und nicht im Kampf → navigiert zum nächsten Vendor aus NPC-Memory, verkauft automatisch
@@ -309,36 +309,23 @@ Map 0 (Eastern Kingdoms)
        └─ ...
 ```
 
-### Reward-Tabelle (gilt für Sim UND Live identisch)
+### Reward-Tabelle (gilt für Sim, Quelle: `wow_sim_env.py`)
 
 | Signal | Wert | Anmerkung |
 |---|---|---|
 | Step-Penalty | -0.01 | pro Tick |
 | Idle-Penalty | -0.03 | Noop ohne Casting |
-| Mob entdeckt | +0.25 | 0.5 × 0.5 Skalierung |
-| Approach | clip(delta×0.05, -0.2, +0.3) | näher an Target |
 | Damage dealt | min(dmg×0.03, 1.0) | Schaden am Target |
-| Facing Target | facing_quality × 0.08 | im Kampf |
-| XP/Kill | 3.0 + min(xp×0.05, 2.0) | ~3–5 pro Kill |
-| Level-Up | +15.0 | terminal |
+| XP/Kill | 10.0 + xp×0.2 | ~20 pro 50-XP Kill, skaliert mit XP |
+| Level-Up | +15.0 × levels | |
 | Equipment-Upgrade | +3.0 | |
 | Loot | min((copper×0.01)+(score×0.2), 3.0) | gedeckelt |
 | Verkauf | +2.0 | Slots freigeräumt |
-| Smite mit Target | +0.3 | |
-| Smite ohne Target | -0.1 | |
-| Heal bei HP<50% | +0.5 | |
-| Heal bei HP>80% | -0.3 | |
-| SW:Pain (frisch) | +0.5 | |
-| SW:Pain (doppelt) | -0.2 | |
-| PW:Shield (Kampf) | +0.4 | |
-| PW:Shield (aktiv) | -0.2 | |
-| Bewegen im Kampf | -0.3 | |
-| Drehen zu Target | +0.4 | im Kampf |
-| Neues Area betreten | +0.5 | echte WoW Area-ID aus AreaTable.dbc (einmalig) |
-| Neue Zone betreten | +2.0 | echte WoW Zone-ID (z.B. Elwynn→Westfall, einmalig) |
-| Neue Map betreten | +5.0 | echte WoW Map-ID (z.B. Eastern Kingdoms→Kalimdor, einmalig) |
-| Tod | -5.0 | terminal, überschreibt |
-| OOM (<5% Mana) | -2.0 | terminal |
+| Neues Area betreten | +1.0 | echte WoW Area-ID oder Grid-Fallback (einmalig) |
+| Neue Zone betreten | +3.0 | echte WoW Zone-ID (einmalig) |
+| Neue Map betreten | +10.0 | echte WoW Map-ID (einmalig) |
+| Tod | -30.0 | terminal, überschreibt alle anderen Rewards |
+| OOM (<5% Mana) | -15.0 | terminal |
 
 ### train.py — PPO-Training (Live-Server)
 
