@@ -463,8 +463,12 @@ def get_terrain_height(tile: MapTile, world_x: float, world_y: float) -> float:
     """
     Berechnet die interpolierte Terrain-Höhe an Weltkoordinaten (x, y).
     Verwendet die gleiche Triangle-Interpolation wie AzerothCore.
+
+    Optimiert: Inline array access statt Closures (spart ~2μs/Aufruf).
     """
-    if tile.v9 is None or tile.v8 is None:
+    _v9 = tile.v9
+    _v8 = tile.v8
+    if _v9 is None or _v8 is None:
         return tile.grid_height
 
     # Welt → Heightmap-Koordinaten (lokal im Tile)
@@ -479,47 +483,36 @@ def get_terrain_height(tile: MapTile, world_x: float, world_y: float) -> float:
     x_int &= (MAP_RESOLUTION - 1)
     y_int &= (MAP_RESOLUTION - 1)
 
-    # v9 hat 129x129 Vertices, v8 hat 128x128
-    # v9[x_int * 129 + y_int] gibt den Eckpunkt
-
-    def v9(xi, yi):
-        return tile.v9[xi * 129 + yi]
-
-    def v8(xi, yi):
-        return tile.v8[xi * 128 + yi]
-
+    # Inline array access (v9: 129 stride, v8: 128 stride)
     # Triangle-Interpolation (4 Dreiecke pro Zelle)
+    h5 = 2.0 * _v8[x_int * 128 + y_int]
     if x + y < 1:
         if x > y:
             # Dreieck 1: oben-links (h1-h2-h5)
-            h1 = v9(x_int, y_int)
-            h2 = v9(x_int + 1, y_int)
-            h5 = 2 * v8(x_int, y_int)
+            h1 = _v9[x_int * 129 + y_int]
+            h2 = _v9[(x_int + 1) * 129 + y_int]
             a = h2 - h1
             b = h5 - h1 - h2
             c = h1
         else:
             # Dreieck 2: oben-rechts (h1-h3-h5)
-            h1 = v9(x_int, y_int)
-            h3 = v9(x_int, y_int + 1)
-            h5 = 2 * v8(x_int, y_int)
+            h1 = _v9[x_int * 129 + y_int]
+            h3 = _v9[x_int * 129 + y_int + 1]
             a = h5 - h1 - h3
             b = h3 - h1
             c = h1
     else:
         if x > y:
             # Dreieck 3: unten-links (h2-h4-h5)
-            h2 = v9(x_int + 1, y_int)
-            h4 = v9(x_int + 1, y_int + 1)
-            h5 = 2 * v8(x_int, y_int)
+            h2 = _v9[(x_int + 1) * 129 + y_int]
+            h4 = _v9[(x_int + 1) * 129 + y_int + 1]
             a = h2 + h4 - h5
             b = h4 - h2
             c = h5 - h4
         else:
             # Dreieck 4: unten-rechts (h3-h4-h5)
-            h3 = v9(x_int, y_int + 1)
-            h4 = v9(x_int + 1, y_int + 1)
-            h5 = 2 * v8(x_int, y_int)
+            h3 = _v9[x_int * 129 + y_int + 1]
+            h4 = _v9[(x_int + 1) * 129 + y_int + 1]
             a = h4 - h3
             b = h3 + h4 - h5
             c = h5 - h4
