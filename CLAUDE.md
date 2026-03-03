@@ -297,7 +297,7 @@ Simulates the complete WoW combat system in pure Python:
   - `_new_areas`/`_new_zones`/`_new_maps` counters (consume-on-read like XP/Loot)
 - **3D Terrain** (optional via `terrain` parameter): Z coordinates, walkability checks, LOS checks for spells
 - **State Dict**: Identical to the TCP JSON of the live server
-- **Regen System**: HP regen 0.67/tick OOC (after 6s combat delay), Mana regen 2.75/tick while not casting
+- **Regen System**: HP regen 0.67/tick OOC (after 6s combat delay), Mana regen 2% of max_mana/tick while not casting
 
 **XP Formula** (from AzerothCore `Formulas.h`/`.cpp`):
 - **Mob >= Player Level**: `((pl*5 + 45) * (20 + min(diff, 4)) / 10 + 1) / 2`
