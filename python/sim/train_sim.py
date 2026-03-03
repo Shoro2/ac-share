@@ -145,10 +145,13 @@ class GameplayMetricsCallback(BaseCallback):
                 zones = stats.get('zones_explored', 0)
                 maps = stats.get('maps_explored', 0)
                 dmg = stats.get('damage_dealt', 0)
+                sold = stats.get('sell_copper', 0)
+                quests = stats.get('quests_completed', 0)
                 print(f"  [Episode {self._episode_count}] "
                       f"reward={stats['reward']:.1f} kills={stats['kills']} "
                       f"xp={stats['xp']} deaths={stats['death']} "
                       f"dmg={dmg} areas={areas} "
+                      f"sold={sold} quests={quests} "
                       f"len={stats['length']}")
 
         return True
