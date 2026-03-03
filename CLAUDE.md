@@ -318,7 +318,7 @@ Drop-in replacement for `wow_env.py`:
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Similar Override Logic**: Aggro, Cast-Guard, Range-Management, Heal/Shield/DoT blocks
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
-- **Stall Detection**: Truncates episode after 100,000 steps without XP gain
+- **Stall Detection**: Truncates episode after 30,000 steps without XP gain
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
 **Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1)`
@@ -334,9 +334,9 @@ Drop-in replacement for `wow_env.py`:
 | Signal | Value | Notes |
 |---|---|---|
 | Step Penalty | -0.01 | per tick |
-| Idle Penalty | -0.03 | Noop without casting |
+| Idle Penalty | -0.05 | Noop without casting |
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
-| XP/Kill | 10.0 + xp * 0.2 | ~20 per 50-XP kill, scales with XP |
+| XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
 | Level-Up | +15.0 * levels | per level gained |
 | Equipment Upgrade | +3.0 | |
 | Loot | min((copper * 0.01) + (score * 0.2), 3.0) | capped |
@@ -344,7 +344,7 @@ Drop-in replacement for `wow_env.py`:
 | New Area Entered | +1.0 | real WoW Area ID or grid fallback (once per episode) |
 | New Zone Entered | +3.0 | real WoW Zone ID (once per episode) |
 | New Map Entered | +10.0 | real WoW Map ID (once per episode) |
-| Death | -30.0 | terminal, overrides all other rewards |
+| Death | -15.0 | terminal, overrides all other rewards |
 
 #### Live Rewards (wow_env.py — More Shaped)
 
@@ -365,7 +365,7 @@ Drop-in replacement for `wow_env.py`:
 | Death | -5.0 | terminal |
 | OOM (<5% Mana) | -2.0 | terminal |
 
-**Key Differences**: The sim uses a **sparse reward** design (only real outcomes matter), while the live env uses **more reward shaping** (approach, facing, discovery, action-specific bonuses). The sim has a much harsher death penalty (-30 vs -5) and higher XP/kill reward (10+xp*0.2 vs 3+xp*0.05). OOM is only terminal in the live env.
+**Key Differences**: The sim uses a **sparse reward** design (only real outcomes matter), while the live env uses **more reward shaping** (approach, facing, discovery, action-specific bonuses). The sim has a harsher death penalty (-15 vs -5) and higher XP/kill reward (10+xp*0.5 vs 3+xp*0.05). OOM is only terminal in the live env.
 
 ### sim_logger.py — Episode Logging System
 
@@ -393,7 +393,7 @@ Interactive map visualization for analyzing training episodes:
 ### train_sim.py — Sim Training
 
 - **5 bots** in `SubprocVecEnv`
-- **PPO** with `ent_coef=0.05`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`
+- **PPO** with `ent_coef=0.1`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`
 - **TensorBoard Logs** in `logs/PPO_2/`
 - **Episode Callbacks** with kills, XP, deaths, areas/zones/maps explored, levels gained, final level
 - **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`
@@ -655,7 +655,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | Problem | Area | Severity | Details |
 |---|---|---|---|
 | **Exploration missing in wow_env.py** | Live Env | medium | Sim has Area/Zone/Map exploration rewards, live env does not yet — these rewards will be missing during sim->live transfer |
-| **Reward parity gap** | Both Envs | medium | Sim uses sparse design (XP=10+xp*0.2, death=-30), live uses more shaping (XP=3+xp*0.05, death=-5) — trained model may not transfer cleanly |
+| **Reward parity gap** | Both Envs | medium | Sim uses sparse design (XP=10+xp*0.5, death=-15), live uses more shaping (XP=3+xp*0.05, death=-5) — trained model may not transfer cleanly |
 | **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
 | **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
 | **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain. Loot tables provide real item data but sell copper is not tracked. |
