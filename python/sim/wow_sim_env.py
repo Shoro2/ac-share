@@ -142,7 +142,7 @@ class WoWSimEnv(gym.Env):
         self._ep_levels_gained = 0
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
-        self._steps_since_xp = 0          # stall detector: reset episode after 8k steps without XP
+        self._steps_since_kill_xp = 0      # stall detector: reset episode after 3k steps without kill XP
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
         self._quest_nav_active = False     # True while bot is walking to quest NPC
 
@@ -171,7 +171,8 @@ class WoWSimEnv(gym.Env):
         self._ep_levels_gained = 0
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
-        self._steps_since_xp = 0
+        self._steps_since_kill_xp = 0
+        self._prev_target_dist = None       # for approach shaping
         self._vendor_nav_active = False
         self._quest_nav_active = False
         self.last_state = self.sim.get_state_dict()
@@ -358,17 +359,29 @@ class WoWSimEnv(gym.Env):
                 reward += min(damage * 0.03, 1.0)
                 self._ep_damage_dealt += damage
 
+        # 3b. Approach Shaping (potential-based — getting closer to target)
+        if t_exists > 0.5:
+            curr_dist = dist_to_target
+            if self._prev_target_dist is not None and self._prev_target_dist < 9000:
+                delta = self._prev_target_dist - curr_dist  # positive = closer
+                reward += max(-0.1, min(delta * 0.03, 0.15))
+            self._prev_target_dist = curr_dist
+        else:
+            self._prev_target_dist = None
+
         # 4. XP/Kill (primary reward signal — must dominate step penalty)
         xp = events["xp_gained"]
+        kill_xp = xp - events.get("quest_xp", 0)  # separate kill XP from quest XP
         if xp > 0:
             reward += 10.0 + xp * 0.5
-            self._ep_kills += 1
-            self._steps_since_xp = 0
+            if kill_xp > 0:
+                self._ep_kills += 1
+                self._steps_since_kill_xp = 0
             if self._logger:
                 self._logger.record_event(
                     self._step_count, p.x, p.y, "kill")
         else:
-            self._steps_since_xp += 1
+            self._steps_since_kill_xp += 1
 
         # 5. Level-Up
         levels = events.get("levels_gained", 0)
@@ -441,7 +454,7 @@ class WoWSimEnv(gym.Env):
             reward += 20.0 * quests_done
             self._ep_quests_completed += quests_done
             self._ep_quest_xp += quest_xp
-            self._steps_since_xp = 0  # quest XP counts against stall detection
+            # NOTE: quest XP does NOT reset stall counter — only kills do
             if self._logger:
                 self._logger.record_event(
                     self._step_count, p.x, p.y, "quest",
@@ -463,8 +476,8 @@ class WoWSimEnv(gym.Env):
                     self._step_count, p.x, p.y, "death")
         # OOM is not terminal — bot must learn to wait for mana regen
 
-        # Stall detection: if bot hasn't earned XP in 8k steps, it's stuck
-        truncated = (self._steps_since_xp >= 8_000)
+        # Stall detection: if bot hasn't earned kill XP in 3k steps, it's stuck
+        truncated = (self._steps_since_kill_xp >= 3_000)
 
         # State-Tracking
         self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None

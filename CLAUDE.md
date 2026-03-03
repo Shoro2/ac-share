@@ -378,7 +378,7 @@ Extended replacement for `wow_env.py` with optional quest system:
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Similar Override Logic**: Aggro, Cast-Guard, Range-Management, Heal/Shield/DoT blocks
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
-- **Stall Detection**: Truncates episode after 8,000 steps without XP gain
+- **Stall Detection**: Truncates episode after 3,000 steps without kill XP (quest XP alone does not reset the counter)
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
 **Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1, enable_quests=False)`
@@ -395,6 +395,7 @@ Extended replacement for `wow_env.py` with optional quest system:
 |---|---|---|
 | Step Penalty | -0.001 | per tick |
 | Idle Penalty | -0.005 | Noop without casting |
+| Approach | clip(delta * 0.03, -0.1, +0.15) | potential-based, closer to target |
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
 | XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
 | Level-Up | +15.0 * levels | per level gained |
@@ -426,7 +427,7 @@ Extended replacement for `wow_env.py` with optional quest system:
 | Death | -5.0 | terminal |
 | OOM (<5% Mana) | -2.0 | terminal |
 
-**Key Differences**: The sim uses a **sparse reward** design (only real outcomes matter), while the live env uses **more reward shaping** (approach, facing, discovery, action-specific bonuses). The sim has a harsher death penalty (-15 vs -5) and higher XP/kill reward (10+xp*0.5 vs 3+xp*0.05). OOM is only terminal in the live env.
+**Key Differences**: The sim uses a **mostly sparse reward** design with light approach shaping, while the live env uses **more reward shaping** (facing, discovery, action-specific bonuses). Both have approach shaping (sim: clip to [-0.1, +0.15], live: clip to [-0.2, +0.3]). The sim has a harsher death penalty (-15 vs -5) and higher XP/kill reward (10+xp*0.5 vs 3+xp*0.05). OOM is only terminal in the live env. Stall detection: sim truncates after 3k steps without kill XP (quest XP does not count).
 
 ### sim_logger.py — Episode Logging System
 
@@ -454,7 +455,7 @@ Interactive map visualization for analyzing training episodes:
 ### train_sim.py — Sim Training
 
 - **5 bots** in `SubprocVecEnv`
-- **PPO** with `ent_coef=0.1`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`, `gamma=0.97`
+- **PPO** with `ent_coef=0.01`, `n_steps=512`, `batch_size=128`, `learning_rate=3e-4`, `gamma=0.97`, `n_epochs=8`
 - **TensorBoard Logs** in `logs/PPO_2/`
 - **Episode Callbacks** with kills, XP, deaths, areas/zones/maps explored, levels gained, final level
 - **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`, `gameplay/ep_quests_completed`, `gameplay/ep_quest_xp`
