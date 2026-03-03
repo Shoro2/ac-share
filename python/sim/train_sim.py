@@ -218,7 +218,7 @@ def main():
                 n_steps=args.n_steps,
                 batch_size=args.batch_size,
                 learning_rate=args.lr,
-                ent_coef=0.05,
+                ent_coef=0.1,
                 clip_range=0.2,
                 n_epochs=4,
                 gamma=0.99,

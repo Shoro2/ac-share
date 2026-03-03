@@ -125,7 +125,7 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
-        self._steps_since_xp = 0          # stall detector: reset episode after 100k steps without XP
+        self._steps_since_xp = 0          # stall detector: reset episode after 30k steps without XP
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
 
     def reset(self, seed=None, options=None):
@@ -302,7 +302,7 @@ class WoWSimEnv(gym.Env):
 
         # 2. Idle-Penalty (Noop without casting = wasted time)
         if override_action == 0 and not is_casting_now:
-            reward -= 0.03
+            reward -= 0.05
 
         # 3. Damage-Reward (gradient toward kills — can't be faked)
         if (t_exists > 0.5
@@ -316,7 +316,7 @@ class WoWSimEnv(gym.Env):
         # 4. XP/Kill (primary reward signal — must dominate step penalty)
         xp = events["xp_gained"]
         if xp > 0:
-            reward += 10.0 + xp * 0.2
+            reward += 10.0 + xp * 0.5
             self._ep_kills += 1
             self._steps_since_xp = 0
             if self._logger:
@@ -396,15 +396,15 @@ class WoWSimEnv(gym.Env):
         # 10. Terminal: Death (only terminal — bot must learn to survive)
         terminated = False
         if self.sim.player.hp <= 0:
-            reward = -30.0
+            reward = -15.0
             terminated = True
             if self._logger:
                 self._logger.record_event(
                     self._step_count, p.x, p.y, "death")
         # OOM is not terminal — bot must learn to wait for mana regen
 
-        # Stall detection: if bot hasn't earned XP in 100k steps, it's stuck
-        truncated = (self._steps_since_xp >= 100_000)
+        # Stall detection: if bot hasn't earned XP in 30k steps, it's stuck
+        truncated = (self._steps_since_xp >= 30_000)
 
         # State-Tracking
         self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
