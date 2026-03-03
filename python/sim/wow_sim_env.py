@@ -81,7 +81,7 @@ class WoWSimEnv(gym.Env):
                                     creature_db=self._creature_db)
         self.last_state = None
         self._step_count = 0
-        self._max_steps = 4000  # episode timeout
+        # No step limit — episode runs until death (bot should level as far as possible)
         self._ep_reward = 0.0
         self._ep_xp = 0
         self._ep_loot = 0
@@ -317,7 +317,7 @@ class WoWSimEnv(gym.Env):
                 self._step_count, p.x, p.y, hp_pct,
                 p.level, p.in_combat, p.orientation)
 
-        # 10. Terminal: Death (heavy penalty — bot must learn to avoid dying)
+        # 10. Terminal: Death (only terminal — bot must learn to survive)
         terminated = False
         if self.sim.player.hp <= 0:
             reward = -30.0
@@ -325,12 +325,9 @@ class WoWSimEnv(gym.Env):
             if self._logger:
                 self._logger.record_event(
                     self._step_count, p.x, p.y, "death")
-        # 11. Terminal: OOM
-        elif mana_pct < 0.05:
-            reward = -15.0
-            terminated = True
+        # OOM is not terminal — bot must learn to wait for mana regen
 
-        truncated = self._step_count >= self._max_steps
+        truncated = False  # no step limit — episode runs until death
 
         # State-Tracking
         self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
