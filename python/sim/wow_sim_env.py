@@ -93,6 +93,7 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
+        self._steps_since_xp = 0          # stall detector: reset episode after 100k steps without XP
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -114,6 +115,7 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
+        self._steps_since_xp = 0
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
 
@@ -262,9 +264,12 @@ class WoWSimEnv(gym.Env):
         if xp > 0:
             reward += 10.0 + xp * 0.2
             self._ep_kills += 1
+            self._steps_since_xp = 0
             if self._logger:
                 self._logger.record_event(
                     self._step_count, p.x, p.y, "kill")
+        else:
+            self._steps_since_xp += 1
 
         # 5. Level-Up
         levels = events.get("levels_gained", 0)
@@ -327,7 +332,8 @@ class WoWSimEnv(gym.Env):
                     self._step_count, p.x, p.y, "death")
         # OOM is not terminal — bot must learn to wait for mana regen
 
-        truncated = False  # no step limit — episode runs until death
+        # Stall detection: if bot hasn't earned XP in 100k steps, it's stuck
+        truncated = (self._steps_since_xp >= 100_000)
 
         # State-Tracking
         self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
