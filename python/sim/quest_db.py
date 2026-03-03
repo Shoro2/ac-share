@@ -14,7 +14,7 @@ Falls back to hardcoded Northshire quests when CSVs are not available.
 Quest types supported:
   - KILL: Kill N creatures of a specific entry (RequiredNpcOrGo > 0)
   - COLLECT: Collect N quest items (RequiredItemId, source from loot tables)
-  - EXPLORE: Visit a location (hardcoded only — no CSV equivalent)
+  - EXPLORE: Visit a location (currently unused — no CSV equivalent)
 
 Usage:
     quest_db = QuestDB("data/")          # load from CSV
@@ -151,7 +151,6 @@ class QuestNPCData:
 QUEST_NPC_DATA = [
     QuestNPCData(entry=823,  name="Deputy Willem",    x=-8949.0, y=-152.0, z=82.0),
     QuestNPCData(entry=197,  name="Marshal McBride",  x=-8914.0, y=-133.0, z=82.0),
-    QuestNPCData(entry=6774, name="Brother Neals",    x=-8899.0, y=-170.0, z=82.0),
 ]
 
 # ─── Hardcoded Northshire Valley Quests ──────────────────────────────────
@@ -211,41 +210,6 @@ QUEST_TEMPLATES = {
         rewards=QuestReward(xp=675, copper=200),
         prev_quest=7,
     ),
-
-    # ── Standalone: Brother Neals exploration quest ──
-    100001: QuestTemplate(
-        quest_id=100001,
-        title="Scout the Vineyards",
-        min_level=1, quest_level=2,
-        giver_entry=6774, ender_entry=6774,  # Brother Neals
-        objectives=[
-            QuestObjective(
-                obj_type=QuestObjectiveType.EXPLORE,
-                target=0, count=1,
-                target_x=-8860.0, target_y=-60.0, radius=30.0,
-                description="Scout the vineyard area",
-            ),
-        ],
-        rewards=QuestReward(xp=170, copper=35),
-    ),
-
-    # ── Standalone: Deputy Willem collect quest ──
-    100002: QuestTemplate(
-        quest_id=100002,
-        title="Diseased Wolf Pelts",
-        min_level=1, quest_level=2,
-        giver_entry=823, ender_entry=823,  # Deputy Willem
-        objectives=[
-            QuestObjective(
-                obj_type=QuestObjectiveType.COLLECT,
-                target=100001, count=6,  # quest item ID (virtual)
-                source_creature=299,     # Young Wolf (entry 299)
-                drop_chance=0.5,
-                description="Collect 6 Diseased Wolf Pelts",
-            ),
-        ],
-        rewards=QuestReward(xp=360, copper=75),
-    ),
 }
 
 
@@ -253,8 +217,8 @@ class QuestDB:
     """Quest database — loads from AzerothCore CSV exports with hardcoded fallback.
 
     Follows the CreatureDB/LootDB pattern:
-    - Without data_dir: uses hardcoded Northshire quests (5 quests, 3 NPCs)
-    - With data_dir: loads from CSV, keeps hardcoded custom quests (ID >= 100000)
+    - Without data_dir: uses hardcoded Northshire quests (3 quests, 2 NPCs)
+    - With data_dir: loads from CSV, replaces hardcoded quests entirely
     - Graceful degradation: missing CSVs are silently skipped
     """
 
@@ -297,7 +261,7 @@ class QuestDB:
         """Load quest data from AzerothCore CSV exports.
 
         Reads quest_template.csv + related CSVs. Replaces hardcoded quests
-        (ID < 100000) with CSV data, keeps custom quests (ID >= 100000).
+        entirely with CSV data.
         """
         qt_path = os.path.join(data_dir, 'quest_template.csv')
         if not os.path.isfile(qt_path):
@@ -325,10 +289,8 @@ class QuestDB:
         if os.path.isfile(ender_path):
             self._load_quest_relations(ender_path, csv_templates, 'ender')
 
-        # 5. Replace hardcoded templates — keep custom quests (ID >= 100000)
-        self.templates = {qid: qt for qid, qt in self.templates.items()
-                          if qid >= 100000}
-        self.templates.update(csv_templates)
+        # 5. Replace hardcoded templates entirely with CSV data
+        self.templates = csv_templates
 
         # 6. Build quest NPC spawn data from creature CSVs
         self._build_npc_data_from_csv(data_dir)

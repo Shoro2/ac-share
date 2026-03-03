@@ -307,20 +307,17 @@ Loads quest definitions from AzerothCore CSV exports with hardcoded fallback:
 - **Objective Parsing**: KILL from `RequiredNpcOrGo1-4`, COLLECT from `RequiredItemId1-6` (source creature = heuristic from RequiredNpcOrGo)
 - **Chain Info**: `PrevQuestID`/`NextQuestID` from `quest_template_addon.csv`
 - **NPC Positions**: Auto-loaded from `creature.csv` + names from `creature_template.csv`
-- **Hardcoded Fallback** (5 quests, 3 NPCs) when CSVs not available:
+- **Hardcoded Fallback** (3 quests, 2 NPCs) when CSVs not available:
   - Quest 33: "Wolves Across the Border" — Kill 10 Young Wolves (XP: 250)
   - Quest 7: "Kobold Camp Cleanup" — Kill 10 Kobold Vermin (XP: 450, chain from 33)
   - Quest 15: "Investigate Echo Ridge" — Kill 10 Kobold Workers (XP: 675, chain from 7)
-  - Quest 100001: "Scout the Vineyards" — Explore location (XP: 170)
-  - Quest 100002: "Diseased Wolf Pelts" — Collect 6 pelts from wolves (XP: 360)
-- **Custom Quests Preserved**: IDs >= 100000 always kept (not replaced by CSV)
 - **Data Classes**: `QuestTemplate`, `QuestObjective`, `QuestReward`, `QuestProgress`, `QuestNPCData`
 - **`QuestDB`**: Follows CreatureDB/LootDB pattern — CSV loading + hardcoded fallback
 - **Integration**: `CombatSimulation(quest_db=qdb)` enables quest NPCs, objective tracking, and quest events
 
 **Initialization**: `QuestDB(data_dir=None, quiet=False)`
-- Without `data_dir`: Uses 5 hardcoded Northshire quests (backwards compatible)
-- With `data_dir`: Loads from CSV, keeps custom quests (ID >= 100000) — check `loaded` property
+- Without `data_dir`: Uses 3 hardcoded Northshire quests (backwards compatible)
+- With `data_dir`: Loads from CSV, replaces hardcoded quests entirely — check `loaded` property
 
 **Required CSV Exports** (semicolon-delimited, double-quote enclosed):
 - `quest_template.csv`: ID, QuestType, QuestLevel, MinLevel, ..., RequiredNpcOrGo1-4, RequiredNpcOrGoCount1-4, RequiredItemId1-6, RequiredItemCount1-6, ...

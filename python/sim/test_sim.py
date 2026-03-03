@@ -978,9 +978,8 @@ def test_quest_system():
     sim.player.x = willem.x
     sim.player.y = willem.y
     sim.do_quest_interact()
-    # Should accept quests 33 (Wolves) and 100002 (Diseased Wolf Pelts)
+    # Should accept quest 33 (Wolves Across the Border)
     assert 33 in sim.active_quests, "Quest 33 should be accepted"
-    assert 100002 in sim.active_quests, "Quest 100002 should be accepted"
     print(f"  9e: Accepted quests: {list(sim.active_quests.keys())} ✓")
 
     # --- Test 9f: Kill objective tracking ---
@@ -1023,59 +1022,7 @@ def test_quest_system():
     assert 7 in sim.active_quests, "Chain quest 7 should be accepted after 33"
     print(f"  9h: Chain quest 7 accepted ✓")
 
-    # --- Test 9i: Explore objective ---
-    # Move to Brother Neals and accept explore quest 100001
-    neals = None
-    for npc in sim.quest_npcs:
-        if npc.entry == 6774:
-            neals = npc
-            break
-    assert neals is not None
-    sim.player.x = neals.x
-    sim.player.y = neals.y
-    sim.do_quest_interact()
-    assert 100001 in sim.active_quests, "Explore quest 100001 should be accepted"
-
-    # Walk to target location
-    explore_qt = qdb.templates[100001]
-    obj = explore_qt.objectives[0]
-    sim.player.x = obj.target_x
-    sim.player.y = obj.target_y
-    sim._update_quest_exploration()
-    prog_explore = sim.active_quests[100001]
-    assert prog_explore.completed, "Explore quest should be complete at target location"
-    print(f"  9i: Explore quest: walked to target, complete={prog_explore.completed} ✓")
-
-    # --- Test 9j: Collect objective ---
-    # Quest 100002 requires 6 Diseased Wolf Pelts from mob 1984
-    # But we accepted 100002 earlier at Willem. Check it's still active.
-    assert 100002 in sim.active_quests, "Collect quest 100002 should still be active"
-
-    # Simulate looting diseased wolves (entry 299)
-    # Force drops by setting drop_chance to 1.0 temporarily
-    qt_collect = qdb.templates[100002]
-    old_chance = qt_collect.objectives[0].drop_chance
-    qt_collect.objectives[0].drop_chance = 1.0  # guarantee drops for testing
-
-    pelts_collected = 0
-    for mob in sim.mobs:
-        if mob.template.entry == 299 and mob.alive:
-            mob.hp = 0
-            mob.alive = False
-            mob.looted = False
-            sim.on_mob_looted(mob)
-            prog_collect = sim.active_quests[100002]
-            pelts_collected = prog_collect.counts[0]
-            if pelts_collected >= 6:
-                break
-
-    qt_collect.objectives[0].drop_chance = old_chance  # restore
-
-    assert pelts_collected >= 6, f"Expected ≥6 pelts, got {pelts_collected}"
-    assert sim.active_quests[100002].completed, "Collect quest should be complete"
-    print(f"  9j: Collect quest: {pelts_collected}/6 pelts, complete ✓")
-
-    # --- Test 9k: Quest events in consume_events ---
+    # --- Test 9i: Quest events in consume_events ---
     events = sim.consume_events()
     assert "quest_xp" in events, "Events must include quest_xp"
     assert "quests_completed" in events, "Events must include quests_completed"
@@ -1086,29 +1033,29 @@ def test_quest_system():
     events2 = sim.consume_events()
     assert events2["quest_xp"] == 0, "quest_xp should be cleared after consume"
     assert events2["quests_completed"] == 0, "quests_completed should be cleared"
-    print(f"  9k: consume_events: quest_xp={events['quest_xp']}, "
+    print(f"  9i: consume_events: quest_xp={events['quest_xp']}, "
           f"quests_completed={events['quests_completed']} ✓")
 
-    # --- Test 9l: Quest state resets on sim reset ---
+    # --- Test 9j: Quest state resets on sim reset ---
     sim.reset()
     assert len(sim.active_quests) == 0, "Active quests should be cleared on reset"
     assert len(sim.completed_quests) == 0, "Completed quests should be cleared on reset"
     assert sim.quests_completed == 0, "Quest counter should reset"
     assert len(sim.quest_npcs) == len(QUEST_NPC_DATA), \
         "Quest NPCs should be re-spawned after reset"
-    print(f"  9l: Reset clears quest state ✓")
+    print(f"  9j: Reset clears quest state ✓")
 
-    # --- Test 9m: WoWSimEnv with quests ---
+    # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
     assert obs.shape == (23,), f"Expected obs(23,), got {obs.shape}"
     assert env.action_space.n == 12, f"Expected 12 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
     assert obs[19] > 0 or obs[17] == 0.0, "Quest NPC obs should reflect nearby NPCs"
-    print(f"  9m: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
+    print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
           f"quest_dims={obs[17:23]} ✓")
 
-    # --- Test 9n: Quest reward in env ---
+    # --- Test 9l: Quest reward in env ---
     # Set up: accept quest, complete it, turn in, check reward
     env2 = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env2.reset()
@@ -1143,14 +1090,14 @@ def test_quest_system():
     obs, reward, d, t, info = env2.step(11)
     # Quest completion reward should be +20.0 per quest (plus quest XP via kill signal)
     assert reward > 15.0, f"Quest turn-in should give big reward, got {reward:.2f}"
-    print(f"  9n: Quest turn-in reward: {reward:.2f} ✓")
+    print(f"  9l: Quest turn-in reward: {reward:.2f} ✓")
 
-    # --- Test 9o: get_best_quest_npc ---
+    # --- Test 9m: get_best_quest_npc ---
     sim3 = CombatSimulation(seed=42, quest_db=qdb)
     npc, npc_type = sim3.get_best_quest_npc()
     assert npc is not None, "Should find a quest NPC with available quests"
     assert npc_type == 'accept', f"Expected 'accept', got '{npc_type}'"
-    print(f"  9o: Best quest NPC: {npc.name} ({npc_type}) ✓")
+    print(f"  9m: Best quest NPC: {npc.name} ({npc_type}) ✓")
 
     # Accept and complete a quest, then check for turn_in type
     sim3.player.x = npc.x
@@ -1165,7 +1112,7 @@ def test_quest_system():
 
     npc2, npc_type2 = sim3.get_best_quest_npc()
     assert npc_type2 == 'turn_in', f"Expected 'turn_in', got '{npc_type2}'"
-    print(f"  9o: After completion: {npc2.name} ({npc_type2}) ✓")
+    print(f"  9m: After completion: {npc2.name} ({npc_type2}) ✓")
 
     print("  PASSED\n")
 
@@ -1191,12 +1138,7 @@ def test_quest_csv_loading():
     print(f"  10a: CSV loaded: {len(qdb.templates)} quests, "
           f"{len(qdb.npc_data)} NPCs ✓")
 
-    # --- Test 10b: Custom quests preserved ---
-    assert 100001 in qdb.templates, "Custom quest 100001 should be preserved"
-    assert 100002 in qdb.templates, "Custom quest 100002 should be preserved"
-    print(f"  10b: Custom quests 100001, 100002 preserved ✓")
-
-    # --- Test 10c: Real quest 7 loaded from CSV ---
+    # --- Test 10b: Real quest 7 loaded from CSV ---
     assert 7 in qdb.templates, "Quest 7 should be loaded from CSV"
     qt7 = qdb.templates[7]
     assert qt7.title == "Kobold Camp Cleanup", \
@@ -1207,26 +1149,26 @@ def test_quest_csv_loading():
         "Quest 7 should have KILL objective"
     assert qt7.giver_entry > 0, "Quest 7 should have a giver NPC"
     assert qt7.ender_entry > 0, "Quest 7 should have an ender NPC"
-    print(f"  10c: Quest 7 '{qt7.title}': L{qt7.quest_level}, "
+    print(f"  10b: Quest 7 '{qt7.title}': L{qt7.quest_level}, "
           f"giver={qt7.giver_entry}, ender={qt7.ender_entry}, "
           f"obj={qt7.objectives[0].target}x{qt7.objectives[0].count} ✓")
 
-    # --- Test 10d: Chain info from quest_template_addon ---
+    # --- Test 10c: Chain info from quest_template_addon ---
     # Quest 7 should have a PrevQuestID from addon
     # (the exact chain depends on DB version, just check it's loaded)
     quests_with_prev = sum(1 for qt in qdb.templates.values() if qt.prev_quest > 0)
     quests_with_next = sum(1 for qt in qdb.templates.values() if qt.next_quest > 0)
-    print(f"  10d: Chain info: {quests_with_prev} with prev_quest, "
+    print(f"  10c: Chain info: {quests_with_prev} with prev_quest, "
           f"{quests_with_next} with next_quest ✓")
 
-    # --- Test 10e: Giver/ender maps ---
+    # --- Test 10d: Giver/ender maps ---
     total_givers = len(qdb.giver_map)
     total_enders = len(qdb.ender_map)
     assert total_givers > 10, f"Expected >10 giver NPCs, got {total_givers}"
     assert total_enders > 10, f"Expected >10 ender NPCs, got {total_enders}"
-    print(f"  10e: Maps: {total_givers} giver NPCs, {total_enders} ender NPCs ✓")
+    print(f"  10d: Maps: {total_givers} giver NPCs, {total_enders} ender NPCs ✓")
 
-    # --- Test 10f: QuestXP approximation ---
+    # --- Test 10e: QuestXP approximation ---
     # Difficulty 5, level 2 should give ~250 XP
     xp_l2_d5 = _estimate_quest_xp(2, 5)
     assert 200 <= xp_l2_d5 <= 300, f"Expected ~250 XP for L2/D5, got {xp_l2_d5}"
@@ -1237,10 +1179,10 @@ def test_quest_csv_loading():
     xp_l10 = _estimate_quest_xp(10, 5)
     xp_l20 = _estimate_quest_xp(20, 5)
     assert xp_l20 > xp_l10, f"L20 XP ({xp_l20}) should be > L10 ({xp_l10})"
-    print(f"  10f: QuestXP approx: L2/D5={xp_l2_d5}, L10/D5={xp_l10}, "
+    print(f"  10e: QuestXP approx: L2/D5={xp_l2_d5}, L10/D5={xp_l10}, "
           f"L20/D5={xp_l20} ✓")
 
-    # --- Test 10g: Quest objectives parsed correctly ---
+    # --- Test 10f: Quest objectives parsed correctly ---
     quests_with_kill = sum(1 for qt in qdb.templates.values()
                           if any(o.obj_type == QuestObjectiveType.KILL
                                  for o in qt.objectives))
@@ -1248,15 +1190,15 @@ def test_quest_csv_loading():
                              if any(o.obj_type == QuestObjectiveType.COLLECT
                                     for o in qt.objectives))
     quests_with_obj = sum(1 for qt in qdb.templates.values() if qt.objectives)
-    print(f"  10g: Objectives: {quests_with_obj} total, "
+    print(f"  10f: Objectives: {quests_with_obj} total, "
           f"{quests_with_kill} kill, {quests_with_collect} collect ✓")
 
-    # --- Test 10h: Fallback without data_dir ---
+    # --- Test 10g: Fallback without data_dir ---
     qdb_fallback = QuestDB(quiet=True)
     assert not qdb_fallback.loaded, "QuestDB without data_dir should not be loaded"
-    assert len(qdb_fallback.templates) == 5, \
-        f"Fallback should have 5 hardcoded quests, got {len(qdb_fallback.templates)}"
-    print(f"  10h: Fallback: {len(qdb_fallback.templates)} hardcoded quests ✓")
+    assert len(qdb_fallback.templates) == 3, \
+        f"Fallback should have 3 hardcoded quests, got {len(qdb_fallback.templates)}"
+    print(f"  10g: Fallback: {len(qdb_fallback.templates)} hardcoded quests ✓")
 
     print("  PASSED\n")
 
