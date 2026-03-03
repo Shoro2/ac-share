@@ -2,6 +2,20 @@
 
 This repository is an experimental WoW bot training setup. The **current main focus** is on the Python simulation (`python/sim/`), which provides a complete training environment without a running WoW server. A C++ module for AzerothCore (live server integration) exists in parallel and will be used in a later phase.
 
+## Local Data Paths (Hardcoded Reference)
+
+These are the actual paths on the dev machine. Use them as defaults for `--data-root`, `--creature-data`, etc.:
+
+| Data | Path |
+|---|---|
+| **WoW Data** (maps, vmaps, mmaps, DBC) | `C:\wowstuff\WoWKI_serv\Data` |
+| **DB Exports / CSVs** (creature.csv, quest_template.csv, etc.) | `C:\wowstuff\WoWKI_serv\python\dbexport` |
+
+- `--data-root C:\wowstuff\WoWKI_serv\Data` — enables 3D terrain, LOS, AreaTable.dbc
+- `--creature-data C:\wowstuff\WoWKI_serv\python\dbexport` — enables full-world creature spawning, loot tables, quest CSV loading
+
+**Note**: The `data/` directory in the repo contains a subset of these exports (creature.csv, quest_template.csv, etc.) and is auto-detected as fallback.
+
 ## Current Focus: Python Simulation
 
 The sim environment (`python/sim/`) replicates the WoW combat system in pure Python:

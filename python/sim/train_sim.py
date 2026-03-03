@@ -23,10 +23,30 @@ REPO_ROOT = os.path.dirname(PARENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-# Auto-detect data paths relative to repo root
-_DEFAULT_DATA_DIR = os.path.join(REPO_ROOT, "data")
-_DEFAULT_CREATURE_DATA = _DEFAULT_DATA_DIR if os.path.isfile(
-    os.path.join(_DEFAULT_DATA_DIR, "creature.csv")) else None
+# Hardcoded dev-machine paths (Windows)
+_WIN_DATA_ROOT = r"C:\wowstuff\WoWKI_serv\Data"          # maps, vmaps, mmaps, DBC
+_WIN_CSV_DIR = r"C:\wowstuff\WoWKI_serv\python\dbexport"  # creature.csv, quest CSVs, etc.
+
+# Auto-detect data paths: prefer Windows dev paths, fallback to repo data/
+_REPO_DATA_DIR = os.path.join(REPO_ROOT, "data")
+
+def _detect_data_root():
+    """3D terrain: maps/vmaps/mmaps/DBC."""
+    if os.path.isdir(_WIN_DATA_ROOT):
+        return _WIN_DATA_ROOT
+    return None  # no terrain data in repo
+
+def _detect_creature_data():
+    """CSV exports for creatures, quests, loot."""
+    if os.path.isdir(_WIN_CSV_DIR) and os.path.isfile(
+            os.path.join(_WIN_CSV_DIR, "creature.csv")):
+        return _WIN_CSV_DIR
+    if os.path.isfile(os.path.join(_REPO_DATA_DIR, "creature.csv")):
+        return _REPO_DATA_DIR
+    return None
+
+_DEFAULT_DATA_ROOT = _detect_data_root()
+_DEFAULT_CREATURE_DATA = _detect_creature_data()
 _DEFAULT_LOG_DIR = os.path.join(PARENT_DIR, "sim_episodes")
 
 from stable_baselines3 import PPO
@@ -159,8 +179,9 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--resume", type=str, default=None, help="Path to model to resume from")
     parser.add_argument("--output", type=str, default=None, help="Output model path")
-    parser.add_argument("--data-root", type=str, default=None,
-                        help="Path to Data/ directory (maps/, vmaps/) for 3D terrain")
+    parser.add_argument("--data-root", type=str, default=_DEFAULT_DATA_ROOT,
+                        help="Path to Data/ directory (maps/, vmaps/) for 3D terrain "
+                             "(auto-detected from dev paths)")
     parser.add_argument("--creature-data", type=str, default=_DEFAULT_CREATURE_DATA,
                         help="Path to directory with creature.csv and creature_template.csv "
                              "(auto-detected from data/). Use --no-creatures to disable.")
