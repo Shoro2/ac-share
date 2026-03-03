@@ -957,11 +957,30 @@ class SpatialLOSChecker:
         self._built = False
 
     def add_spawns(self, spawns: list):
-        """Fügt Spawns hinzu (nur mit Bounding Box)."""
+        """Fügt Spawns hinzu (nur mit Bounding Box).
+
+        Wenn der Index bereits gebaut ist, werden neue Spawns inkrementell
+        eingefügt statt den gesamten Index neu zu bauen.
+        """
+        start_idx = len(self.spawns)
         for s in spawns:
             if s.bounds is not None:
                 self.spawns.append(s)
-        self._built = False
+
+        if self._built:
+            # Inkrementell: nur neue Spawns in den bestehenden Grid-Index einfügen
+            for i in range(start_idx, len(self.spawns)):
+                bb = self.spawns[i].bounds
+                cx_min = int(bb.low.x * self.inv_cell)
+                cx_max = int(bb.high.x * self.inv_cell)
+                cy_min = int(bb.low.y * self.inv_cell)
+                cy_max = int(bb.high.y * self.inv_cell)
+                for cx in range(cx_min, cx_max + 1):
+                    for cy in range(cy_min, cy_max + 1):
+                        key = (cx, cy)
+                        if key not in self.grid:
+                            self.grid[key] = []
+                        self.grid[key].append(i)
 
     def build_index(self):
         """Baut den räumlichen Index. Einmal nach dem Laden aufrufen."""
