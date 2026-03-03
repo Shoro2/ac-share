@@ -827,6 +827,89 @@ def test_vendor_system():
     assert sim_db.player.copper == 30, f"Expected 30 copper, got {sim_db.player.copper}"
     print(f"  8j: Sell at dynamic vendor: copper={sim_db.player.copper} ✓")
 
+    # --- Test 8k: items_sold in consume_events ---
+    sim_items = CombatSimulation(num_mobs=5, seed=42)
+    p_items = sim_items.player
+    for i in range(10):
+        p_items.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=5, score=3.0, inventory_type=0))
+    p_items.free_slots = INVENTORY_SLOTS - 10
+    v = VENDOR_DATA[0]
+    p_items.x = v["x"]
+    p_items.y = v["y"]
+    sold = sim_items.do_sell()
+    assert sold, "Sell should succeed"
+    events = sim_items.consume_events()
+    assert events["items_sold"] == 10, f"Expected 10 items_sold, got {events['items_sold']}"
+    assert p_items.items_sold == 0, "items_sold should be cleared after consume"
+    print(f"  8k: items_sold in consume_events: {events['items_sold']} ✓")
+
+    # --- Test 8l: AI-driven sell via WoWSimEnv (action 8 triggers vendor nav) ---
+    env = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env.reset()
+    # Fill inventory with items
+    for i in range(20):
+        env.sim.player.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=3.0, inventory_type=0))
+    env.sim.player.free_slots = INVENTORY_SLOTS - 20
+
+    # Action 8 should activate vendor navigation
+    assert not env._vendor_nav_active, "Should start inactive"
+    obs, reward, done, trunc, info = env.step(8)
+    assert env._vendor_nav_active or env.sim.player.free_slots == INVENTORY_SLOTS, \
+        "Action 8 should activate vendor nav (or sell if already at vendor)"
+
+    # Run steps until vendor nav completes (max 500 steps)
+    for _ in range(500):
+        obs, reward, done, trunc, info = env.step(0)  # noop while override navigates
+        if done or trunc:
+            break
+        if env.sim.player.free_slots == INVENTORY_SLOTS:
+            break  # sold!
+
+    assert env.sim.player.free_slots == INVENTORY_SLOTS, \
+        f"Bot should have sold all items, but free_slots={env.sim.player.free_slots}"
+    assert not env._vendor_nav_active, "Vendor nav should be deactivated after sell"
+    assert env.sim.player.copper > 0, "Should have earned copper from selling"
+    print(f"  8l: AI-driven sell: copper={env.sim.player.copper}, "
+          f"slots={env.sim.player.free_slots} ✓")
+
+    # --- Test 8m: Sell reward scales with inventory fullness ---
+    env2 = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env2.reset()
+    # Sell with full inventory (30 items)
+    for i in range(INVENTORY_SLOTS):
+        env2.sim.player.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=3.0, inventory_type=0))
+    env2.sim.player.free_slots = 0
+    # Place player right at vendor for immediate sell
+    v = VENDOR_DATA[0]
+    env2.sim.player.x = v["x"]
+    env2.sim.player.y = v["y"]
+    env2.last_state = env2.sim.get_state_dict()
+    obs, reward_full, done, trunc, info = env2.step(8)
+    # fullness = 30/30 = 1.0 → sell_reward = 1.0 + 7.0 = 8.0, plus copper bonus
+    assert reward_full > 5.0, f"Full sell should give big reward, got {reward_full:.2f}"
+
+    # Now sell with nearly empty inventory (2 items)
+    obs, _ = env2.reset()
+    env2.sim.player.inventory.append(InventoryItem(
+        entry=1, name="Junk", quality=0, sell_price=5, score=3.0, inventory_type=0))
+    env2.sim.player.inventory.append(InventoryItem(
+        entry=2, name="Junk2", quality=0, sell_price=5, score=3.0, inventory_type=0))
+    env2.sim.player.free_slots = INVENTORY_SLOTS - 2
+    env2.sim.player.x = v["x"]
+    env2.sim.player.y = v["y"]
+    env2.last_state = env2.sim.get_state_dict()
+    obs, reward_small, done, trunc, info = env2.step(8)
+    # fullness = 2/30 ≈ 0.067 → sell_reward = 1.0 + 7.0*0.067 ≈ 1.47, plus tiny copper
+    assert reward_small < reward_full, \
+        f"Small sell reward ({reward_small:.2f}) should be less than full ({reward_full:.2f})"
+    print(f"  8m: Sell rewards: full={reward_full:.2f}, small={reward_small:.2f} ✓")
+
     # Cleanup
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)

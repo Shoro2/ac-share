@@ -420,6 +420,7 @@ class Player:
     inventory: list = field(default_factory=list)  # list of InventoryItem
     copper: int = 0                                 # total copper balance
     sell_copper: int = 0                            # copper earned from selling this tick (consume-on-read)
+    items_sold: int = 0                             # number of items sold this tick (consume-on-read)
     # Regen tracking
     combat_timer: int = 0       # ticks since last combat action (for OOC regen)
     ooc_regen_accumulator: float = 0.0
@@ -996,9 +997,11 @@ class CombatSimulation:
         if dist > self.SELL_RANGE:
             return False
         # Calculate copper from inventory sell prices
+        num_items = len(self.player.inventory)
         copper = sum(item.sell_price for item in self.player.inventory)
         self.player.copper += copper
         self.player.sell_copper += copper
+        self.player.items_sold += num_items
         self.player.inventory.clear()
         self.player.free_slots = INVENTORY_SLOTS
         return True
@@ -1427,6 +1430,7 @@ class CombatSimulation:
             "loot_items": list(p.loot_items),
             "loot_failed": list(p.loot_failed),
             "sell_copper": p.sell_copper,
+            "items_sold": p.items_sold,
             "new_areas": self._new_areas,
             "new_zones": self._new_zones,
             "new_maps": self._new_maps,
@@ -1440,6 +1444,7 @@ class CombatSimulation:
         p.loot_items.clear()
         p.loot_failed.clear()
         p.sell_copper = 0
+        p.items_sold = 0
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0

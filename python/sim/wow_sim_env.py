@@ -126,6 +126,7 @@ class WoWSimEnv(gym.Env):
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
         self._steps_since_xp = 0          # stall detector: reset episode after 100k steps without XP
+        self._vendor_nav_active = False    # True while bot is walking to vendor / selling
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -151,6 +152,7 @@ class WoWSimEnv(gym.Env):
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
         self._steps_since_xp = 0
+        self._vendor_nav_active = False
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
 
@@ -187,26 +189,33 @@ class WoWSimEnv(gym.Env):
         target_dead = self.sim.target is not None and not self.sim.target.alive
         is_casting = p.is_casting
 
-        # Vendor mode: navigate to nearest vendor, sell when in range
-        vendor_mode = False
-        if p.free_slots < 2 and not in_combat:
+        # Vendor navigation: AI triggers action 8 → bot auto-walks to vendor and sells
+        # Once _vendor_nav_active is set, override handles the multi-step journey.
+        # Combat interrupts vendor navigation (aggro takes priority).
+        if action == 8 and not in_combat and not self._vendor_nav_active:
+            self._vendor_nav_active = True  # AI decided to sell
+
+        if in_combat and self._vendor_nav_active:
+            self._vendor_nav_active = False  # combat cancels vendor trip
+
+        if self._vendor_nav_active and not in_combat:
             vendor = self.sim.get_nearest_vendor()
             if vendor:
                 vdx = vendor.x - p.x
                 vdy = vendor.y - p.y
                 vendor_dist = math.sqrt(vdx * vdx + vdy * vdy)
-                vendor_mode = True
                 if vendor_dist <= self.sim.SELL_RANGE:
                     override_action = 8  # close enough to sell
+                    self._vendor_nav_active = False  # will sell this tick
                 else:
-                    # Walk toward vendor (direct navigation)
                     self.sim.do_move_to(vendor.x, vendor.y)
-                    override_action = 0  # movement already handled
+                    override_action = 0  # movement handled
+            else:
+                self._vendor_nav_active = False  # no vendor found, abort
+        elif action == 8 and not self._vendor_nav_active:
+            override_action = 0  # block raw sell action (must go through nav)
 
-        if not vendor_mode:
-            if action == 8:
-                override_action = 0  # block sell when not in vendor mode
-
+        if not self._vendor_nav_active or in_combat:
             # Aggro check: in combat but no living target
             if in_combat and not target_alive:
                 aggro_mob = None
@@ -344,10 +353,16 @@ class WoWSimEnv(gym.Env):
         self._ep_loot_items += len(loot_items)
         self._ep_loot_failed += len(loot_failed)
 
-        # 8. Sold items at vendor (free_slots increased + copper from sell_price)
+        # 8. Sold items at vendor — reward scales with inventory fullness
+        #    Selling a full inventory (30/30 items) = massive bonus
+        #    Selling nearly empty inventory (2/30 items) = barely worth the trip
         sell_copper = events.get("sell_copper", 0)
-        if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
-            reward += 2.0
+        items_sold = events.get("items_sold", 0)
+        if items_sold > 0:
+            fullness = items_sold / INVENTORY_SLOTS  # 0.0 to 1.0
+            # Base reward 1.0 at minimal sell, up to 8.0 at full inventory
+            sell_reward = 1.0 + 7.0 * fullness
+            reward += sell_reward
         if sell_copper > 0:
             reward += min(sell_copper * 0.005, 2.0)
             self._ep_sell_copper += sell_copper
