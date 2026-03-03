@@ -18,7 +18,25 @@ import os
 import random
 from typing import Optional
 
-from sim.combat_sim import CombatSimulation, SPELLS
+from sim.combat_sim import CombatSimulation, SPELLS, INVENTORY_SLOTS
+
+# Reward per successfully looted item, indexed by WoW item quality
+QUALITY_LOOT_REWARD = {
+    0: 0.1,   # Poor (grey)
+    1: 0.3,   # Common (white)
+    2: 1.0,   # Uncommon (green)
+    3: 3.0,   # Rare (blue)
+    4: 5.0,   # Epic (purple)
+}
+
+# Penalty when an item can't be picked up (inventory full), same scale
+QUALITY_FAIL_PENALTY = {
+    0: 0.1,
+    1: 0.3,
+    2: 1.0,
+    3: 3.0,
+    4: 5.0,
+}
 
 
 class WoWSimEnv(gym.Env):
@@ -98,6 +116,8 @@ class WoWSimEnv(gym.Env):
         self._ep_loot = 0
         self._ep_kills = 0
         self._ep_damage_dealt = 0
+        self._ep_loot_items = 0
+        self._ep_loot_failed = 0
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
@@ -120,6 +140,8 @@ class WoWSimEnv(gym.Env):
         self._ep_loot = 0
         self._ep_kills = 0
         self._ep_damage_dealt = 0
+        self._ep_loot_items = 0
+        self._ep_loot_failed = 0
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
@@ -296,12 +318,19 @@ class WoWSimEnv(gym.Env):
         if events["equipped_upgrade"]:
             reward += 3.0
 
-        # 7. Loot (capped at 3.0)
+        # 7. Loot — quality-based reward per item, penalty when inventory full
         copper = events["loot_copper"]
         score = events["loot_score"]
-        if copper > 0 or score > 0:
-            loot_r = (copper * 0.01) + (score * 0.2)
-            reward += min(loot_r, 3.0)
+        loot_items = events.get("loot_items", [])
+        loot_failed = events.get("loot_failed", [])
+        for q in loot_items:
+            reward += QUALITY_LOOT_REWARD.get(q, 0.3)
+        for q in loot_failed:
+            reward -= QUALITY_FAIL_PENALTY.get(q, 0.3)
+        if copper > 0:
+            reward += min(copper * 0.01, 1.0)
+        self._ep_loot_items += len(loot_items)
+        self._ep_loot_failed += len(loot_failed)
 
         # 8. Sold items (free_slots increased)
         if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
@@ -374,6 +403,8 @@ class WoWSimEnv(gym.Env):
                 "rw_explore": self._ep_exploration_reward,
                 "levels_gained": self._ep_levels_gained,
                 "final_level": self.sim.player.level,
+                "loot_items": self._ep_loot_items,
+                "loot_failed": self._ep_loot_failed,
             }
             info["episode_stats"] = ep_stats
 

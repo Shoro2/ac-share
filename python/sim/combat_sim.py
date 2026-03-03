@@ -344,6 +344,9 @@ SPAWN_POSITIONS = {
 
 # ─── Player State ─────────────────────────────────────────────────────
 
+INVENTORY_SLOTS = 30  # default bag capacity (no bag logic yet)
+
+
 @dataclass
 class Player:
     hp: int = 72
@@ -361,7 +364,7 @@ class Player:
     cast_remaining: int = 0     # ticks until cast finishes
     cast_spell_id: int = 0
     gcd_remaining: int = 0      # ticks until GCD expires
-    free_slots: int = 14
+    free_slots: int = INVENTORY_SLOTS
     # Shield state
     shield_absorb: int = 0
     shield_remaining: int = 0   # ticks
@@ -372,6 +375,10 @@ class Player:
     equipped_upgrade: bool = False
     leveled_up: bool = False    # set True on level-up, consumed on read
     levels_gained: int = 0      # how many levels gained this tick (consumed on read)
+    # Quality of items successfully looted this tick (consume-on-read)
+    loot_items: list = field(default_factory=list)
+    # Quality of items that couldn't be picked up — inventory full (consume-on-read)
+    loot_failed: list = field(default_factory=list)
     # Equipped item tracking (for loot table upgrade detection)
     equipped_scores: dict = field(default_factory=dict)  # inventory_type -> best score
     # Regen tracking
@@ -769,6 +776,10 @@ class CombatSimulation:
         Uses loot tables from LootDB when loaded (creature_loot_template +
         item_template CSVs). Falls back to the original random loot system
         when no loot data is available.
+
+        Each item requires 1 free inventory slot. Items that don't fit are
+        tracked in player.loot_failed (quality list) for penalty signals.
+        Gold never requires inventory space.
         """
         best = None
         best_dist = self.LOOT_RANGE
@@ -793,30 +804,40 @@ class CombatSimulation:
         if self.loot_db and self.loot_db.loaded and loot_id > 0:
             results = self.loot_db.roll_loot(loot_id, self.rng)
             for result in results:
-                self.player.loot_score += int(result.item.score * result.count)
-                self.player.free_slots = max(0, self.player.free_slots - 1)
-                # Check if equippable item is an upgrade
-                if result.item.inventory_type > 0:
-                    current = self.player.equipped_scores.get(
-                        result.item.inventory_type, 0.0)
-                    if result.item.score > current:
-                        self.player.equipped_scores[result.item.inventory_type] = result.item.score
-                        self.player.equipped_upgrade = True
+                quality = result.item.quality
+                if self.player.free_slots > 0:
+                    self.player.loot_score += int(result.item.score * result.count)
+                    self.player.free_slots -= 1
+                    self.player.loot_items.append(quality)
+                    # Check if equippable item is an upgrade
+                    if result.item.inventory_type > 0:
+                        current = self.player.equipped_scores.get(
+                            result.item.inventory_type, 0.0)
+                        if result.item.score > current:
+                            self.player.equipped_scores[result.item.inventory_type] = result.item.score
+                            self.player.equipped_upgrade = True
+                else:
+                    self.player.loot_failed.append(quality)
         else:
             # Fallback: random loot (no loot_db loaded)
             if self.rng.random() < self.LOOT_CHANCE:
                 score = self.rng.randint(*self.ITEM_SCORE_RANGE)
-                self.player.loot_score += score
-                self.player.free_slots = max(0, self.player.free_slots - 1)
-                if self.rng.random() < self.UPGRADE_CHANCE:
-                    self.player.equipped_upgrade = True
+                quality = 1  # assume Common for fallback items
+                if self.player.free_slots > 0:
+                    self.player.loot_score += score
+                    self.player.free_slots -= 1
+                    self.player.loot_items.append(quality)
+                    if self.rng.random() < self.UPGRADE_CHANCE:
+                        self.player.equipped_upgrade = True
+                else:
+                    self.player.loot_failed.append(quality)
         return True
 
     def do_sell(self) -> bool:
         """Sell items (simplified — just restores free_slots)."""
-        if self.player.free_slots >= 14:
+        if self.player.free_slots >= INVENTORY_SLOTS:
             return False
-        self.player.free_slots = 14
+        self.player.free_slots = INVENTORY_SLOTS
         return True
 
     def _start_cast(self, spell_id: int) -> bool:
@@ -1216,6 +1237,8 @@ class CombatSimulation:
             "equipped_upgrade": p.equipped_upgrade,
             "leveled_up": p.leveled_up,
             "levels_gained": p.levels_gained,
+            "loot_items": list(p.loot_items),
+            "loot_failed": list(p.loot_failed),
             "new_areas": self._new_areas,
             "new_zones": self._new_zones,
             "new_maps": self._new_maps,
@@ -1226,6 +1249,8 @@ class CombatSimulation:
         p.equipped_upgrade = False
         p.leveled_up = False
         p.levels_gained = 0
+        p.loot_items.clear()
+        p.loot_failed.clear()
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0

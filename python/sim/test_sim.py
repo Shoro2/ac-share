@@ -21,7 +21,8 @@ if PARENT_DIR not in sys.path:
 
 from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSITIONS,
                              XP_TABLE, base_xp_gain, get_gray_level,
-                             player_max_hp, player_max_mana, smite_damage, heal_amount)
+                             player_max_hp, player_max_mana, smite_damage, heal_amount,
+                             INVENTORY_SLOTS)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -522,6 +523,110 @@ def test_loot_tables():
             assert sim_no_loot.player.loot_copper >= old_copper, "Gold should still drop"
             print(f"  7f: Fallback loot (no DB): copper={sim_no_loot.player.loot_copper} ✓")
             break
+
+    # --- Test 7g: Inventory capacity (30 slots) ---
+    assert INVENTORY_SLOTS == 30, f"Expected 30 inventory slots, got {INVENTORY_SLOTS}"
+    sim_inv = CombatSimulation(num_mobs=50, seed=123, loot_db=loot_db)
+    assert sim_inv.player.free_slots == INVENTORY_SLOTS, \
+        f"Player should start with {INVENTORY_SLOTS} free slots"
+
+    # Fill inventory completely
+    sim_inv.player.free_slots = 0
+
+    # Kill and try to loot a wolf — items should fail, gold should still work
+    wolf_inv = None
+    for mob in sim_inv.mobs:
+        if mob.template.entry == 299:
+            wolf_inv = mob
+            break
+    assert wolf_inv is not None, "Need a wolf mob for inventory test"
+
+    sim_inv.player.x = wolf_inv.x
+    sim_inv.player.y = wolf_inv.y + 1
+    wolf_inv.hp = 0
+    wolf_inv.alive = False
+    wolf_inv.looted = False
+    old_copper_inv = sim_inv.player.loot_copper
+
+    success = sim_inv.do_loot()
+    assert success, "Loot action should still succeed (mob gets marked looted)"
+    assert sim_inv.player.free_slots == 0, "Free slots should stay at 0"
+    assert len(sim_inv.player.loot_failed) > 0, \
+        "Items should be in loot_failed when inventory is full"
+    assert len(sim_inv.player.loot_items) == 0, \
+        "No items should be in loot_items when inventory is full"
+    # Gold doesn't need inventory space
+    assert sim_inv.player.loot_copper >= old_copper_inv, "Gold should still drop"
+    print(f"  7g: Inventory full: failed={len(sim_inv.player.loot_failed)}, "
+          f"copper={sim_inv.player.loot_copper - old_copper_inv} ✓")
+
+    # --- Test 7h: Inventory partial fill ---
+    sim_part = CombatSimulation(num_mobs=50, seed=77, loot_db=loot_db)
+    sim_part.player.free_slots = 1  # only 1 slot left
+
+    wolf_part = None
+    for mob in sim_part.mobs:
+        if mob.template.entry == 299:
+            wolf_part = mob
+            break
+    assert wolf_part is not None
+
+    sim_part.player.x = wolf_part.x
+    sim_part.player.y = wolf_part.y + 1
+    wolf_part.hp = 0
+    wolf_part.alive = False
+    wolf_part.looted = False
+    sim_part.do_loot()
+
+    # Wolf drops meat (group 0, 80%) + 1 equip (group 1, 100%)
+    # With 1 slot: first item fits, rest should fail
+    total_items = len(sim_part.player.loot_items) + len(sim_part.player.loot_failed)
+    assert total_items > 0, "Should have rolled at least some loot"
+    if total_items > 1:
+        assert len(sim_part.player.loot_items) == 1, \
+            f"Only 1 item should fit, got {len(sim_part.player.loot_items)}"
+        assert sim_part.player.free_slots == 0, "Slot should be used up"
+        assert len(sim_part.player.loot_failed) == total_items - 1, \
+            "Remaining items should fail"
+    print(f"  7h: Partial inventory: looted={len(sim_part.player.loot_items)}, "
+          f"failed={len(sim_part.player.loot_failed)}, "
+          f"slots={sim_part.player.free_slots} ✓")
+
+    # --- Test 7i: Sell restores inventory ---
+    sim_sell = CombatSimulation(num_mobs=5, seed=42)
+    sim_sell.player.free_slots = 5
+    sold = sim_sell.do_sell()
+    assert sold, "Sell should succeed when inventory has items"
+    assert sim_sell.player.free_slots == INVENTORY_SLOTS, \
+        f"Sell should restore to {INVENTORY_SLOTS}, got {sim_sell.player.free_slots}"
+    sold_again = sim_sell.do_sell()
+    assert not sold_again, "Sell should fail when inventory is already empty"
+    print(f"  7i: Sell restores slots to {INVENTORY_SLOTS} ✓")
+
+    # --- Test 7j: consume_events includes loot_items/loot_failed ---
+    sim_ev = CombatSimulation(num_mobs=50, seed=55, loot_db=loot_db)
+    sim_ev.player.free_slots = 0
+    wolf_ev = None
+    for mob in sim_ev.mobs:
+        if mob.template.entry == 299:
+            wolf_ev = mob
+            break
+    assert wolf_ev is not None
+    sim_ev.player.x = wolf_ev.x
+    sim_ev.player.y = wolf_ev.y + 1
+    wolf_ev.hp = 0
+    wolf_ev.alive = False
+    wolf_ev.looted = False
+    sim_ev.do_loot()
+    events = sim_ev.consume_events()
+    assert "loot_items" in events, "Events must include loot_items"
+    assert "loot_failed" in events, "Events must include loot_failed"
+    assert len(events["loot_failed"]) > 0, "Should have failed items"
+    # After consume, player lists should be cleared
+    assert len(sim_ev.player.loot_items) == 0, "loot_items should be cleared"
+    assert len(sim_ev.player.loot_failed) == 0, "loot_failed should be cleared"
+    print(f"  7j: consume_events: loot_items={events['loot_items']}, "
+          f"loot_failed={events['loot_failed']} ✓")
 
     # Cleanup
     import shutil
