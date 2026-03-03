@@ -92,6 +92,9 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_maps_explored", stats.get("maps_explored", 0), step)
                 self._writer.add_scalar("gameplay/ep_levels_gained", stats.get("levels_gained", 0), step)
                 self._writer.add_scalar("gameplay/ep_final_level", stats.get("final_level", 1), step)
+                self._writer.add_scalar("gameplay/ep_loot_items", stats.get("loot_items", 0), step)
+                self._writer.add_scalar("gameplay/ep_loot_failed", stats.get("loot_failed", 0), step)
+                self._writer.add_scalar("gameplay/ep_sell_copper", stats.get("sell_copper", 0), step)
 
                 # Exploration reward breakdown
                 self._writer.add_scalar("reward_breakdown/explore", stats.get("rw_explore", 0), step)
@@ -198,7 +201,14 @@ def main():
     try:
         if args.resume:
             print(f">>> Resuming from {args.resume} <<<")
-            model = PPO.load(args.resume, env=env, tensorboard_log=log_dir)
+            print(f">>> Overriding: lr={args.lr}, n_steps={args.n_steps}, "
+                  f"batch_size={args.batch_size} <<<")
+            model = PPO.load(
+                args.resume, env=env, tensorboard_log=log_dir,
+                learning_rate=args.lr,
+                n_steps=args.n_steps,
+                batch_size=args.batch_size,
+            )
         else:
             model = PPO(
                 "MlpPolicy",
@@ -224,9 +234,15 @@ def main():
 
     metrics_callback = GameplayMetricsCallback(verbose=1)
 
+    resuming = args.resume is not None
     try:
-        # reset_num_timesteps=True (default) → SB3 erstellt PPO_1, PPO_2, ...
-        model.learn(total_timesteps=args.steps, callback=metrics_callback)
+        # reset_num_timesteps=False when resuming → TensorBoard continues from
+        # the previous step count instead of restarting at 0.
+        model.learn(
+            total_timesteps=args.steps,
+            callback=metrics_callback,
+            reset_num_timesteps=not resuming,
+        )
 
         # Modell-Versionierung: wow_bot_sim_v1, v2, v3, ...
         version = 1
