@@ -801,6 +801,9 @@ class CombatSimulation:
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0
+        # Clear terrain height cache to bound memory across episodes
+        if self.terrain:
+            self.terrain.clear_height_cache()
         # Reset chunk state
         self._player_chunk = None
         self._active_chunks.clear()

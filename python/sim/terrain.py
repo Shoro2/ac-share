@@ -28,7 +28,7 @@ if PARENT_DIR not in sys.path:
 from test_3d_env import (
     WoW3DEnvironment, Vec3, INVALID_HEIGHT,
     world_to_grid, vmtile_filename, parse_vmtile, parse_vmtree,
-    vmtree_filename, MAX_NUMBER_OF_GRIDS,
+    vmtree_filename, MAX_NUMBER_OF_GRIDS, SpatialLOSChecker,
 )
 
 
@@ -52,6 +52,12 @@ class SimTerrain:
         self._attempted_tiles: set = set()
         # Track which tile center the player is on (skip work when unchanged)
         self._current_center: tuple | None = None
+        # Height lookup cache: (ix, iy) -> height, quantized at 0.5 units
+        self._height_cache: dict = {}
+        self._height_quant = 2.0  # 1/0.5 = 2.0 (multiply to quantize)
+        # Use spatial LOS checker instead of brute-force
+        self._spatial_los = SpatialLOSChecker(cell_size=100.0)
+        self.env.los_checker = self._spatial_los
         self._load_initial()
 
     def _load_initial(self):
@@ -67,9 +73,14 @@ class SimTerrain:
         # Load initial tiles around spawn
         self.ensure_loaded(self.SPAWN_X, self.SPAWN_Y)
 
+        # Build spatial LOS index after initial spawn load
+        if self._spatial_los.spawns and not self._spatial_los._built:
+            self._spatial_los.build_index()
+
         if self._loaded and not self._quiet:
             h = self.get_height(self.SPAWN_X, self.SPAWN_Y)
             print(f"  [TERRAIN] Loaded. Height at spawn: {h:.3f} (expected ~{self.SPAWN_Z:.3f})")
+            print(f"  [TERRAIN] SpatialLOS: {len(self._spatial_los.spawns)} spawns indexed")
 
     def ensure_loaded(self, x: float, y: float):
         """Ensure map tiles + vmtiles around (x, y) are loaded.
@@ -115,17 +126,32 @@ class SimTerrain:
             if not self._loaded:
                 self._loaded = True
 
+    def clear_height_cache(self):
+        """Clear the height lookup cache. Call on episode reset to bound memory."""
+        self._height_cache.clear()
+
     @property
     def is_loaded(self) -> bool:
         return self._loaded
 
     def get_height(self, x: float, y: float) -> float:
-        """Get terrain height at world coordinates (x, y)."""
+        """Get terrain height at world coordinates (x, y).
+
+        Uses a quantized dict cache (0.5 unit grid) for O(1) repeat lookups.
+        First call per grid cell does triangle interpolation, subsequent calls
+        are a dict lookup (~0.2μs vs ~50μs).
+        """
         if not self._loaded:
             return self.SPAWN_Z
+        # Quantize to 0.5-unit grid for cache key
+        key = (int(x * self._height_quant), int(y * self._height_quant))
+        cached = self._height_cache.get(key)
+        if cached is not None:
+            return cached
         h = self.env.get_height(self.MAP_ID, x, y)
         if h <= INVALID_HEIGHT + 1:
-            return self.SPAWN_Z  # fallback for missing data
+            h = self.SPAWN_Z  # fallback for missing data
+        self._height_cache[key] = h
         return h
 
     def check_los(self, x1: float, y1: float, z1: float,
