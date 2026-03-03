@@ -106,6 +106,7 @@ class CreatureTemplate:
     unit_class: int
     unit_flags: int
     creature_type: int
+    lootid: int = 0       # creature_template.lootid → creature_loot_template.Entry
 
     @property
     def is_attackable(self) -> bool:
@@ -168,6 +169,8 @@ class CreatureDB:
             reader = csv.DictReader(f, delimiter=';', quotechar='"')
             for row in reader:
                 entry = int(row['entry'])
+                # lootid: use CSV column if present, otherwise default to entry
+                lootid = int(row['lootid']) if 'lootid' in row else entry
                 self.templates[entry] = CreatureTemplate(
                     entry=entry,
                     name=row['name'],
@@ -186,6 +189,7 @@ class CreatureDB:
                     unit_class=int(row['unit_class']),
                     unit_flags=int(row['unit_flags']),
                     creature_type=int(row['type']),
+                    lootid=lootid,
                 )
 
     def _load_spawns(self, path: str):

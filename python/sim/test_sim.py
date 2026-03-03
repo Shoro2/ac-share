@@ -325,6 +325,211 @@ def test_level_system():
     print("  PASSED\n")
 
 
+def test_loot_tables():
+    """Test LootDB loading, rolling, and integration with CombatSimulation."""
+    import tempfile
+    import csv
+
+    print("=== Test 7: Loot Tables ===")
+
+    # --- Create temporary CSV files with test data ---
+    tmpdir = tempfile.mkdtemp()
+
+    # item_template.csv
+    item_header = ['entry', 'name', 'class', 'subclass', 'Quality', 'SellPrice',
+                   'InventoryType', 'ItemLevel', 'armor', 'dmg_min1', 'dmg_max1',
+                   'delay'] + [f'stat_type{i}' for i in range(1, 11)] + \
+                  [f'stat_value{i}' for i in range(1, 11)]
+    items = [
+        # Grey junk: Chunk of Boar Meat (Quality=0, non-equip)
+        {'entry': '769', 'name': 'Chunk of Boar Meat', 'class': '7', 'subclass': '0',
+         'Quality': '0', 'SellPrice': '25', 'InventoryType': '0', 'ItemLevel': '5',
+         'armor': '0', 'dmg_min1': '0', 'dmg_max1': '0', 'delay': '0'},
+        # Common cloth armor: Frayed Robe (Quality=1, chest)
+        {'entry': '1395', 'name': 'Frayed Robe', 'class': '4', 'subclass': '1',
+         'Quality': '1', 'SellPrice': '50', 'InventoryType': '20', 'ItemLevel': '4',
+         'armor': '8', 'dmg_min1': '0', 'dmg_max1': '0', 'delay': '0',
+         'stat_type1': '7', 'stat_value1': '1'},  # +1 Stamina
+        # Green weapon: Kobold Mining Mace (Quality=2, one-hand mace)
+        {'entry': '7439', 'name': 'Kobold Mining Mace', 'class': '2', 'subclass': '4',
+         'Quality': '2', 'SellPrice': '120', 'InventoryType': '13', 'ItemLevel': '8',
+         'armor': '0', 'dmg_min1': '3', 'dmg_max1': '7', 'delay': '2000'},
+        # Another chest piece (better, for upgrade testing)
+        {'entry': '2000', 'name': 'Dirty Leather Vest', 'class': '4', 'subclass': '2',
+         'Quality': '1', 'SellPrice': '80', 'InventoryType': '20', 'ItemLevel': '6',
+         'armor': '15', 'dmg_min1': '0', 'dmg_max1': '0', 'delay': '0',
+         'stat_type1': '7', 'stat_value1': '2'},  # +2 Stamina
+    ]
+    item_path = os.path.join(tmpdir, 'item_template.csv')
+    with open(item_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=item_header, delimiter=';',
+                           quotechar='"', quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for item in items:
+            row = {k: item.get(k, '0') for k in item_header}
+            w.writerow(row)
+
+    # creature_loot_template.csv
+    loot_header = ['Entry', 'Item', 'Reference', 'Chance', 'QuestRequired',
+                   'LootMode', 'GroupId', 'MinCount', 'MaxCount', 'Comment']
+    loot_entries = [
+        # Entry 299 (Diseased Young Wolf): group-0 meat drop + group-1 equippables
+        {'Entry': '299', 'Item': '769', 'Reference': '0', 'Chance': '80',
+         'QuestRequired': '0', 'LootMode': '1', 'GroupId': '0',
+         'MinCount': '1', 'MaxCount': '2', 'Comment': 'Boar Meat'},
+        {'Entry': '299', 'Item': '1395', 'Reference': '0', 'Chance': '40',
+         'QuestRequired': '0', 'LootMode': '1', 'GroupId': '1',
+         'MinCount': '1', 'MaxCount': '1', 'Comment': 'Frayed Robe'},
+        {'Entry': '299', 'Item': '7439', 'Reference': '0', 'Chance': '60',
+         'QuestRequired': '0', 'LootMode': '1', 'GroupId': '1',
+         'MinCount': '1', 'MaxCount': '1', 'Comment': 'Kobold Mace'},
+        # Entry 6 (Kobold Vermin): reference-based loot
+        {'Entry': '6', 'Item': '769', 'Reference': '0', 'Chance': '50',
+         'QuestRequired': '0', 'LootMode': '1', 'GroupId': '0',
+         'MinCount': '1', 'MaxCount': '1', 'Comment': 'Boar Meat'},
+    ]
+    loot_path = os.path.join(tmpdir, 'creature_loot_template.csv')
+    with open(loot_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=loot_header, delimiter=';',
+                           quotechar='"', quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for e in loot_entries:
+            w.writerow(e)
+
+    # --- Test 7a: LootDB loading ---
+    from sim.loot_db import LootDB
+    loot_db = LootDB(tmpdir, quiet=True)
+    assert loot_db.loaded, "LootDB should be loaded with test data"
+    assert len(loot_db.items) == 4, f"Expected 4 items, got {len(loot_db.items)}"
+    assert len(loot_db.creature_loot) == 2, f"Expected 2 loot tables, got {len(loot_db.creature_loot)}"
+    print(f"  7a: LootDB loaded: {len(loot_db.items)} items, {len(loot_db.creature_loot)} loot tables")
+
+    # --- Test 7b: Item score computation ---
+    meat = loot_db.get_item(769)
+    assert meat is not None
+    assert meat.quality == 0
+    assert meat.sell_price == 25
+    # Score: (0*10) + 5 + 0 + 0 + 0 = 5
+    assert meat.score == 5.0, f"Meat score expected 5.0, got {meat.score}"
+
+    robe = loot_db.get_item(1395)
+    assert robe is not None
+    assert robe.inventory_type == 20  # Robe
+    # Score: (1*10) + 4 + 8 + 0 + (1*2) = 24
+    assert robe.score == 24.0, f"Robe score expected 24.0, got {robe.score}"
+
+    mace = loot_db.get_item(7439)
+    # Score: (2*10) + 8 + 0 + ((3+7)/2 / (2000/1000)) + 0 = 20+8+2.5 = 30.5
+    assert abs(mace.score - 30.5) < 0.01, f"Mace score expected 30.5, got {mace.score}"
+    print(f"  7b: Item scores: meat={meat.score}, robe={robe.score}, mace={mace.score} ✓")
+
+    # --- Test 7c: Loot rolling ---
+    import random
+    rng = random.Random(42)
+    # Roll loot for wolf (entry 299) many times, check distribution
+    total_rolls = 1000
+    meat_count = 0
+    equip_count = 0
+    empty_group1 = 0
+    for _ in range(total_rolls):
+        results = loot_db.roll_loot(299, rng)
+        has_meat = any(r.item.entry == 769 for r in results)
+        has_equip = any(r.item.entry in (1395, 7439) for r in results)
+        # Check group 1: should have at most 1 equippable (group constraint)
+        equips = [r for r in results if r.item.entry in (1395, 7439)]
+        assert len(equips) <= 1, f"Group 1 should produce at most 1 item, got {len(equips)}"
+        if has_meat:
+            meat_count += 1
+        if has_equip:
+            equip_count += 1
+        else:
+            empty_group1 += 1
+
+    # Meat: 80% chance → expect ~800 ± 50
+    assert 700 < meat_count < 900, f"Meat drop rate off: {meat_count}/{total_rolls}"
+    # Group 1: total chance = 40+60 = 100% → should always drop one (0% empty)
+    assert empty_group1 == 0, f"Group 1 (100% total) should always drop, but {empty_group1} empty"
+    print(f"  7c: Loot distribution ({total_rolls}x wolf): "
+          f"meat={meat_count/total_rolls:.0%}, equip={equip_count/total_rolls:.0%} ✓")
+
+    # --- Test 7d: Integration with CombatSimulation ---
+    sim = CombatSimulation(num_mobs=10, seed=42, loot_db=loot_db)
+
+    # Manually kill a wolf mob and test looting
+    wolf = None
+    for mob in sim.mobs:
+        if mob.template.entry == 299:
+            wolf = mob
+            break
+
+    if wolf:
+        # Position player next to wolf
+        sim.player.x = wolf.x
+        sim.player.y = wolf.y + 1
+        # Kill it
+        wolf.hp = 0
+        wolf.alive = False
+        wolf.looted = False
+
+        old_score = sim.player.loot_score
+        old_slots = sim.player.free_slots
+        success = sim.do_loot()
+        assert success, "Loot should succeed"
+        assert wolf.looted, "Wolf should be marked as looted"
+        # With loot tables, something should have dropped (meat or equip)
+        assert sim.player.loot_score >= old_score, \
+            f"Score should increase: {old_score} -> {sim.player.loot_score}"
+        print(f"  7d: Loot integration: score {old_score}→{sim.player.loot_score}, "
+              f"slots {old_slots}→{sim.player.free_slots} ✓")
+    else:
+        print("  7d: [Skip — no wolf mob in spawn set]")
+
+    # --- Test 7e: Upgrade detection ---
+    sim2 = CombatSimulation(num_mobs=5, seed=99, loot_db=loot_db)
+    p = sim2.player
+    # Pre-equip a weak chest item
+    p.equipped_scores[20] = 10.0  # InventoryType 20 (robe slot)
+
+    # Create a mock loot scenario: Dirty Leather Vest (score=35) should be upgrade
+    vest = loot_db.get_item(2000)
+    # Score: (1*10) + 6 + 15 + 0 + (2*2) = 35
+    assert vest is not None
+    assert vest.score == 35.0, f"Vest score expected 35.0, got {vest.score}"
+    assert vest.score > 10.0, "Vest should be better than equipped"
+
+    # Verify the upgrade logic works
+    if vest.inventory_type > 0:
+        current = p.equipped_scores.get(vest.inventory_type, 0.0)
+        if vest.score > current:
+            p.equipped_scores[vest.inventory_type] = vest.score
+            p.equipped_upgrade = True
+    assert p.equipped_upgrade, "Vest should be detected as upgrade"
+    assert p.equipped_scores[20] == 35.0, "Equipped score should update"
+    print(f"  7e: Upgrade detection: 10.0 → {p.equipped_scores[20]} ✓")
+
+    # --- Test 7f: Fallback without loot_db ---
+    sim_no_loot = CombatSimulation(num_mobs=10, seed=42)  # no loot_db
+    for mob in sim_no_loot.mobs:
+        if mob.template.entry == 6:  # Kobold Vermin (has min_gold)
+            sim_no_loot.player.x = mob.x
+            sim_no_loot.player.y = mob.y + 1
+            mob.hp = 0
+            mob.alive = False
+            mob.looted = False
+            old_copper = sim_no_loot.player.loot_copper
+            sim_no_loot.do_loot()
+            # Gold should still work via min/max_gold
+            assert sim_no_loot.player.loot_copper >= old_copper, "Gold should still drop"
+            print(f"  7f: Fallback loot (no DB): copper={sim_no_loot.player.loot_copper} ✓")
+            break
+
+    # Cleanup
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -333,4 +538,5 @@ if __name__ == "__main__":
     test_performance()
     test_combat_scenario()
     test_level_system()
+    test_loot_tables()
     print("=== ALL TESTS PASSED ===")

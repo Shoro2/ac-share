@@ -37,6 +37,7 @@ ac-share/
 │   │   ├── test_sim.py          <- Validation tests (6 tests: engine, spaces, episode, benchmark, combat, levels)
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
+│   │   ├── loot_db.py           <- AzerothCore CSV loot table loader (creature_loot_template + item_template)
 │   │   ├── sim_logger.py        <- Episode logging for visualization (zero I/O during sim)
 │   │   ├── visualize.py         <- Interactive map viewer with episode browser
 │   │   └── __init__.py
@@ -289,6 +290,26 @@ Loads AzerothCore CSV exports for full-world creature spawning with spatial inde
 - **Filters**: Skips friendly factions (Stormwind, etc.), critters, totems, non-combat pets, gas clouds
 - **Data Classes**: `CreatureTemplate` (entry, name, level range, faction, npc flags, stats) and `SpawnPoint` (guid, entry, map, position)
 
+### loot_db.py — Loot Table Loader
+
+Loads AzerothCore CSV exports for realistic item drops with full group/reference logic:
+- **Loads**: `item_template.csv` (item data, scores), `creature_loot_template.csv` (drop tables), `reference_loot_template.csv` (optional, shared loot references)
+- **Item Score**: Precomputed via `GetItemScore` formula: `(Quality*10) + ItemLevel + Armor + WeaponDPS + (TotalStats*2)`
+- **Group System** (AzerothCore standard):
+  - **Group 0**: Each entry rolls independently (chance %)
+  - **Group N>0**: Exactly one entry wins per group (weighted selection)
+  - **chance=0**: In grouped entries, equal share of remaining probability
+- **Reference Resolution**: Recursive processing from `reference_loot_template`, with max depth 5 to prevent loops
+- **Data Classes**: `ItemData` (entry, name, quality, sell_price, inventory_type, item_level, score), `LootEntry` (item, reference, chance, group_id, counts), `LootResult` (item + count)
+- **Graceful Degradation**: Auto-discovers CSV files, missing files silently skipped — check `loaded` property
+- **Integration**: When loaded, `CombatSimulation.do_loot()` uses real loot tables; otherwise falls back to random loot
+
+**Required CSV Exports** (semicolon-delimited, double-quote enclosed):
+- `creature_loot_template.csv`: Entry, Item, Reference, Chance, QuestRequired, LootMode, GroupId, MinCount, MaxCount, Comment
+- `item_template.csv`: entry, name, class, subclass, Quality, SellPrice, InventoryType, ItemLevel, armor, dmg_min1, dmg_max1, delay, stat_type1..10, stat_value1..10
+- `reference_loot_template.csv` (optional): same schema as creature_loot_template
+- `creature_template.csv` (updated): add `lootid` column for creature→loot table mapping (defaults to entry if missing)
+
 ### wow_sim_env.py — Gymnasium Sim Environment
 
 Drop-in replacement for `wow_env.py`:
@@ -386,13 +407,14 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-6 test functions:
+7 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting
 2. **test_gym_env()**: Gymnasium spaces validation — Box(17,) obs, Discrete(11) actions
 3. **test_random_episode()**: 1000-step episode with random actions
 4. **test_performance()**: FPS benchmark (~5000+ FPS single-env)
 5. **test_combat_scenario()**: Scripted combat with targeting and spell rotation
 6. **test_level_system()**: XP formulas, level-up mechanics, stat scaling, multi-level-up
+7. **test_loot_tables()**: LootDB loading, item score computation, group rolling distribution, sim integration, upgrade detection, fallback without DB
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -614,7 +636,8 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **CombatSimulation Engine** | done | 119 spawns + CreatureDB, 4 spells, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
 | **WoWSimEnv (Gym Interface)** | done | Discrete(11) actions, Box(17) obs, sparse rewards, stall detection |
 | **train_sim.py (PPO Training)** | done | 5 bots, SubprocVecEnv, TensorBoard, gameplay metrics, episode logging |
-| **test_sim.py (Validation)** | done | 6 tests: engine, gym spaces, random episode, benchmark, scripted combat, level system |
+| **Loot Table System** | done | LootDB CSV loader, AzerothCore group/reference logic, item scores, upgrade detection, sim integration with fallback |
+| **test_sim.py (Validation)** | done | 7 tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables |
 | **3D Terrain System** | done | Maps/VMAPs parser, HeightCache, SpatialLOSChecker, SimTerrain wrapper |
 | **AreaTable.dbc Parser** | done | Reads all areas/zones/maps of the WoW world, on-demand tile loading |
 | **Exploration System** | done | 3-tier tracking (Area/Zone/Map), rewards, TensorBoard metrics |
@@ -635,7 +658,8 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **Reward parity gap** | Both Envs | medium | Sim uses sparse design (XP=10+xp*0.2, death=-30), live uses more shaping (XP=3+xp*0.05, death=-5) — trained model may not transfer cleanly |
 | **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
 | **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
-| **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain |
+| **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain. Loot tables provide real item data but sell copper is not tracked. |
+| **Loot table CSVs not yet exported** | Sim | low | LootDB system ready but needs `creature_loot_template.csv`, `item_template.csv` CSV exports from AzerothCore DB. Falls back to random loot without them. `creature_template.csv` should be re-exported with `lootid` column. |
 | **No training artifacts** | Training | info | Neither models/ nor logs/ directories exist currently — no completed training run stored |
 
 ## Roadmap

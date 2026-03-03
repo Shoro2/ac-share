@@ -16,6 +16,7 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from sim.terrain import SimTerrain
     from sim.creature_db import CreatureDB
+    from sim.loot_db import LootDB
 
 
 # ─── XP Table (cumulative XP needed to reach level N) ────────────────
@@ -264,6 +265,7 @@ class MobTemplate:
     max_gold: int = 0
     xp_reward: int = 50
     speed: float = 4.0    # units per tick at walk speed (~2 units/s → 1 unit/tick at 0.5s)
+    loot_id: int = 0      # creature_template.lootid → creature_loot_template.Entry (0 = no table)
 
 
 # AzerothCore base HP per level (unit_class=1, expansion=0):
@@ -273,25 +275,25 @@ MOB_TEMPLATES = {
         entry=299, name="Diseased Young Wolf",
         min_level=1, max_level=1, base_hp=42,
         min_damage=1, max_damage=2, attack_speed=4,
-        detect_range=20.0, xp_reward=50,
+        detect_range=20.0, xp_reward=50, loot_id=299,
     ),
     6: MobTemplate(
         entry=6, name="Kobold Vermin",
         min_level=1, max_level=2, base_hp=42,  # avg of 42-55
         min_damage=1, max_damage=3, attack_speed=4,
-        detect_range=10.0, min_gold=1, max_gold=5, xp_reward=70,
+        detect_range=10.0, min_gold=1, max_gold=5, xp_reward=70, loot_id=6,
     ),
     69: MobTemplate(
         entry=69, name="Diseased Timber Wolf",
         min_level=2, max_level=2, base_hp=55,
         min_damage=2, max_damage=3, attack_speed=4,
-        detect_range=20.0, xp_reward=90,
+        detect_range=20.0, xp_reward=90, loot_id=69,
     ),
     257: MobTemplate(
         entry=257, name="Kobold Worker",
         min_level=3, max_level=3, base_hp=71,
         min_damage=3, max_damage=5, attack_speed=4,
-        detect_range=10.0, min_gold=1, max_gold=5, xp_reward=120,
+        detect_range=10.0, min_gold=1, max_gold=5, xp_reward=120, loot_id=257,
     ),
 }
 
@@ -370,6 +372,8 @@ class Player:
     equipped_upgrade: bool = False
     leveled_up: bool = False    # set True on level-up, consumed on read
     levels_gained: int = 0      # how many levels gained this tick (consumed on read)
+    # Equipped item tracking (for loot table upgrade detection)
+    equipped_scores: dict = field(default_factory=dict)  # inventory_type -> best score
     # Regen tracking
     combat_timer: int = 0       # ticks since last combat action (for OOC regen)
     ooc_regen_accumulator: float = 0.0
@@ -437,12 +441,14 @@ class CombatSimulation:
 
     def __init__(self, num_mobs: int = None, seed: Optional[int] = None,
                  terrain: 'SimTerrain | None' = None, env3d=None,
-                 creature_db: 'CreatureDB | None' = None):
+                 creature_db: 'CreatureDB | None' = None,
+                 loot_db: 'LootDB | None' = None):
         self.rng = random.Random(seed)
         self.num_mobs = num_mobs  # None = all spawns
         self.terrain = terrain
         self.env3d = env3d        # WoW3DEnvironment for area/zone lookups
         self.creature_db = creature_db
+        self.loot_db = loot_db    # LootDB for item drops from CSV loot tables
         self.map_id = 0           # Eastern Kingdoms
         self.player = Player()
         if self.terrain:
@@ -652,6 +658,7 @@ class CombatSimulation:
                 min_gold=tmpl.min_gold,
                 max_gold=tmpl.max_gold,
                 xp_reward=stats['xp'],
+                loot_id=tmpl.lootid,
             )
 
             z = self.terrain.get_height(sp.x, sp.y) if self.terrain else sp.z
@@ -757,7 +764,12 @@ class CombatSimulation:
         return self._start_cast(17)
 
     def do_loot(self) -> bool:
-        """Loot nearest dead mob within range."""
+        """Loot nearest dead mob within range.
+
+        Uses loot tables from LootDB when loaded (creature_loot_template +
+        item_template CSVs). Falls back to the original random loot system
+        when no loot data is available.
+        """
         best = None
         best_dist = self.LOOT_RANGE
         for mob in self.mobs:
@@ -770,15 +782,34 @@ class CombatSimulation:
         if best is None:
             return False
         best.looted = True
-        # Generate loot
-        gold = self.rng.randint(best.template.min_gold, max(best.template.min_gold, best.template.max_gold))
+
+        # Gold (always from creature_template min/max gold — separate from item loot)
+        gold = self.rng.randint(best.template.min_gold,
+                                max(best.template.min_gold, best.template.max_gold))
         self.player.loot_copper += gold
-        if self.rng.random() < self.LOOT_CHANCE:
-            score = self.rng.randint(*self.ITEM_SCORE_RANGE)
-            self.player.loot_score += score
-            self.player.free_slots = max(0, self.player.free_slots - 1)
-            if self.rng.random() < self.UPGRADE_CHANCE:
-                self.player.equipped_upgrade = True
+
+        # Item loot: use loot tables if available, else random fallback
+        loot_id = best.template.loot_id
+        if self.loot_db and self.loot_db.loaded and loot_id > 0:
+            results = self.loot_db.roll_loot(loot_id, self.rng)
+            for result in results:
+                self.player.loot_score += int(result.item.score * result.count)
+                self.player.free_slots = max(0, self.player.free_slots - 1)
+                # Check if equippable item is an upgrade
+                if result.item.inventory_type > 0:
+                    current = self.player.equipped_scores.get(
+                        result.item.inventory_type, 0.0)
+                    if result.item.score > current:
+                        self.player.equipped_scores[result.item.inventory_type] = result.item.score
+                        self.player.equipped_upgrade = True
+        else:
+            # Fallback: random loot (no loot_db loaded)
+            if self.rng.random() < self.LOOT_CHANCE:
+                score = self.rng.randint(*self.ITEM_SCORE_RANGE)
+                self.player.loot_score += score
+                self.player.free_slots = max(0, self.player.free_slots - 1)
+                if self.rng.random() < self.UPGRADE_CHANCE:
+                    self.player.equipped_upgrade = True
         return True
 
     def do_sell(self) -> bool:
