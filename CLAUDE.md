@@ -378,7 +378,7 @@ Extended replacement for `wow_env.py` with optional quest system:
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Similar Override Logic**: Aggro, Cast-Guard, Range-Management, Heal/Shield/DoT blocks
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
-- **Stall Detection**: Truncates episode after 30,000 steps without XP gain
+- **Stall Detection**: Truncates episode after 8,000 steps without XP gain
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
 **Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1, enable_quests=False)`
@@ -393,8 +393,8 @@ Extended replacement for `wow_env.py` with optional quest system:
 
 | Signal | Value | Notes |
 |---|---|---|
-| Step Penalty | -0.01 | per tick |
-| Idle Penalty | -0.05 | Noop without casting |
+| Step Penalty | -0.001 | per tick |
+| Idle Penalty | -0.005 | Noop without casting |
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
 | XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
 | Level-Up | +15.0 * levels | per level gained |
@@ -454,7 +454,7 @@ Interactive map visualization for analyzing training episodes:
 ### train_sim.py — Sim Training
 
 - **5 bots** in `SubprocVecEnv`
-- **PPO** with `ent_coef=0.1`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`
+- **PPO** with `ent_coef=0.1`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`, `gamma=0.97`
 - **TensorBoard Logs** in `logs/PPO_2/`
 - **Episode Callbacks** with kills, XP, deaths, areas/zones/maps explored, levels gained, final level
 - **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`, `gameplay/ep_quests_completed`, `gameplay/ep_quest_xp`

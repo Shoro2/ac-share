@@ -343,11 +343,11 @@ class WoWSimEnv(gym.Env):
             curr_target_hp = state.get('target_hp', 0)
 
         # 1. Step-Penalty (time pressure — forces the bot to act)
-        reward -= 0.01
+        reward -= 0.001
 
         # 2. Idle-Penalty (Noop without casting = wasted time)
         if override_action == 0 and not is_casting_now:
-            reward -= 0.05
+            reward -= 0.005
 
         # 3. Damage-Reward (gradient toward kills — can't be faked)
         if (t_exists > 0.5
@@ -463,8 +463,8 @@ class WoWSimEnv(gym.Env):
                     self._step_count, p.x, p.y, "death")
         # OOM is not terminal — bot must learn to wait for mana regen
 
-        # Stall detection: if bot hasn't earned XP in 30k steps, it's stuck
-        truncated = (self._steps_since_xp >= 30_000)
+        # Stall detection: if bot hasn't earned XP in 8k steps, it's stuck
+        truncated = (self._steps_since_xp >= 8_000)
 
         # State-Tracking
         self._prev_target_hp = curr_target_hp if t_exists > 0.5 else None
