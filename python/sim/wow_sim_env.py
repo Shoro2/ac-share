@@ -257,10 +257,10 @@ class WoWSimEnv(gym.Env):
                 reward += min(damage * 0.03, 1.0)
                 self._ep_damage_dealt += damage
 
-        # 4. XP/Kill (primary reward signal)
+        # 4. XP/Kill (primary reward signal — must dominate step penalty)
         xp = events["xp_gained"]
         if xp > 0:
-            reward += 3.0 + min(xp * 0.05, 2.0)
+            reward += 10.0 + xp * 0.2
             self._ep_kills += 1
             if self._logger:
                 self._logger.record_event(
