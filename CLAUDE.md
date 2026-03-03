@@ -31,10 +31,11 @@ ac-share/
 │   └── 000.mmap                 <- Map heightfield data
 ├── python/                      <- Python RL training, inference & utilities
 │   ├── sim/                     <- ** MAIN FOCUS: Offline Simulation **
-│   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling)
-│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim
+│   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
+│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
 │   │   ├── train_sim.py         <- PPO training on the sim (5 bots, no server needed)
-│   │   ├── test_sim.py          <- Validation tests (6 tests: engine, spaces, episode, benchmark, combat, levels)
+│   │   ├── test_sim.py          <- Validation tests (9 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests)
+│   │   ├── quest_db.py          <- Quest system: definitions, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
 │   │   ├── loot_db.py           <- AzerothCore CSV loot table loader (creature_loot_template + item_template)
@@ -185,7 +186,7 @@ Format: `<playerName>:<actionType>:<value>\n`
 - `bot_name=None`: adopts the first player in the stream
 - `bot_name="Bota"`: explicitly filters for this name
 
-**Action Space** — `Discrete(11)`:
+**Action Space** — `Discrete(12)`:
 | ID | Action |
 |---|---|
 | 0 | No-op (wait) |
@@ -199,8 +200,9 @@ Format: `<playerName>:<actionType>:<value>\n`
 | 8 | Sell (to vendor, only in vendor mode) |
 | 9 | Cast SW:Pain (Spell 589) |
 | 10 | Cast PW:Shield (Spell 17) |
+| 11 | Quest NPC Interact (accept/turn-in, with auto-navigation) |
 
-**Observation Vector** — `Box(shape=(17,), dtype=float32)`:
+**Observation Vector** — `Box(shape=(23,), dtype=float32)`:
 | Index | Value | Range |
 |---|---|---|
 | 0 | hp_pct (HP/MaxHP) | 0-1 |
@@ -220,6 +222,14 @@ Format: `<playerName>:<actionType>:<value>\n`
 | 14 | player_level / 10 | 0-inf |
 | 15 | has_shield | 0/1 |
 | 16 | target_has_sw_pain | 0/1 |
+| 17 | has_active_quest | 0/1 |
+| 18 | quest_progress (objectives ratio) | 0-1 |
+| 19 | quest_npc_nearby | 0/1 |
+| 20 | quest_npc_distance / 40 | 0-1 |
+| 21 | quest_npc_angle / pi | -1 to 1 |
+| 22 | quests_completed / 10 | 0-inf |
+
+Quest dims (17-22) are always present but zero when quests are disabled (`enable_quests=False`).
 
 **Override Logic** (overrides RL decisions):
 1. **Vendor Mode**: If `free_slots < 2` and not in combat -> navigates to nearest vendor from NPC memory, sells automatically
@@ -280,6 +290,26 @@ Simulates the complete WoW combat system in pure Python:
 - `env3d`: `WoW3DEnvironment` instance for Area/Zone lookups via AreaTable.dbc
 - `creature_db`: `CreatureDB` instance for full-world chunk-based mob spawning
 
+### quest_db.py — Quest System
+
+Quest definitions, objective tracking, and quest NPC data for Northshire Valley:
+- **Quest Types**: KILL (kill N creatures), COLLECT (loot N items from creatures), EXPLORE (visit location)
+- **Hardcoded Quests** (5 quests, 3 NPCs) — real WoW Northshire Valley quests:
+  - Quest 33: "Wolves Across the Border" — Kill 10 Young Wolves (XP: 250)
+  - Quest 7: "Kobold Camp Cleanup" — Kill 10 Kobold Vermin (XP: 450, chain from 33)
+  - Quest 15: "Investigate Echo Ridge" — Kill 10 Kobold Workers (XP: 675, chain from 7)
+  - Quest 100001: "Scout the Vineyards" — Explore location (XP: 170)
+  - Quest 100002: "Diseased Wolf Pelts" — Collect 6 pelts from wolves (XP: 360)
+- **Quest NPCs**: Deputy Willem (entry 823), Marshal McBride (entry 197), Brother Neals (entry 6774)
+- **Quest Chains**: 33→7→15 (wolves → kobold vermin → kobold workers) with level requirements
+- **Data Classes**: `QuestTemplate`, `QuestObjective`, `QuestReward`, `QuestProgress`, `QuestNPCData`
+- **`QuestDB`**: Follows CreatureDB/LootDB pattern — hardcoded data + optional CSV extension
+- **Integration**: `CombatSimulation(quest_db=qdb)` enables quest NPCs, objective tracking, and quest events
+
+**Initialization**: `QuestDB(data_dir=None, quiet=False)`
+- Without `data_dir`: Uses 5 hardcoded Northshire quests
+- With `data_dir`: Placeholder for future `quest_template.csv` loading
+
 ### creature_db.py — Creature Database Loader
 
 Loads AzerothCore CSV exports for full-world creature spawning with spatial indexing:
@@ -312,16 +342,16 @@ Loads AzerothCore CSV exports for realistic item drops with full group/reference
 
 ### wow_sim_env.py — Gymnasium Sim Environment
 
-Drop-in replacement for `wow_env.py`:
-- **Same Action Space**: `Discrete(11)` — No-op, Move, Turn x2, Target, Smite, Heal, Loot, Sell, SW:Pain, PW:Shield
-- **Same Obs Space**: `Box(17,)` — HP%, Mana%, Target-HP, Combat, Distance, Angle, etc.
+Extended replacement for `wow_env.py` with optional quest system:
+- **Action Space**: `Discrete(12)` — No-op, Move, Turn x2, Target, Smite, Heal, Loot, Sell, SW:Pain, PW:Shield, Quest Interact
+- **Obs Space**: `Box(23,)` — 17 base dims (HP%, Mana%, Target-HP, Combat, Distance, Angle, etc.) + 6 quest dims (has_quest, progress, npc_dist, npc_angle, npc_nearby, quests_done)
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Similar Override Logic**: Aggro, Cast-Guard, Range-Management, Heal/Shield/DoT blocks
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
 - **Stall Detection**: Truncates episode after 30,000 steps without XP gain
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
-**Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1)`
+**Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1, enable_quests=False)`
 - `data_root`: Path to WoW `Data/` directory -> enables 3D terrain (`SimTerrain`) + area lookups (`WoW3DEnvironment` with AreaTable.dbc)
 - `creature_csv_dir`: Path to directory containing `creature.csv` + `creature_template.csv` -> enables full-world creature spawning
 - `log_dir`: Path for episode JSONL logs (used by `visualize.py`)
@@ -344,6 +374,7 @@ Drop-in replacement for `wow_env.py`:
 | New Area Entered | +1.0 | real WoW Area ID or grid fallback (once per episode) |
 | New Zone Entered | +3.0 | real WoW Zone ID (once per episode) |
 | New Map Entered | +10.0 | real WoW Map ID (once per episode) |
+| Quest Completion | +20.0 * quests | per quest turned in (+ quest XP via kill signal) |
 | Death | -15.0 | terminal, overrides all other rewards |
 
 #### Live Rewards (wow_env.py — More Shaped)
@@ -396,7 +427,7 @@ Interactive map visualization for analyzing training episodes:
 - **PPO** with `ent_coef=0.1`, `n_steps=256`, `batch_size=128`, `learning_rate=3e-4`
 - **TensorBoard Logs** in `logs/PPO_2/`
 - **Episode Callbacks** with kills, XP, deaths, areas/zones/maps explored, levels gained, final level
-- **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`
+- **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`, `gameplay/ep_quests_completed`, `gameplay/ep_quest_xp`
 - **Real per-iteration FPS tracking** (not cumulative)
 - **~5000+ FPS** (without 3D terrain)
 - **Model versioning**: Auto-increments `wow_bot_sim_v1.zip`, `v2.zip`, etc. Interrupt save: `wow_bot_sim_interrupted.zip`
@@ -404,17 +435,20 @@ Interactive map visualization for analyzing training episodes:
 - **`--creature-data`**: Optional, enables full-world creature spawning from CSV
 - **`--log-dir`**: Optional, enables episode trail logging for visualization
 - **`--log-interval`**: How often to write episode logs (default: every episode)
+- **`--enable-quests`**: Optional, enables quest system (Northshire quests with kill/collect/explore objectives)
 
 ### test_sim.py — Validation Tests
 
-7 test functions:
+9 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting
-2. **test_gym_env()**: Gymnasium spaces validation — Box(17,) obs, Discrete(11) actions
+2. **test_gym_env()**: Gymnasium spaces validation — Box(23,) obs, Discrete(12) actions
 3. **test_random_episode()**: 1000-step episode with random actions
-4. **test_performance()**: FPS benchmark (~5000+ FPS single-env)
+4. **test_performance()**: FPS benchmark (~40000+ FPS single-env)
 5. **test_combat_scenario()**: Scripted combat with targeting and spell rotation
 6. **test_level_system()**: XP formulas, level-up mechanics, stat scaling, multi-level-up
 7. **test_loot_tables()**: LootDB loading, item score computation, group rolling distribution, sim integration, upgrade detection, fallback without DB
+8. **test_vendor_system()**: Vendor NPCs, navigation, sell mechanics, dynamic spawning, sell rewards
+9. **test_quest_system()**: QuestDB loading, chain prerequisites, level requirements, kill/collect/explore objectives, quest NPC interaction, turn-in rewards, consume_events, reset, env integration
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -589,6 +623,9 @@ python -m sim.train_sim --data-root /path/to/Data --steps 500000
 # With full-world creature spawning
 python -m sim.train_sim --creature-data /path/to/data --steps 500000
 
+# With quest system (Northshire quests with kill/collect/explore objectives)
+python -m sim.train_sim --enable-quests --steps 500000
+
 # With episode logging for visualization
 python -m sim.train_sim --log-dir logs/episodes --steps 500000
 
@@ -643,6 +680,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **Exploration System** | done | 3-tier tracking (Area/Zone/Map), rewards, TensorBoard metrics |
 | **CreatureDB (Full World)** | done | CSV loader, spatial index, stat interpolation, attackability checks |
 | **Episode Logger** | done | Zero-I/O JSONL logger, trail data, events, mob snapshots |
+| **Quest System** | done | 5 Northshire quests (kill/collect/explore), quest NPCs, quest chains, obs/action space extended, rewards, TensorBoard metrics |
 | **Visualization** | done | Interactive map viewer with episode slider, zoom, bot filters, event log |
 | **Override Logic** | done | Vendor, aggro, cast guard, loot, range mgmt — in both envs |
 | **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, override logic, shaped rewards |

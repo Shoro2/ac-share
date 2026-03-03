@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from sim.terrain import SimTerrain
     from sim.creature_db import CreatureDB
     from sim.loot_db import LootDB
+    from sim.quest_db import QuestDB
 
 
 # ─── XP Table (cumulative XP needed to reach level N) ────────────────
@@ -368,6 +369,17 @@ class VendorNPC:
     z: float
 
 
+@dataclass(slots=True)
+class QuestNPC:
+    """A quest-giver NPC in the simulation world."""
+    uid: int
+    entry: int
+    name: str
+    x: float
+    y: float
+    z: float = 82.0
+
+
 # Real vendor positions from Northshire Abbey (AzerothCore npc_memory)
 VENDOR_DATA = [
     {"name": "Janos Hammerknuckle", "level": 5, "x": -8909.46, "y": -104.163, "z": 82.031},
@@ -425,6 +437,10 @@ class Player:
     combat_timer: int = 0       # ticks since last combat action (for OOC regen)
     ooc_regen_accumulator: float = 0.0
     mana_regen_accumulator: float = 0.0
+    # Quest tracking (consume-on-read)
+    quest_xp_gained: int = 0            # XP from quest turn-ins this tick
+    quest_copper_gained: int = 0        # copper from quest turn-ins this tick
+    quests_completed_tick: int = 0      # quests completed this tick (consume-on-read)
 
 
 # ─── Mob Instance ─────────────────────────────────────────────────────
@@ -487,22 +503,27 @@ class CombatSimulation:
     CHUNK_SIZE = 100.0        # world-units per chunk (must match creature_db.CHUNK_SIZE)
     CHUNK_RADIUS = 2          # activate 5×5 = 25 chunks around player
 
+    QUEST_NPC_RANGE = 6.0     # max interaction range for quest NPCs
+
     def __init__(self, num_mobs: int = None, seed: Optional[int] = None,
                  terrain: 'SimTerrain | None' = None, env3d=None,
                  creature_db: 'CreatureDB | None' = None,
-                 loot_db: 'LootDB | None' = None):
+                 loot_db: 'LootDB | None' = None,
+                 quest_db: 'QuestDB | None' = None):
         self.rng = random.Random(seed)
         self.num_mobs = num_mobs  # None = all spawns
         self.terrain = terrain
         self.env3d = env3d        # WoW3DEnvironment for area/zone lookups
         self.creature_db = creature_db
         self.loot_db = loot_db    # LootDB for item drops from CSV loot tables
+        self.quest_db = quest_db  # QuestDB for quest definitions and NPCs
         self.map_id = 0           # Eastern Kingdoms
         self.player = Player()
         if self.terrain:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.mobs: list[Mob] = []
         self.vendors: list[VendorNPC] = []
+        self.quest_npcs: list[QuestNPC] = []
         self.target: Optional[Mob] = None
         self.tick_count: int = 0
         self.damage_dealt: int = 0
@@ -520,7 +541,12 @@ class CombatSimulation:
         self._active_chunks: set[tuple] = set()
         self._chunk_mobs: dict[tuple, list[Mob]] = {}
         self._chunk_vendors: dict[tuple, list[VendorNPC]] = {}
+        # Quest state
+        self.active_quests: dict = {}     # quest_id -> QuestProgress
+        self.completed_quests: set = set()
+        self.quests_completed: int = 0    # total quests completed this episode
         self._spawn_vendors()
+        self._spawn_quest_npcs()
         if self.creature_db:
             self._update_chunks()
         else:
@@ -580,6 +606,170 @@ class CombatSimulation:
                 x=vdata["x"], y=vdata["y"], z=z,
             ))
 
+    def _spawn_quest_npcs(self):
+        """Spawn quest-giver NPCs from quest_db data."""
+        self.quest_npcs.clear()
+        if not self.quest_db:
+            return
+        for npc_data in self.quest_db.npc_data:
+            z = npc_data.z
+            if self.terrain:
+                z = self.terrain.get_height(npc_data.x, npc_data.y)
+            self.quest_npcs.append(QuestNPC(
+                uid=self._new_uid(),
+                entry=npc_data.entry,
+                name=npc_data.name,
+                x=npc_data.x, y=npc_data.y, z=z,
+            ))
+
+    def get_nearest_quest_npc(self, npc_filter=None) -> Optional[QuestNPC]:
+        """Return the nearest quest NPC, optionally filtered by entry.
+
+        Args:
+            npc_filter: If set, only consider NPCs with this entry.
+        """
+        best = None
+        best_dist = float('inf')
+        px, py = self.player.x, self.player.y
+        for npc in self.quest_npcs:
+            if npc_filter is not None and npc.entry != npc_filter:
+                continue
+            dx = npc.x - px
+            dy = npc.y - py
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < best_dist:
+                best_dist = d
+                best = npc
+        return best
+
+    def do_quest_interact(self) -> bool:
+        """Interact with the nearest quest NPC within range.
+
+        Handles both accepting new quests and turning in completed quests.
+        Priority: turn-in first (rewards), then accept new quests.
+        Returns True if any interaction occurred.
+        """
+        if not self.quest_db:
+            return False
+
+        p = self.player
+        px, py = p.x, p.y
+        interacted = False
+
+        for npc in self.quest_npcs:
+            dx = npc.x - px
+            dy = npc.y - py
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > self.QUEST_NPC_RANGE:
+                continue
+
+            # Turn-in completed quests first
+            completable = self.quest_db.get_completable_quests(
+                npc.entry, self.active_quests)
+            for qt in completable:
+                self._complete_quest(qt)
+                interacted = True
+
+            # Accept available quests
+            available = self.quest_db.get_available_quests(
+                npc.entry, p.level, self.completed_quests, self.active_quests)
+            for qt in available:
+                progress = self.quest_db.create_progress(qt.quest_id)
+                self.active_quests[qt.quest_id] = progress
+                interacted = True
+
+        return interacted
+
+    def _complete_quest(self, qt):
+        """Complete a quest: grant rewards, update state."""
+        from sim.quest_db import QuestObjectiveType
+        p = self.player
+
+        # Grant rewards
+        if qt.rewards.xp > 0:
+            p.xp_gained += qt.rewards.xp
+            p.quest_xp_gained += qt.rewards.xp
+            p.xp += qt.rewards.xp
+            self._check_level_up()
+        if qt.rewards.copper > 0:
+            p.copper += qt.rewards.copper
+            p.quest_copper_gained += qt.rewards.copper
+
+        # Remove quest items from inventory for COLLECT objectives
+        for obj in qt.objectives:
+            if obj.obj_type == QuestObjectiveType.COLLECT:
+                items_to_remove = obj.count
+                self.player.inventory = [
+                    item for item in self.player.inventory
+                    if item.entry != obj.target or (items_to_remove := items_to_remove - 1) < 0
+                ]
+                # Recalculate free slots
+                p.free_slots = INVENTORY_SLOTS - len(p.inventory)
+
+        # Move to completed
+        del self.active_quests[qt.quest_id]
+        self.completed_quests.add(qt.quest_id)
+        self.quests_completed += 1
+        p.quests_completed_tick += 1
+
+    def on_mob_killed(self, mob: Mob):
+        """Update quest progress when a mob is killed."""
+        if not self.quest_db:
+            return
+        from sim.quest_db import QuestObjectiveType
+        for qid, progress in self.active_quests.items():
+            qt = self.quest_db.templates[qid]
+            for i, obj in enumerate(qt.objectives):
+                if obj.obj_type == QuestObjectiveType.KILL and obj.target == mob.template.entry:
+                    if progress.counts[i] < obj.count:
+                        progress.counts[i] += 1
+            progress.check_complete(qt.objectives)
+
+    def on_mob_looted(self, mob: Mob):
+        """Roll quest item drops when a mob is looted."""
+        if not self.quest_db:
+            return
+        from sim.quest_db import QuestObjectiveType
+        p = self.player
+        for qid, progress in self.active_quests.items():
+            qt = self.quest_db.templates[qid]
+            for i, obj in enumerate(qt.objectives):
+                if (obj.obj_type == QuestObjectiveType.COLLECT
+                        and obj.source_creature == mob.template.entry
+                        and progress.counts[i] < obj.count):
+                    if self.rng.random() < obj.drop_chance:
+                        progress.counts[i] += 1
+                        # Add quest item to inventory (takes a slot)
+                        if p.free_slots > 0:
+                            p.free_slots -= 1
+                            p.inventory.append(InventoryItem(
+                                entry=obj.target,
+                                name=f"Quest Item #{obj.target}",
+                                quality=1,
+                                sell_price=0,
+                                score=0.0,
+                                inventory_type=0,
+                            ))
+            progress.check_complete(qt.objectives)
+
+    def _update_quest_exploration(self):
+        """Check explore quest objectives against current position."""
+        if not self.quest_db:
+            return
+        from sim.quest_db import QuestObjectiveType
+        px, py = self.player.x, self.player.y
+        for qid, progress in self.active_quests.items():
+            qt = self.quest_db.templates[qid]
+            for i, obj in enumerate(qt.objectives):
+                if (obj.obj_type == QuestObjectiveType.EXPLORE
+                        and progress.counts[i] < obj.count):
+                    dx = obj.target_x - px
+                    dy = obj.target_y - py
+                    dist = math.sqrt(dx * dx + dy * dy)
+                    if dist <= obj.radius:
+                        progress.counts[i] = obj.count
+            progress.check_complete(qt.objectives)
+
     def get_nearest_vendor(self) -> Optional[VendorNPC]:
         """Return the nearest vendor NPC, or None if none exist."""
         best = None
@@ -618,6 +808,11 @@ class CombatSimulation:
         self._chunk_vendors.clear()
         self.mobs.clear()
         self._spawn_vendors()
+        self._spawn_quest_npcs()
+        # Reset quest state
+        self.active_quests.clear()
+        self.completed_quests.clear()
+        self.quests_completed = 0
         if self.creature_db:
             self._update_chunks()
         else:
@@ -979,6 +1174,8 @@ class CombatSimulation:
                         self.player.equipped_upgrade = True
                 else:
                     self.player.loot_failed.append(quality)
+        # Quest collect objective tracking
+        self.on_mob_looted(best)
         return True
 
     def do_sell(self) -> bool:
@@ -1101,6 +1298,8 @@ class CombatSimulation:
             self.player.xp += xp
             # Level-up check
             self._check_level_up()
+            # Quest kill objective tracking
+            self.on_mob_killed(mob)
             # Check if player leaves combat
             self._check_combat_end()
 
@@ -1137,6 +1336,7 @@ class CombatSimulation:
         p = self.player
         self._update_chunks()
         self._update_exploration()
+        self._update_quest_exploration()
 
         # --- Cast completion ---
         if p.is_casting:
@@ -1328,6 +1528,31 @@ class CombatSimulation:
                     "attackable": 1 if mob.alive else 0,
                     "vendor": 0,
                 })
+        # Include quest NPCs
+        for qnpc in self.quest_npcs:
+            dx = qnpc.x - px
+            dy = qnpc.y - py
+            dsq = dx * dx + dy * dy
+            if dsq <= r_sq:
+                d = _sqrt(dsq)
+                result.append({
+                    "uid": qnpc.uid,
+                    "name": qnpc.name,
+                    "level": 10,
+                    "hp": 100,
+                    "max_hp": 100,
+                    "alive": True,
+                    "x": qnpc.x,
+                    "y": qnpc.y,
+                    "z": qnpc.z,
+                    "dist": d,
+                    "target_player": False,
+                    "looted": False,
+                    "attackable": 0,
+                    "vendor": 0,
+                    "questgiver": 1,
+                    "entry": qnpc.entry,
+                })
         # Include vendor NPCs
         for v in self.vendors:
             dx = v.x - px
@@ -1408,6 +1633,7 @@ class CombatSimulation:
                     "level": m["level"],
                     "attackable": m["attackable"],
                     "vendor": m.get("vendor", 0),
+                    "questgiver": m.get("questgiver", 0),
                     "target": "1" if m["target_player"] else "0",
                     "hp": m["hp"],
                     "x": m["x"],
@@ -1415,7 +1641,65 @@ class CombatSimulation:
                 }
                 for m in nearby
             ],
+            # Quest state (sim-only, not present in live TCP stream)
+            "quest_active": len(self.active_quests) > 0,
+            "quest_progress": self._get_quest_progress_ratio(),
+            "quests_completed_total": self.quests_completed,
         }
+
+    def _get_quest_progress_ratio(self) -> float:
+        """Get aggregate quest completion progress as 0-1 ratio."""
+        if not self.active_quests or not self.quest_db:
+            return 0.0
+        total_needed = 0
+        total_done = 0
+        for qid, prog in self.active_quests.items():
+            qt = self.quest_db.templates[qid]
+            for i, obj in enumerate(qt.objectives):
+                total_needed += obj.count
+                total_done += min(prog.counts[i], obj.count)
+        return total_done / max(1, total_needed)
+
+    def get_best_quest_npc(self) -> tuple:
+        """Find the most relevant quest NPC for the bot to interact with.
+
+        Returns (npc, npc_type) where npc_type is:
+          'turn_in' — NPC can accept a completed quest
+          'accept'  — NPC can give a new quest
+          None      — no relevant quest NPC
+        """
+        if not self.quest_db:
+            return None, None
+
+        px, py = self.player.x, self.player.y
+        best_npc = None
+        best_type = None
+        best_dist = float('inf')
+
+        for npc in self.quest_npcs:
+            dx = npc.x - px
+            dy = npc.y - py
+            dist = math.sqrt(dx * dx + dy * dy)
+
+            # Turn-in NPCs have highest priority
+            completable = self.quest_db.get_completable_quests(
+                npc.entry, self.active_quests)
+            if completable and dist < best_dist:
+                best_npc = npc
+                best_type = 'turn_in'
+                best_dist = dist
+                continue
+
+            # Accept NPCs have second priority
+            available = self.quest_db.get_available_quests(
+                npc.entry, self.player.level, self.completed_quests,
+                self.active_quests)
+            if available and (best_type != 'turn_in') and dist < best_dist:
+                best_npc = npc
+                best_type = 'accept'
+                best_dist = dist
+
+        return best_npc, best_type
 
     def consume_events(self) -> dict:
         """Consume and reset accumulated event values (like real server)."""
@@ -1434,6 +1718,9 @@ class CombatSimulation:
             "new_areas": self._new_areas,
             "new_zones": self._new_zones,
             "new_maps": self._new_maps,
+            "quest_xp": p.quest_xp_gained,
+            "quest_copper": p.quest_copper_gained,
+            "quests_completed": p.quests_completed_tick,
         }
         p.xp_gained = 0
         p.loot_copper = 0
@@ -1445,6 +1732,9 @@ class CombatSimulation:
         p.loot_failed.clear()
         p.sell_copper = 0
         p.items_sold = 0
+        p.quest_xp_gained = 0
+        p.quest_copper_gained = 0
+        p.quests_completed_tick = 0
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0

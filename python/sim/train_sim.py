@@ -95,6 +95,8 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_loot_items", stats.get("loot_items", 0), step)
                 self._writer.add_scalar("gameplay/ep_loot_failed", stats.get("loot_failed", 0), step)
                 self._writer.add_scalar("gameplay/ep_sell_copper", stats.get("sell_copper", 0), step)
+                self._writer.add_scalar("gameplay/ep_quests_completed", stats.get("quests_completed", 0), step)
+                self._writer.add_scalar("gameplay/ep_quest_xp", stats.get("quest_xp", 0), step)
 
                 # Exploration reward breakdown
                 self._writer.add_scalar("reward_breakdown/explore", stats.get("rw_explore", 0), step)
@@ -132,11 +134,12 @@ class GameplayMetricsCallback(BaseCallback):
 
 def make_env(bot_name: str, seed: int, data_root: str = None,
              creature_csv_dir: str = None, log_dir: str = None,
-             log_interval: int = 1):
+             log_interval: int = 1, enable_quests: bool = False):
     def _init():
         return WoWSimEnv(bot_name=bot_name, seed=seed, data_root=data_root,
                          creature_csv_dir=creature_csv_dir,
-                         log_dir=log_dir, log_interval=log_interval)
+                         log_dir=log_dir, log_interval=log_interval,
+                         enable_quests=enable_quests)
     return _init
 
 
@@ -162,6 +165,8 @@ def main():
                              "Negligible performance impact.")
     parser.add_argument("--log-interval", type=int, default=1,
                         help="Record trail every N steps (default: 1 = every step)")
+    parser.add_argument("--enable-quests", action="store_true",
+                        help="Enable quest system (quest NPCs, objectives, rewards)")
     args = parser.parse_args()
 
     models_dir = os.path.join(PARENT_DIR, "models", "PPO")
@@ -182,6 +187,8 @@ def main():
         print(f">>> Full-world creatures enabled: {creature_csv_dir} <<<")
     if vis_log_dir:
         print(f">>> Episode trail logging enabled: {vis_log_dir} (interval={vis_log_interval}) <<<")
+    if args.enable_quests:
+        print(f">>> Quest system enabled: Northshire quests with kill/collect/explore objectives <<<")
 
     start_method = "fork" if sys.platform != "win32" else "spawn"
 
@@ -189,7 +196,8 @@ def main():
         env = SubprocVecEnv(
             [make_env(name, seed=i * 1000, data_root=data_root,
                       creature_csv_dir=creature_csv_dir,
-                      log_dir=vis_log_dir, log_interval=vis_log_interval)
+                      log_dir=vis_log_dir, log_interval=vis_log_interval,
+                      enable_quests=args.enable_quests)
              for i, name in enumerate(bot_names)],
             start_method=start_method,
         )

@@ -1,11 +1,13 @@
 """
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
-Same observation space (17,), same action space (Discrete(11)),
-same reward function. Runs ~1000x faster than the real server.
+Observation space: Box(23,) — 17 base dims + 6 quest dims.
+Action space: Discrete(12) — 11 base actions + 1 quest action.
+Runs ~1000x faster than the real server.
 
 Usage:
-    env = WoWSimEnv()            # single bot
+    env = WoWSimEnv()                        # single bot (no quests)
+    env = WoWSimEnv(enable_quests=True)      # with quest system
     obs, info = env.reset()
     obs, reward, done, trunc, info = env.step(action)
 """
@@ -41,10 +43,13 @@ QUALITY_FAIL_PENALTY = {
 
 class WoWSimEnv(gym.Env):
     """
-    Simulated WoW environment matching WoWEnv interface exactly.
+    Simulated WoW environment with optional quest system.
 
-    Observation Space: Box(17,) — identical to wow_env.py
-    Action Space: Discrete(11) — identical to wow_env.py
+    Observation Space: Box(23,) — 17 base + 6 quest dimensions
+    Action Space: Discrete(12) — 11 base actions + quest interact
+
+    Quest dimensions (indices 17-22) are always present but zero when
+    quests are disabled, keeping the interface stable for model transfer.
     """
 
     metadata = {"render_modes": []}
@@ -52,12 +57,12 @@ class WoWSimEnv(gym.Env):
     def __init__(self, bot_name: str = "SimBot", num_mobs: int = None,
                  seed: int = None, data_root: str = None,
                  creature_csv_dir: str = None, log_dir: str = None,
-                 log_interval: int = 1):
+                 log_interval: int = 1, enable_quests: bool = False):
         super().__init__()
 
-        self.action_space = spaces.Discrete(11)
+        self.action_space = spaces.Discrete(12)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(17,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(23,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -104,10 +109,18 @@ class WoWSimEnv(gym.Env):
             if loot_db.loaded:
                 self._loot_db = loot_db
 
+        # Load quest system if enabled
+        self._quest_db = None
+        self._enable_quests = enable_quests
+        if enable_quests:
+            from sim.quest_db import QuestDB
+            self._quest_db = QuestDB(quiet=True)
+
         self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed,
                                     terrain=self._terrain, env3d=self._env3d,
                                     creature_db=self._creature_db,
-                                    loot_db=self._loot_db)
+                                    loot_db=self._loot_db,
+                                    quest_db=self._quest_db)
         self.last_state = None
         self._step_count = 0
         # No step limit — episode runs until death (bot should level as far as possible)
@@ -125,8 +138,11 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
+        self._ep_quests_completed = 0
+        self._ep_quest_xp = 0
         self._steps_since_xp = 0          # stall detector: reset episode after 30k steps without XP
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
+        self._quest_nav_active = False     # True while bot is walking to quest NPC
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -151,8 +167,11 @@ class WoWSimEnv(gym.Env):
         self._prev_target_hp = None
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
+        self._ep_quests_completed = 0
+        self._ep_quest_xp = 0
         self._steps_since_xp = 0
         self._vendor_nav_active = False
+        self._quest_nav_active = False
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
 
@@ -195,8 +214,30 @@ class WoWSimEnv(gym.Env):
         if action == 8 and not in_combat and not self._vendor_nav_active:
             self._vendor_nav_active = True  # AI decided to sell
 
+        # Quest NPC navigation: AI triggers action 11 → bot auto-walks to quest NPC
+        # Same pattern as vendor navigation.
+        if action == 11 and not in_combat and not self._quest_nav_active:
+            self._quest_nav_active = True  # AI decided to interact with quest NPC
+
         if in_combat and self._vendor_nav_active:
             self._vendor_nav_active = False  # combat cancels vendor trip
+        if in_combat and self._quest_nav_active:
+            self._quest_nav_active = False  # combat cancels quest trip
+
+        if self._quest_nav_active and not in_combat:
+            qnpc, _ = self.sim.get_best_quest_npc()
+            if qnpc:
+                qdx = qnpc.x - p.x
+                qdy = qnpc.y - p.y
+                qnpc_dist = math.sqrt(qdx * qdx + qdy * qdy)
+                if qnpc_dist <= self.sim.QUEST_NPC_RANGE:
+                    override_action = 11  # close enough to interact
+                    self._quest_nav_active = False
+                else:
+                    self.sim.do_move_to(qnpc.x, qnpc.y)
+                    override_action = 0  # movement handled
+            else:
+                self._quest_nav_active = False  # no relevant quest NPC
 
         if self._vendor_nav_active and not in_combat:
             vendor = self.sim.get_nearest_vendor()
@@ -215,7 +256,7 @@ class WoWSimEnv(gym.Env):
         elif action == 8 and not self._vendor_nav_active:
             override_action = 0  # block raw sell action (must go through nav)
 
-        if not self._vendor_nav_active or in_combat:
+        if (not self._vendor_nav_active and not self._quest_nav_active) or in_combat:
             # Aggro check: in combat but no living target
             if in_combat and not target_alive:
                 aggro_mob = None
@@ -235,7 +276,7 @@ class WoWSimEnv(gym.Env):
                             break
                     override_action = 0  # wait for target
 
-            elif is_casting and action in [1, 2, 3, 5, 6, 7, 9, 10]:
+            elif is_casting and action in [1, 2, 3, 5, 6, 7, 9, 10, 11]:
                 override_action = 0
             elif target_dead and dist_to_target < 3.0:
                 override_action = 7  # loot
@@ -276,6 +317,8 @@ class WoWSimEnv(gym.Env):
             self.sim.do_cast_sw_pain()
         elif override_action == 10:
             self.sim.do_cast_pw_shield()
+        elif override_action == 11:
+            self.sim.do_quest_interact()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -387,13 +430,28 @@ class WoWSimEnv(gym.Env):
             self._ep_maps += new_maps
             self._ep_exploration_reward += r
 
+        # 10. Quest completion (significant reward — comparable to multiple kills)
+        quests_done = events.get("quests_completed", 0)
+        quest_xp = events.get("quest_xp", 0)
+        if quests_done > 0:
+            # Quest XP counts toward the kill XP signal (already in xp_gained)
+            # Additional quest completion bonus
+            reward += 20.0 * quests_done
+            self._ep_quests_completed += quests_done
+            self._ep_quest_xp += quest_xp
+            self._steps_since_xp = 0  # quest XP counts against stall detection
+            if self._logger:
+                self._logger.record_event(
+                    self._step_count, p.x, p.y, "quest",
+                    f"Completed {quests_done} quest(s)")
+
         # Log trail point
         if self._logger:
             self._logger.record_step(
                 self._step_count, p.x, p.y, hp_pct,
                 p.level, p.in_combat, p.orientation)
 
-        # 10. Terminal: Death (only terminal — bot must learn to survive)
+        # 11. Terminal: Death (only terminal — bot must learn to survive)
         terminated = False
         if self.sim.player.hp <= 0:
             reward = -15.0
@@ -437,6 +495,8 @@ class WoWSimEnv(gym.Env):
                 "loot_items": self._ep_loot_items,
                 "loot_failed": self._ep_loot_failed,
                 "sell_copper": self._ep_sell_copper,
+                "quests_completed": self._ep_quests_completed,
+                "quest_xp": self._ep_quest_xp,
             }
             info["episode_stats"] = ep_stats
 
@@ -447,7 +507,7 @@ class WoWSimEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _build_obs(self, data: dict) -> np.ndarray:
-        """Build observation vector — exactly matches wow_env.py._build_obs."""
+        """Build observation vector — 17 base dims + 6 quest dims = 23 total."""
         max_hp = max(1, data['max_hp'])
         hp_pct = data['hp'] / max_hp
         mana_pct = data['power'] / max(1, data['max_power'])
@@ -482,14 +542,57 @@ class WoWSimEnv(gym.Env):
         has_shield = 1.0 if data.get('has_shield') == 'true' else 0.0
         target_has_sw_pain = 1.0 if data.get('target_has_sw_pain') == 'true' else 0.0
 
+        # Quest observations (dims 17-22) — always present, zero when quests disabled
+        quest_obs = self._compute_quest_obs(data)
+
         return np.array([
             hp_pct, mana_pct, t_hp, t_exists, in_combat,
             dist_norm, angle_norm, is_casting,
             mob_count, slots_norm,
             closest_mob_dist, closest_mob_angle, num_attackers,
             target_level, player_level,
-            has_shield, target_has_sw_pain
+            has_shield, target_has_sw_pain,
+            *quest_obs,
         ], dtype=np.float32)
+
+    def _compute_quest_obs(self, data: dict):
+        """Compute quest observation features (6 dimensions).
+
+        [17] has_active_quest        (0/1)
+        [18] quest_progress          (0-1, ratio of completed objectives)
+        [19] quest_npc_nearby        (0/1, relevant quest NPC exists)
+        [20] quest_npc_distance / 40 (0-1, normalized distance)
+        [21] quest_npc_angle / pi    (-1 to 1, relative angle)
+        [22] quests_completed / 10   (0-inf, total completed this episode)
+        """
+        if not self._quest_db:
+            return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        has_active = 1.0 if data.get('quest_active', False) else 0.0
+        progress = float(data.get('quest_progress', 0.0))
+        quests_done = data.get('quests_completed_total', 0) / 10.0
+
+        # Find the most relevant quest NPC (turn-in > accept)
+        qnpc, qtype = self.sim.get_best_quest_npc()
+        qnpc_nearby = 0.0
+        qnpc_dist = 0.0
+        qnpc_angle = 0.0
+        if qnpc:
+            qnpc_nearby = 1.0
+            dx = qnpc.x - data['x']
+            dy = qnpc.y - data['y']
+            dist = math.sqrt(dx * dx + dy * dy)
+            qnpc_dist = min(dist, 40.0) / 40.0
+            npc_angle = math.atan2(dy, dx)
+            rel = npc_angle - data['o']
+            while rel > math.pi:
+                rel -= 2 * math.pi
+            while rel < -math.pi:
+                rel += 2 * math.pi
+            qnpc_angle = rel / math.pi
+
+        return (has_active, progress, qnpc_nearby, qnpc_dist, qnpc_angle,
+                quests_done)
 
     def _compute_nearby_mob_features(self, data: dict):
         """Compute observation features from nearby_mobs — matches wow_env.py."""
