@@ -21,7 +21,8 @@ if PARENT_DIR not in sys.path:
 
 from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSITIONS,
                              XP_TABLE, base_xp_gain, get_gray_level,
-                             player_max_hp, player_max_mana, smite_damage, heal_amount)
+                             player_max_hp, player_max_mana, smite_damage, heal_amount,
+                             INVENTORY_SLOTS, VENDOR_DATA, InventoryItem)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -523,6 +524,392 @@ def test_loot_tables():
             print(f"  7f: Fallback loot (no DB): copper={sim_no_loot.player.loot_copper} ✓")
             break
 
+    # --- Test 7g: Inventory capacity (30 slots) ---
+    assert INVENTORY_SLOTS == 30, f"Expected 30 inventory slots, got {INVENTORY_SLOTS}"
+    sim_inv = CombatSimulation(num_mobs=50, seed=123, loot_db=loot_db)
+    assert sim_inv.player.free_slots == INVENTORY_SLOTS, \
+        f"Player should start with {INVENTORY_SLOTS} free slots"
+
+    # Fill inventory completely
+    sim_inv.player.free_slots = 0
+
+    # Kill and try to loot a wolf — items should fail, gold should still work
+    wolf_inv = None
+    for mob in sim_inv.mobs:
+        if mob.template.entry == 299:
+            wolf_inv = mob
+            break
+    assert wolf_inv is not None, "Need a wolf mob for inventory test"
+
+    sim_inv.player.x = wolf_inv.x
+    sim_inv.player.y = wolf_inv.y + 1
+    wolf_inv.hp = 0
+    wolf_inv.alive = False
+    wolf_inv.looted = False
+    old_copper_inv = sim_inv.player.loot_copper
+
+    success = sim_inv.do_loot()
+    assert success, "Loot action should still succeed (mob gets marked looted)"
+    assert sim_inv.player.free_slots == 0, "Free slots should stay at 0"
+    assert len(sim_inv.player.loot_failed) > 0, \
+        "Items should be in loot_failed when inventory is full"
+    assert len(sim_inv.player.loot_items) == 0, \
+        "No items should be in loot_items when inventory is full"
+    # Gold doesn't need inventory space
+    assert sim_inv.player.loot_copper >= old_copper_inv, "Gold should still drop"
+    print(f"  7g: Inventory full: failed={len(sim_inv.player.loot_failed)}, "
+          f"copper={sim_inv.player.loot_copper - old_copper_inv} ✓")
+
+    # --- Test 7h: Inventory partial fill ---
+    sim_part = CombatSimulation(num_mobs=50, seed=77, loot_db=loot_db)
+    sim_part.player.free_slots = 1  # only 1 slot left
+
+    wolf_part = None
+    for mob in sim_part.mobs:
+        if mob.template.entry == 299:
+            wolf_part = mob
+            break
+    assert wolf_part is not None
+
+    sim_part.player.x = wolf_part.x
+    sim_part.player.y = wolf_part.y + 1
+    wolf_part.hp = 0
+    wolf_part.alive = False
+    wolf_part.looted = False
+    sim_part.do_loot()
+
+    # Wolf drops meat (group 0, 80%) + 1 equip (group 1, 100%)
+    # With 1 slot: first item fits, rest should fail
+    total_items = len(sim_part.player.loot_items) + len(sim_part.player.loot_failed)
+    assert total_items > 0, "Should have rolled at least some loot"
+    if total_items > 1:
+        assert len(sim_part.player.loot_items) == 1, \
+            f"Only 1 item should fit, got {len(sim_part.player.loot_items)}"
+        assert sim_part.player.free_slots == 0, "Slot should be used up"
+        assert len(sim_part.player.loot_failed) == total_items - 1, \
+            "Remaining items should fail"
+    print(f"  7h: Partial inventory: looted={len(sim_part.player.loot_items)}, "
+          f"failed={len(sim_part.player.loot_failed)}, "
+          f"slots={sim_part.player.free_slots} ✓")
+
+    # --- Test 7i: Sell requires vendor proximity ---
+    sim_sell = CombatSimulation(num_mobs=5, seed=42)
+    # Add fake items to inventory
+    for i in range(5):
+        sim_sell.player.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=5.0, inventory_type=0))
+    sim_sell.player.free_slots = INVENTORY_SLOTS - 5
+
+    # Selling far from vendor should fail
+    sim_sell.player.x = -9100.0  # far from any vendor
+    sim_sell.player.y = -200.0
+    sold = sim_sell.do_sell()
+    assert not sold, "Sell should fail when far from vendor"
+    assert sim_sell.player.free_slots == INVENTORY_SLOTS - 5, "Slots unchanged"
+
+    # Move near a vendor and sell
+    v = VENDOR_DATA[0]
+    sim_sell.player.x = v["x"] + 1.0
+    sim_sell.player.y = v["y"]
+    sold = sim_sell.do_sell()
+    assert sold, "Sell should succeed near vendor"
+    assert sim_sell.player.free_slots == INVENTORY_SLOTS, \
+        f"Sell should restore to {INVENTORY_SLOTS}, got {sim_sell.player.free_slots}"
+    assert sim_sell.player.copper == 50, f"Expected 50 copper (5×10), got {sim_sell.player.copper}"
+    assert len(sim_sell.player.inventory) == 0, "Inventory should be empty"
+
+    sold_again = sim_sell.do_sell()
+    assert not sold_again, "Sell should fail when inventory is already empty"
+    print(f"  7i: Sell at vendor: copper={sim_sell.player.copper}, slots={sim_sell.player.free_slots} ✓")
+
+    # --- Test 7j: consume_events includes loot_items/loot_failed ---
+    sim_ev = CombatSimulation(num_mobs=50, seed=55, loot_db=loot_db)
+    sim_ev.player.free_slots = 0
+    wolf_ev = None
+    for mob in sim_ev.mobs:
+        if mob.template.entry == 299:
+            wolf_ev = mob
+            break
+    assert wolf_ev is not None
+    sim_ev.player.x = wolf_ev.x
+    sim_ev.player.y = wolf_ev.y + 1
+    wolf_ev.hp = 0
+    wolf_ev.alive = False
+    wolf_ev.looted = False
+    sim_ev.do_loot()
+    events = sim_ev.consume_events()
+    assert "loot_items" in events, "Events must include loot_items"
+    assert "loot_failed" in events, "Events must include loot_failed"
+    assert len(events["loot_failed"]) > 0, "Should have failed items"
+    # After consume, player lists should be cleared
+    assert len(sim_ev.player.loot_items) == 0, "loot_items should be cleared"
+    assert len(sim_ev.player.loot_failed) == 0, "loot_failed should be cleared"
+    print(f"  7j: consume_events: loot_items={events['loot_items']}, "
+          f"loot_failed={events['loot_failed']} ✓")
+
+    # Cleanup
+    import shutil
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    print("  PASSED\n")
+
+
+def test_vendor_system():
+    """Test vendor NPCs, navigation, sell mechanics, and dynamic spawning."""
+    import tempfile
+    import csv
+
+    print("=== Test 8: Vendor System ===")
+
+    sim = CombatSimulation(num_mobs=10, seed=42)
+
+    # --- Test 8a: Fallback vendors are spawned without creature_db ---
+    assert len(sim.vendors) == len(VENDOR_DATA), \
+        f"Expected {len(VENDOR_DATA)} fallback vendors, got {len(sim.vendors)}"
+    print(f"  8a: {len(sim.vendors)} fallback vendor NPCs spawned ✓")
+
+    # --- Test 8b: Vendors appear in nearby_mobs with vendor flag ---
+    sim.player.x = VENDOR_DATA[0]["x"]
+    sim.player.y = VENDOR_DATA[0]["y"]
+    nearby = sim.get_nearby_mobs()
+    vendor_entries = [m for m in nearby if m.get("vendor") == 1]
+    assert len(vendor_entries) > 0, "Vendors should appear in nearby_mobs"
+    assert vendor_entries[0]["attackable"] == 0, "Vendors should not be attackable"
+    print(f"  8b: {len(vendor_entries)} vendors visible in nearby_mobs ✓")
+
+    # --- Test 8c: Vendors appear in state dict ---
+    state = sim.get_state_dict()
+    vendor_in_state = [m for m in state["nearby_mobs"] if m.get("vendor") == 1]
+    assert len(vendor_in_state) > 0, "Vendors should appear in state dict"
+    print(f"  8c: Vendors in state dict: {len(vendor_in_state)} ✓")
+
+    # --- Test 8d: get_nearest_vendor ---
+    vendor = sim.get_nearest_vendor()
+    assert vendor is not None, "Should find a nearest vendor"
+    print(f"  8d: Nearest vendor: {vendor.name} ✓")
+
+    # --- Test 8e: do_move_to navigates toward target ---
+    sim2 = CombatSimulation(num_mobs=5, seed=42)
+    start_x, start_y = sim2.player.x, sim2.player.y
+    target_x, target_y = start_x + 10, start_y + 10
+    moved = sim2.do_move_to(target_x, target_y)
+    assert moved, "do_move_to should succeed"
+    old_dist = math.sqrt((target_x - start_x)**2 + (target_y - start_y)**2)
+    new_dist = math.sqrt((target_x - sim2.player.x)**2 + (target_y - sim2.player.y)**2)
+    assert new_dist < old_dist, "Player should be closer to target"
+    moved_dist = math.sqrt((sim2.player.x - start_x)**2 + (sim2.player.y - start_y)**2)
+    assert abs(moved_dist - sim2.MOVE_SPEED) < 0.01, \
+        f"Should move {sim2.MOVE_SPEED} units, moved {moved_dist:.2f}"
+    print(f"  8e: do_move_to: moved {moved_dist:.1f} units toward target ✓")
+
+    # --- Test 8f: Sell with inventory items gives copper ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p = sim3.player
+    p.inventory.append(InventoryItem(entry=1, name="Junk", quality=0,
+                                     sell_price=25, score=5.0, inventory_type=0))
+    p.inventory.append(InventoryItem(entry=2, name="Cloth", quality=1,
+                                     sell_price=50, score=10.0, inventory_type=0))
+    p.free_slots = INVENTORY_SLOTS - 2
+    v = VENDOR_DATA[0]
+    p.x = v["x"]
+    p.y = v["y"]
+    sold = sim3.do_sell()
+    assert sold, "Sell should succeed at vendor with items"
+    assert p.copper == 75, f"Expected 75 copper, got {p.copper}"
+    assert p.sell_copper == 75, f"Expected sell_copper=75, got {p.sell_copper}"
+    assert p.free_slots == INVENTORY_SLOTS
+    assert len(p.inventory) == 0
+    events = sim3.consume_events()
+    assert events["sell_copper"] == 75
+    assert p.sell_copper == 0
+    print(f"  8f: Sell copper: 25+50={events['sell_copper']} copper ✓")
+
+    # --- Test 8g: Vendors persist after reset ---
+    sim.reset()
+    assert len(sim.vendors) == len(VENDOR_DATA), "Vendors should be re-spawned after reset"
+    print(f"  8g: Vendors persist after reset ✓")
+
+    # --- Test 8h: Dynamic vendor spawning from creature_db ---
+    tmpdir = tempfile.mkdtemp()
+
+    # Create creature_template with one attackable mob and one vendor
+    tmpl_header = ['entry', 'name', 'minlevel', 'maxlevel', 'faction', 'npcflag',
+                   'detection_range', 'rank', 'BaseAttackTime', 'mingold', 'maxgold',
+                   'HealthModifier', 'DamageModifier', 'ExperienceModifier',
+                   'unit_class', 'unit_flags', 'type', 'lootid']
+    templates = [
+        # Attackable mob (wolf)
+        {'entry': '100', 'name': 'Test Wolf', 'minlevel': '1', 'maxlevel': '2',
+         'faction': '14', 'npcflag': '0', 'detection_range': '20',
+         'rank': '0', 'BaseAttackTime': '2000', 'mingold': '0', 'maxgold': '5',
+         'HealthModifier': '1.0', 'DamageModifier': '1.0', 'ExperienceModifier': '1.0',
+         'unit_class': '1', 'unit_flags': '0', 'type': '1', 'lootid': '100'},
+        # Vendor NPC (friendly, npcflag=128)
+        {'entry': '200', 'name': 'Test Merchant', 'minlevel': '5', 'maxlevel': '5',
+         'faction': '11', 'npcflag': '128', 'detection_range': '0',
+         'rank': '0', 'BaseAttackTime': '2000', 'mingold': '0', 'maxgold': '0',
+         'HealthModifier': '1.0', 'DamageModifier': '1.0', 'ExperienceModifier': '1.0',
+         'unit_class': '1', 'unit_flags': '0', 'type': '7', 'lootid': '0'},
+        # Another vendor with combined flags (vendor + repair = 128+4096)
+        {'entry': '201', 'name': 'Test Blacksmith', 'minlevel': '10', 'maxlevel': '10',
+         'faction': '55', 'npcflag': '4224', 'detection_range': '0',
+         'rank': '0', 'BaseAttackTime': '2000', 'mingold': '0', 'maxgold': '0',
+         'HealthModifier': '1.0', 'DamageModifier': '1.0', 'ExperienceModifier': '1.0',
+         'unit_class': '1', 'unit_flags': '0', 'type': '7', 'lootid': '0'},
+    ]
+    tmpl_path = os.path.join(tmpdir, 'creature_template.csv')
+    with open(tmpl_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=tmpl_header, delimiter=';',
+                           quotechar='"', quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for t in templates:
+            w.writerow(t)
+
+    # Create creature.csv with spawns near player start (-8921, -119)
+    spawn_header = ['guid', 'id1', 'map', 'position_x', 'position_y', 'position_z',
+                    'orientation', 'npcflag', 'unit_flags']
+    spawns = [
+        # Wolf spawn
+        {'guid': '1', 'id1': '100', 'map': '0',
+         'position_x': '-8900', 'position_y': '-110', 'position_z': '82',
+         'orientation': '0', 'npcflag': '0', 'unit_flags': '0'},
+        # Vendor spawn
+        {'guid': '2', 'id1': '200', 'map': '0',
+         'position_x': '-8910', 'position_y': '-105', 'position_z': '82',
+         'orientation': '0', 'npcflag': '0', 'unit_flags': '0'},
+        # Blacksmith spawn
+        {'guid': '3', 'id1': '201', 'map': '0',
+         'position_x': '-8905', 'position_y': '-115', 'position_z': '82',
+         'orientation': '0', 'npcflag': '0', 'unit_flags': '0'},
+    ]
+    spawn_path = os.path.join(tmpdir, 'creature.csv')
+    with open(spawn_path, 'w', newline='') as f:
+        w = csv.DictWriter(f, fieldnames=spawn_header, delimiter=';',
+                           quotechar='"', quoting=csv.QUOTE_ALL)
+        w.writeheader()
+        for s in spawns:
+            w.writerow(s)
+
+    from sim.creature_db import CreatureDB
+    db = CreatureDB(tmpdir, quiet=True)
+
+    # Verify vendor detection
+    assert db.templates[200].is_vendor, "Test Merchant should be a vendor"
+    assert db.templates[201].is_vendor, "Test Blacksmith should be a vendor (128 in 4224)"
+    assert not db.templates[100].is_vendor, "Test Wolf should not be a vendor"
+    assert db.templates[100].is_attackable, "Test Wolf should be attackable"
+    assert not db.templates[200].is_attackable, "Test Merchant should not be attackable"
+
+    total_vendor_spawns = sum(len(v) for v in db.vendor_index.values())
+    assert total_vendor_spawns == 2, f"Expected 2 vendor spawns, got {total_vendor_spawns}"
+    print(f"  8h: CreatureDB: {total_vendor_spawns} vendor spawns detected ✓")
+
+    # --- Test 8i: Dynamic vendors in CombatSimulation ---
+    sim_db = CombatSimulation(seed=42, creature_db=db)
+    # With creature_db, vendors come from chunks not VENDOR_DATA
+    assert len(sim_db.vendors) >= 2, \
+        f"Expected ≥2 dynamic vendors, got {len(sim_db.vendors)}"
+    vendor_names = {v.name for v in sim_db.vendors}
+    assert "Test Merchant" in vendor_names, "Test Merchant should be spawned"
+    assert "Test Blacksmith" in vendor_names, "Test Blacksmith should be spawned"
+    print(f"  8i: Dynamic vendors from creature_db: {sorted(vendor_names)} ✓")
+
+    # --- Test 8j: Sell works at dynamically spawned vendor ---
+    sim_db.player.inventory.append(InventoryItem(
+        entry=1, name="Junk", quality=0, sell_price=30, score=5.0, inventory_type=0))
+    sim_db.player.free_slots = INVENTORY_SLOTS - 1
+    nv = sim_db.get_nearest_vendor()
+    sim_db.player.x = nv.x
+    sim_db.player.y = nv.y
+    sold = sim_db.do_sell()
+    assert sold, "Sell should work at dynamic vendor"
+    assert sim_db.player.copper == 30, f"Expected 30 copper, got {sim_db.player.copper}"
+    print(f"  8j: Sell at dynamic vendor: copper={sim_db.player.copper} ✓")
+
+    # --- Test 8k: items_sold in consume_events ---
+    sim_items = CombatSimulation(num_mobs=5, seed=42)
+    p_items = sim_items.player
+    for i in range(10):
+        p_items.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=5, score=3.0, inventory_type=0))
+    p_items.free_slots = INVENTORY_SLOTS - 10
+    v = VENDOR_DATA[0]
+    p_items.x = v["x"]
+    p_items.y = v["y"]
+    sold = sim_items.do_sell()
+    assert sold, "Sell should succeed"
+    events = sim_items.consume_events()
+    assert events["items_sold"] == 10, f"Expected 10 items_sold, got {events['items_sold']}"
+    assert p_items.items_sold == 0, "items_sold should be cleared after consume"
+    print(f"  8k: items_sold in consume_events: {events['items_sold']} ✓")
+
+    # --- Test 8l: AI-driven sell via WoWSimEnv (action 8 triggers vendor nav) ---
+    env = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env.reset()
+    # Fill inventory with items
+    for i in range(20):
+        env.sim.player.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=3.0, inventory_type=0))
+    env.sim.player.free_slots = INVENTORY_SLOTS - 20
+
+    # Action 8 should activate vendor navigation
+    assert not env._vendor_nav_active, "Should start inactive"
+    obs, reward, done, trunc, info = env.step(8)
+    assert env._vendor_nav_active or env.sim.player.free_slots == INVENTORY_SLOTS, \
+        "Action 8 should activate vendor nav (or sell if already at vendor)"
+
+    # Run steps until vendor nav completes (max 500 steps)
+    for _ in range(500):
+        obs, reward, done, trunc, info = env.step(0)  # noop while override navigates
+        if done or trunc:
+            break
+        if env.sim.player.free_slots == INVENTORY_SLOTS:
+            break  # sold!
+
+    assert env.sim.player.free_slots == INVENTORY_SLOTS, \
+        f"Bot should have sold all items, but free_slots={env.sim.player.free_slots}"
+    assert not env._vendor_nav_active, "Vendor nav should be deactivated after sell"
+    assert env.sim.player.copper > 0, "Should have earned copper from selling"
+    print(f"  8l: AI-driven sell: copper={env.sim.player.copper}, "
+          f"slots={env.sim.player.free_slots} ✓")
+
+    # --- Test 8m: Sell reward scales with inventory fullness ---
+    env2 = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env2.reset()
+    # Sell with full inventory (30 items)
+    for i in range(INVENTORY_SLOTS):
+        env2.sim.player.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=3.0, inventory_type=0))
+    env2.sim.player.free_slots = 0
+    # Place player right at vendor for immediate sell
+    v = VENDOR_DATA[0]
+    env2.sim.player.x = v["x"]
+    env2.sim.player.y = v["y"]
+    env2.last_state = env2.sim.get_state_dict()
+    obs, reward_full, done, trunc, info = env2.step(8)
+    # fullness = 30/30 = 1.0 → sell_reward = 1.0 + 7.0 = 8.0, plus copper bonus
+    assert reward_full > 5.0, f"Full sell should give big reward, got {reward_full:.2f}"
+
+    # Now sell with nearly empty inventory (2 items)
+    obs, _ = env2.reset()
+    env2.sim.player.inventory.append(InventoryItem(
+        entry=1, name="Junk", quality=0, sell_price=5, score=3.0, inventory_type=0))
+    env2.sim.player.inventory.append(InventoryItem(
+        entry=2, name="Junk2", quality=0, sell_price=5, score=3.0, inventory_type=0))
+    env2.sim.player.free_slots = INVENTORY_SLOTS - 2
+    env2.sim.player.x = v["x"]
+    env2.sim.player.y = v["y"]
+    env2.last_state = env2.sim.get_state_dict()
+    obs, reward_small, done, trunc, info = env2.step(8)
+    # fullness = 2/30 ≈ 0.067 → sell_reward = 1.0 + 7.0*0.067 ≈ 1.47, plus tiny copper
+    assert reward_small < reward_full, \
+        f"Small sell reward ({reward_small:.2f}) should be less than full ({reward_full:.2f})"
+    print(f"  8m: Sell rewards: full={reward_full:.2f}, small={reward_small:.2f} ✓")
+
     # Cleanup
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)
@@ -539,4 +926,5 @@ if __name__ == "__main__":
     test_combat_scenario()
     test_level_system()
     test_loot_tables()
+    test_vendor_system()
     print("=== ALL TESTS PASSED ===")

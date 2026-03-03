@@ -83,6 +83,7 @@ SKIP_CREATURE_TYPES = frozenset({
 })
 
 UNIT_FLAG_NON_ATTACKABLE = 0x00000002
+UNIT_NPC_FLAG_VENDOR = 0x00000080     # 128 — NPC sells items
 
 
 # ─── Data Classes ────────────────────────────────────────────────────
@@ -126,6 +127,19 @@ class CreatureTemplate:
         return True
 
     @property
+    def is_vendor(self) -> bool:
+        """Check if this NPC is a vendor the player can sell items to."""
+        if not (self.npcflag & UNIT_NPC_FLAG_VENDOR):
+            return False
+        if self.faction not in FRIENDLY_FACTIONS:
+            return False
+        if self.creature_type in SKIP_CREATURE_TYPES:
+            return False
+        if self.min_level <= 0:
+            return False
+        return True
+
+    @property
     def attack_speed_ticks(self) -> int:
         """Convert BaseAttackTime (ms) to sim ticks (1 tick = 500ms)."""
         return max(1, self.base_attack_time // 500)
@@ -150,6 +164,7 @@ class CreatureDB:
     def __init__(self, data_dir: str, quiet: bool = False):
         self.templates: dict[int, CreatureTemplate] = {}
         self.spatial_index: dict[tuple[int, int, int], list[SpawnPoint]] = {}
+        self.vendor_index: dict[tuple[int, int, int], list[SpawnPoint]] = {}
         self._quiet = quiet
 
         tmpl_path = os.path.join(data_dir, 'creature_template.csv')
@@ -160,8 +175,10 @@ class CreatureDB:
 
         if not quiet:
             total_spawns = sum(len(v) for v in self.spatial_index.values())
+            total_vendors = sum(len(v) for v in self.vendor_index.values())
             print(f"  [CreatureDB] {len(self.templates)} templates, "
                   f"{total_spawns} attackable spawns, "
+                  f"{total_vendors} vendor spawns, "
                   f"{len(self.spatial_index)} chunks")
 
     def _load_templates(self, path: str):
@@ -198,15 +215,7 @@ class CreatureDB:
             for row in reader:
                 entry = int(row['id1'])
                 tmpl = self.templates.get(entry)
-                if tmpl is None or not tmpl.is_attackable:
-                    continue
-
-                # Spawn-level overrides: skip if spawn has NPC flags or non-attackable
-                spawn_npcflag = int(row.get('npcflag', 0))
-                spawn_unit_flags = int(row.get('unit_flags', 0))
-                if spawn_npcflag != 0:
-                    continue
-                if spawn_unit_flags & UNIT_FLAG_NON_ATTACKABLE:
+                if tmpl is None:
                     continue
 
                 map_id = int(row['map'])
@@ -224,9 +233,18 @@ class CreatureDB:
                 )
 
                 chunk_key = (map_id, int(x // CHUNK_SIZE), int(y // CHUNK_SIZE))
-                if chunk_key not in self.spatial_index:
-                    self.spatial_index[chunk_key] = []
-                self.spatial_index[chunk_key].append(sp)
+
+                if tmpl.is_vendor:
+                    self.vendor_index.setdefault(chunk_key, []).append(sp)
+                elif tmpl.is_attackable:
+                    # Spawn-level overrides: skip if spawn has NPC flags or non-attackable
+                    spawn_npcflag = int(row.get('npcflag', 0))
+                    spawn_unit_flags = int(row.get('unit_flags', 0))
+                    if spawn_npcflag != 0:
+                        continue
+                    if spawn_unit_flags & UNIT_FLAG_NON_ATTACKABLE:
+                        continue
+                    self.spatial_index.setdefault(chunk_key, []).append(sp)
 
     # ─── Stat Calculation ────────────────────────────────────────
 

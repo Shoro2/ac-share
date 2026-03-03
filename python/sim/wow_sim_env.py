@@ -18,7 +18,25 @@ import os
 import random
 from typing import Optional
 
-from sim.combat_sim import CombatSimulation, SPELLS
+from sim.combat_sim import CombatSimulation, SPELLS, INVENTORY_SLOTS
+
+# Reward per successfully looted item, indexed by WoW item quality
+QUALITY_LOOT_REWARD = {
+    0: 0.1,   # Poor (grey)
+    1: 0.3,   # Common (white)
+    2: 1.0,   # Uncommon (green)
+    3: 3.0,   # Rare (blue)
+    4: 5.0,   # Epic (purple)
+}
+
+# Penalty when an item can't be picked up (inventory full), same scale
+QUALITY_FAIL_PENALTY = {
+    0: 0.1,
+    1: 0.3,
+    2: 1.0,
+    3: 3.0,
+    4: 5.0,
+}
 
 
 class WoWSimEnv(gym.Env):
@@ -98,6 +116,9 @@ class WoWSimEnv(gym.Env):
         self._ep_loot = 0
         self._ep_kills = 0
         self._ep_damage_dealt = 0
+        self._ep_loot_items = 0
+        self._ep_loot_failed = 0
+        self._ep_sell_copper = 0
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
@@ -105,6 +126,7 @@ class WoWSimEnv(gym.Env):
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
         self._steps_since_xp = 0          # stall detector: reset episode after 100k steps without XP
+        self._vendor_nav_active = False    # True while bot is walking to vendor / selling
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -120,6 +142,9 @@ class WoWSimEnv(gym.Env):
         self._ep_loot = 0
         self._ep_kills = 0
         self._ep_damage_dealt = 0
+        self._ep_loot_items = 0
+        self._ep_loot_failed = 0
+        self._ep_sell_copper = 0
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
@@ -127,6 +152,7 @@ class WoWSimEnv(gym.Env):
         self._ep_exploration_reward = 0.0
         self._ep_levels_gained = 0
         self._steps_since_xp = 0
+        self._vendor_nav_active = False
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
 
@@ -163,16 +189,33 @@ class WoWSimEnv(gym.Env):
         target_dead = self.sim.target is not None and not self.sim.target.alive
         is_casting = p.is_casting
 
-        # Vendor mode (simplified — no vendors in sim, just sell action)
-        vendor_mode = False
-        if p.free_slots < 2 and not in_combat:
-            vendor_mode = True
-            override_action = 8  # sell
+        # Vendor navigation: AI triggers action 8 → bot auto-walks to vendor and sells
+        # Once _vendor_nav_active is set, override handles the multi-step journey.
+        # Combat interrupts vendor navigation (aggro takes priority).
+        if action == 8 and not in_combat and not self._vendor_nav_active:
+            self._vendor_nav_active = True  # AI decided to sell
 
-        if not vendor_mode:
-            if action == 8:
-                override_action = 0  # block sell when not needed
+        if in_combat and self._vendor_nav_active:
+            self._vendor_nav_active = False  # combat cancels vendor trip
 
+        if self._vendor_nav_active and not in_combat:
+            vendor = self.sim.get_nearest_vendor()
+            if vendor:
+                vdx = vendor.x - p.x
+                vdy = vendor.y - p.y
+                vendor_dist = math.sqrt(vdx * vdx + vdy * vdy)
+                if vendor_dist <= self.sim.SELL_RANGE:
+                    override_action = 8  # close enough to sell
+                    self._vendor_nav_active = False  # will sell this tick
+                else:
+                    self.sim.do_move_to(vendor.x, vendor.y)
+                    override_action = 0  # movement handled
+            else:
+                self._vendor_nav_active = False  # no vendor found, abort
+        elif action == 8 and not self._vendor_nav_active:
+            override_action = 0  # block raw sell action (must go through nav)
+
+        if not self._vendor_nav_active or in_combat:
             # Aggro check: in combat but no living target
             if in_combat and not target_alive:
                 aggro_mob = None
@@ -296,16 +339,33 @@ class WoWSimEnv(gym.Env):
         if events["equipped_upgrade"]:
             reward += 3.0
 
-        # 7. Loot (capped at 3.0)
+        # 7. Loot — quality-based reward per item, penalty when inventory full
         copper = events["loot_copper"]
         score = events["loot_score"]
-        if copper > 0 or score > 0:
-            loot_r = (copper * 0.01) + (score * 0.2)
-            reward += min(loot_r, 3.0)
+        loot_items = events.get("loot_items", [])
+        loot_failed = events.get("loot_failed", [])
+        for q in loot_items:
+            reward += QUALITY_LOOT_REWARD.get(q, 0.3)
+        for q in loot_failed:
+            reward -= QUALITY_FAIL_PENALTY.get(q, 0.3)
+        if copper > 0:
+            reward += min(copper * 0.01, 1.0)
+        self._ep_loot_items += len(loot_items)
+        self._ep_loot_failed += len(loot_failed)
 
-        # 8. Sold items (free_slots increased)
-        if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
-            reward += 2.0
+        # 8. Sold items at vendor — reward scales with inventory fullness
+        #    Selling a full inventory (30/30 items) = massive bonus
+        #    Selling nearly empty inventory (2/30 items) = barely worth the trip
+        sell_copper = events.get("sell_copper", 0)
+        items_sold = events.get("items_sold", 0)
+        if items_sold > 0:
+            fullness = items_sold / INVENTORY_SLOTS  # 0.0 to 1.0
+            # Base reward 1.0 at minimal sell, up to 8.0 at full inventory
+            sell_reward = 1.0 + 7.0 * fullness
+            reward += sell_reward
+        if sell_copper > 0:
+            reward += min(sell_copper * 0.005, 2.0)
+            self._ep_sell_copper += sell_copper
 
         # 9. Exploration (new area/zone/map — naturally capped, can't be farmed)
         new_areas = events.get("new_areas", 0)
@@ -374,6 +434,9 @@ class WoWSimEnv(gym.Env):
                 "rw_explore": self._ep_exploration_reward,
                 "levels_gained": self._ep_levels_gained,
                 "final_level": self.sim.player.level,
+                "loot_items": self._ep_loot_items,
+                "loot_failed": self._ep_loot_failed,
+                "sell_copper": self._ep_sell_copper,
             }
             info["episode_stats"] = ep_stats
 
