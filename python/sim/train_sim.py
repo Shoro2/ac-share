@@ -259,7 +259,7 @@ def main():
                 ent_coef=0.1,
                 clip_range=0.2,
                 n_epochs=4,
-                gamma=0.99,
+                gamma=0.97,
                 gae_lambda=0.95,
             )
     except Exception as e:
