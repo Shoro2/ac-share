@@ -490,7 +490,7 @@ class CombatSimulation:
     MOB_LEASH_RANGE = 60.0    # mob returns home after this distance from spawn
     OOC_DELAY_TICKS = 12      # 6 seconds out of combat before regen starts
     HP_REGEN_PER_TICK = 0.67  # 8 HP per 6 seconds = ~0.67/tick (OOC only)
-    MANA_REGEN_PER_TICK = 2.75  # 33 mana per 6 seconds ≈ 2.75/tick (not casting)
+    MANA_REGEN_PCT_PER_TICK = 0.02  # 2% of max_mana per tick (not casting)
     RESPAWN_TICKS = 120       # 60 seconds = 120 ticks
     MOB_SPEED = 1.0           # units per tick when chasing
     LOOT_CHANCE = 0.7         # probability of getting loot
@@ -1449,9 +1449,9 @@ class CombatSimulation:
                 p.hp = min(p.max_hp, p.hp + heal)
                 p.ooc_regen_accumulator -= heal
 
-        # Mana regen: when not casting (both in and out of combat)
+        # Mana regen: percentage of max_mana when not casting (both in and out of combat)
         if not p.is_casting:
-            p.mana_regen_accumulator += self.MANA_REGEN_PER_TICK
+            p.mana_regen_accumulator += p.max_mana * self.MANA_REGEN_PCT_PER_TICK
             if p.mana_regen_accumulator >= 1.0:
                 regen = int(p.mana_regen_accumulator)
                 p.mana = min(p.max_mana, p.mana + regen)
