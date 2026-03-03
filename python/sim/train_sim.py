@@ -64,6 +64,14 @@ class GameplayMetricsCallback(BaseCallback):
     Der SummaryWriter wird lazy erstellt sobald SB3 seinen Logger hat.
     """
 
+    # Keys from SB3 that we mirror into our own SummaryWriter
+    _TRAIN_KEYS = [
+        "train/approx_kl", "train/clip_fraction", "train/clip_range",
+        "train/entropy_loss", "train/explained_variance",
+        "train/learning_rate", "train/loss",
+        "train/policy_gradient_loss", "train/value_loss",
+    ]
+
     def __init__(self, verbose=0):
         super().__init__(verbose)
         self._writer = None
@@ -111,12 +119,11 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_length", stats["length"], step)
                 self._writer.add_scalar("gameplay/ep_kills", stats["kills"], step)
                 self._writer.add_scalar("gameplay/ep_xp", stats["xp"], step)
-                self._writer.add_scalar("gameplay/ep_loot_copper", stats["loot"], step)
                 self._writer.add_scalar("gameplay/ep_damage_dealt", stats["damage_dealt"], step)
                 self._writer.add_scalar("gameplay/ep_death", stats["death"], step)
+                self._writer.add_scalar("gameplay/ep_idle_ratio", stats.get("idle_ratio", 0), step)
                 self._writer.add_scalar("gameplay/ep_areas_explored", stats.get("areas_explored", 0), step)
                 self._writer.add_scalar("gameplay/ep_zones_explored", stats.get("zones_explored", 0), step)
-                self._writer.add_scalar("gameplay/ep_maps_explored", stats.get("maps_explored", 0), step)
                 self._writer.add_scalar("gameplay/ep_levels_gained", stats.get("levels_gained", 0), step)
                 self._writer.add_scalar("gameplay/ep_final_level", stats.get("final_level", 1), step)
                 self._writer.add_scalar("gameplay/ep_loot_items", stats.get("loot_items", 0), step)
@@ -143,18 +150,33 @@ class GameplayMetricsCallback(BaseCallback):
             if self.verbose:
                 areas = stats.get('areas_explored', 0)
                 zones = stats.get('zones_explored', 0)
-                maps = stats.get('maps_explored', 0)
                 dmg = stats.get('damage_dealt', 0)
                 sold = stats.get('sell_copper', 0)
                 quests = stats.get('quests_completed', 0)
+                idle = stats.get('idle_ratio', 0)
                 print(f"  [Episode {self._episode_count}] "
                       f"reward={stats['reward']:.1f} kills={stats['kills']} "
                       f"xp={stats['xp']} deaths={stats['death']} "
-                      f"dmg={dmg} areas={areas} "
+                      f"dmg={dmg} areas={areas} idle={idle:.0%} "
                       f"sold={sold} quests={quests} "
                       f"len={stats['length']}")
 
         return True
+
+    def _on_rollout_end(self) -> None:
+        """Mirror SB3 training metrics into our SummaryWriter after each update."""
+        if not self._writer:
+            return
+        step = self.num_timesteps
+        name_to_value = getattr(self.logger, "name_to_value", {})
+        for key in self._TRAIN_KEYS:
+            if key in name_to_value:
+                self._writer.add_scalar(key, name_to_value[key], step)
+        # time/ metrics
+        for tkey in ("time/fps", "time/iterations", "time/time_elapsed",
+                      "time/total_timesteps"):
+            if tkey in name_to_value:
+                self._writer.add_scalar(tkey, name_to_value[tkey], step)
 
     def _on_training_end(self) -> None:
         if self._writer:

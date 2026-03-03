@@ -143,6 +143,7 @@ class WoWSimEnv(gym.Env):
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
         self._steps_since_kill_xp = 0      # stall detector: reset episode after 3k steps without kill XP
+        self._idle_steps = 0              # noop-without-casting steps (idle time tracking)
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
         self._quest_nav_active = False     # True while bot is walking to quest NPC
 
@@ -172,6 +173,7 @@ class WoWSimEnv(gym.Env):
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
         self._steps_since_kill_xp = 0
+        self._idle_steps = 0
         self._prev_target_dist = None       # for approach shaping
         self._vendor_nav_active = False
         self._quest_nav_active = False
@@ -349,6 +351,7 @@ class WoWSimEnv(gym.Env):
         # 2. Idle-Penalty (Noop without casting = wasted time)
         if override_action == 0 and not is_casting_now:
             reward -= 0.005
+            self._idle_steps += 1
 
         # 3. Damage-Reward (gradient toward kills — can't be faked)
         if (t_exists > 0.5
@@ -501,6 +504,7 @@ class WoWSimEnv(gym.Env):
                 "loot": self._ep_loot,
                 "damage_dealt": self.sim.damage_dealt,
                 "death": 1 if self.sim.player.hp <= 0 else 0,
+                "idle_ratio": self._idle_steps / max(1, self._step_count),
                 "areas_explored": self._ep_areas,
                 "zones_explored": self._ep_zones,
                 "maps_explored": self._ep_maps,
