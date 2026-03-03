@@ -23,6 +23,13 @@ ac-share/
 ├── data/                        <- WoW game data files
 │   ├── creature.csv             <- All NPC/mob spawns (AzerothCore DB export, 11 MB)
 │   ├── creature_template.csv    <- NPC stat templates (3.9 MB)
+│   ├── creature_loot_template.csv <- Creature loot tables (AzerothCore DB export)
+│   ├── creature_queststarterr.csv <- Quest giver NPC->quest mapping
+│   ├── creature_questender.csv  <- Quest ender NPC->quest mapping
+│   ├── item_template.csv        <- Item data (quality, sell price, stats)
+│   ├── quest_template.csv       <- Quest definitions (~9.5K quests)
+│   ├── quest_template_addon.csv <- Quest chain info (PrevQuestID, NextQuestID)
+│   ├── reference_loot_template.csv <- Shared loot reference tables
 │   ├── spell_dbc.csv            <- Spell data export (30 MB)
 │   ├── map_dbc.csv              <- Map metadata from DBC files
 │   ├── 000.vmtree               <- VMAP binary index for collision/LOS
@@ -35,7 +42,7 @@ ac-share/
 │   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
 │   │   ├── train_sim.py         <- PPO training on the sim (5 bots, no server needed)
 │   │   ├── test_sim.py          <- Validation tests (9 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests)
-│   │   ├── quest_db.py          <- Quest system: definitions, objectives, NPC data, quest chains
+│   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
 │   │   ├── loot_db.py           <- AzerothCore CSV loot table loader (creature_loot_template + item_template)
@@ -292,23 +299,34 @@ Simulates the complete WoW combat system in pure Python:
 
 ### quest_db.py — Quest System
 
-Quest definitions, objective tracking, and quest NPC data for Northshire Valley:
+Loads quest definitions from AzerothCore CSV exports with hardcoded fallback:
 - **Quest Types**: KILL (kill N creatures), COLLECT (loot N items from creatures), EXPLORE (visit location)
-- **Hardcoded Quests** (5 quests, 3 NPCs) — real WoW Northshire Valley quests:
+- **CSV Loading** (4 CSV files): `quest_template.csv`, `quest_template_addon.csv`, `creature_queststarter[r].csv`, `creature_questender.csv`
+- **~9500 quests** loaded from CSV (1862 kill, 4961 collect objectives), ~3170 quest NPCs with positions from creature.csv
+- **QuestXP Approximation**: Anchor-based interpolation of QuestXP.dbc (quest level × difficulty index → XP)
+- **Objective Parsing**: KILL from `RequiredNpcOrGo1-4`, COLLECT from `RequiredItemId1-6` (source creature = heuristic from RequiredNpcOrGo)
+- **Chain Info**: `PrevQuestID`/`NextQuestID` from `quest_template_addon.csv`
+- **NPC Positions**: Auto-loaded from `creature.csv` + names from `creature_template.csv`
+- **Hardcoded Fallback** (5 quests, 3 NPCs) when CSVs not available:
   - Quest 33: "Wolves Across the Border" — Kill 10 Young Wolves (XP: 250)
   - Quest 7: "Kobold Camp Cleanup" — Kill 10 Kobold Vermin (XP: 450, chain from 33)
   - Quest 15: "Investigate Echo Ridge" — Kill 10 Kobold Workers (XP: 675, chain from 7)
   - Quest 100001: "Scout the Vineyards" — Explore location (XP: 170)
   - Quest 100002: "Diseased Wolf Pelts" — Collect 6 pelts from wolves (XP: 360)
-- **Quest NPCs**: Deputy Willem (entry 823), Marshal McBride (entry 197), Brother Neals (entry 6774)
-- **Quest Chains**: 33→7→15 (wolves → kobold vermin → kobold workers) with level requirements
+- **Custom Quests Preserved**: IDs >= 100000 always kept (not replaced by CSV)
 - **Data Classes**: `QuestTemplate`, `QuestObjective`, `QuestReward`, `QuestProgress`, `QuestNPCData`
-- **`QuestDB`**: Follows CreatureDB/LootDB pattern — hardcoded data + optional CSV extension
+- **`QuestDB`**: Follows CreatureDB/LootDB pattern — CSV loading + hardcoded fallback
 - **Integration**: `CombatSimulation(quest_db=qdb)` enables quest NPCs, objective tracking, and quest events
 
 **Initialization**: `QuestDB(data_dir=None, quiet=False)`
-- Without `data_dir`: Uses 5 hardcoded Northshire quests
-- With `data_dir`: Placeholder for future `quest_template.csv` loading
+- Without `data_dir`: Uses 5 hardcoded Northshire quests (backwards compatible)
+- With `data_dir`: Loads from CSV, keeps custom quests (ID >= 100000) — check `loaded` property
+
+**Required CSV Exports** (semicolon-delimited, double-quote enclosed):
+- `quest_template.csv`: ID, QuestType, QuestLevel, MinLevel, ..., RequiredNpcOrGo1-4, RequiredNpcOrGoCount1-4, RequiredItemId1-6, RequiredItemCount1-6, ...
+- `quest_template_addon.csv`: ID, MaxLevel, AllowableClasses, ..., PrevQuestID, NextQuestID, ...
+- `creature_queststarter.csv` (or `creature_queststarterr.csv`): id, quest
+- `creature_questender.csv`: id, quest
 
 ### creature_db.py — Creature Database Loader
 
@@ -439,7 +457,7 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-9 test functions:
+10 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting
 2. **test_gym_env()**: Gymnasium spaces validation — Box(23,) obs, Discrete(12) actions
 3. **test_random_episode()**: 1000-step episode with random actions
@@ -448,7 +466,8 @@ Interactive map visualization for analyzing training episodes:
 6. **test_level_system()**: XP formulas, level-up mechanics, stat scaling, multi-level-up
 7. **test_loot_tables()**: LootDB loading, item score computation, group rolling distribution, sim integration, upgrade detection, fallback without DB
 8. **test_vendor_system()**: Vendor NPCs, navigation, sell mechanics, dynamic spawning, sell rewards
-9. **test_quest_system()**: QuestDB loading, chain prerequisites, level requirements, kill/collect/explore objectives, quest NPC interaction, turn-in rewards, consume_events, reset, env integration
+9. **test_quest_system()**: QuestDB loading (hardcoded), chain prerequisites, level requirements, kill/collect/explore objectives, quest NPC interaction, turn-in rewards, consume_events, reset, env integration
+10. **test_quest_csv_loading()**: QuestDB CSV loading from AzerothCore exports, objective parsing (kill/collect), chain info, QuestXP approximation, NPC position loading, fallback behavior
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -680,7 +699,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **Exploration System** | done | 3-tier tracking (Area/Zone/Map), rewards, TensorBoard metrics |
 | **CreatureDB (Full World)** | done | CSV loader, spatial index, stat interpolation, attackability checks |
 | **Episode Logger** | done | Zero-I/O JSONL logger, trail data, events, mob snapshots |
-| **Quest System** | done | 5 Northshire quests (kill/collect/explore), quest NPCs, quest chains, obs/action space extended, rewards, TensorBoard metrics |
+| **Quest System** | done | CSV loading (~9500 quests from AzerothCore DB) + 5 hardcoded fallback quests, quest NPCs (~3170 from CSV), quest chains, obs/action space extended, rewards, TensorBoard metrics |
 | **Visualization** | done | Interactive map viewer with episode slider, zoom, bot filters, event log |
 | **Override Logic** | done | Vendor, aggro, cast guard, loot, range mgmt — in both envs |
 | **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, override logic, shaped rewards |
@@ -697,7 +716,8 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
 | **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
 | **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain. Loot tables provide real item data but sell copper is not tracked. |
-| **Loot table CSVs not yet exported** | Sim | low | LootDB system ready but needs `creature_loot_template.csv`, `item_template.csv` CSV exports from AzerothCore DB. Falls back to random loot without them. `creature_template.csv` should be re-exported with `lootid` column. |
+| **QuestXP.dbc not available** | Sim | low | Quest XP rewards are approximated via anchor-based interpolation. Exact values would need QuestXP.dbc extraction from WoW client. |
+| **COLLECT quest source creatures** | Sim | low | CSV-loaded COLLECT objectives use first RequiredNpcOrGo as source creature heuristic. Some quests may have wrong or missing source creatures — would need loot table cross-reference for accuracy. |
 | **No training artifacts** | Training | info | Neither models/ nor logs/ directories exist currently — no completed training run stored |
 
 ## Roadmap

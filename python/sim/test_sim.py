@@ -1170,6 +1170,97 @@ def test_quest_system():
     print("  PASSED\n")
 
 
+def test_quest_csv_loading():
+    """Test quest system CSV loading from AzerothCore exports."""
+    print("=== Test 10: Quest CSV Loading ===")
+
+    from sim.quest_db import QuestDB, QuestObjectiveType, _estimate_quest_xp
+
+    data_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
+    if not os.path.isfile(os.path.join(data_dir, 'quest_template.csv')):
+        print("  SKIPPED (quest_template.csv not found)\n")
+        return
+
+    # --- Test 10a: CSV loading ---
+    qdb = QuestDB(data_dir=data_dir, quiet=True)
+    assert qdb.loaded, "QuestDB should report loaded=True with CSVs"
+    assert len(qdb.templates) > 100, \
+        f"Expected >100 quests from CSV, got {len(qdb.templates)}"
+    assert len(qdb.npc_data) > 10, \
+        f"Expected >10 quest NPCs, got {len(qdb.npc_data)}"
+    print(f"  10a: CSV loaded: {len(qdb.templates)} quests, "
+          f"{len(qdb.npc_data)} NPCs ✓")
+
+    # --- Test 10b: Custom quests preserved ---
+    assert 100001 in qdb.templates, "Custom quest 100001 should be preserved"
+    assert 100002 in qdb.templates, "Custom quest 100002 should be preserved"
+    print(f"  10b: Custom quests 100001, 100002 preserved ✓")
+
+    # --- Test 10c: Real quest 7 loaded from CSV ---
+    assert 7 in qdb.templates, "Quest 7 should be loaded from CSV"
+    qt7 = qdb.templates[7]
+    assert qt7.title == "Kobold Camp Cleanup", \
+        f"Quest 7 title: {qt7.title}"
+    assert qt7.quest_level == 2, f"Quest 7 level: {qt7.quest_level}"
+    assert len(qt7.objectives) > 0, "Quest 7 should have objectives"
+    assert qt7.objectives[0].obj_type == QuestObjectiveType.KILL, \
+        "Quest 7 should have KILL objective"
+    assert qt7.giver_entry > 0, "Quest 7 should have a giver NPC"
+    assert qt7.ender_entry > 0, "Quest 7 should have an ender NPC"
+    print(f"  10c: Quest 7 '{qt7.title}': L{qt7.quest_level}, "
+          f"giver={qt7.giver_entry}, ender={qt7.ender_entry}, "
+          f"obj={qt7.objectives[0].target}x{qt7.objectives[0].count} ✓")
+
+    # --- Test 10d: Chain info from quest_template_addon ---
+    # Quest 7 should have a PrevQuestID from addon
+    # (the exact chain depends on DB version, just check it's loaded)
+    quests_with_prev = sum(1 for qt in qdb.templates.values() if qt.prev_quest > 0)
+    quests_with_next = sum(1 for qt in qdb.templates.values() if qt.next_quest > 0)
+    print(f"  10d: Chain info: {quests_with_prev} with prev_quest, "
+          f"{quests_with_next} with next_quest ✓")
+
+    # --- Test 10e: Giver/ender maps ---
+    total_givers = len(qdb.giver_map)
+    total_enders = len(qdb.ender_map)
+    assert total_givers > 10, f"Expected >10 giver NPCs, got {total_givers}"
+    assert total_enders > 10, f"Expected >10 ender NPCs, got {total_enders}"
+    print(f"  10e: Maps: {total_givers} giver NPCs, {total_enders} ender NPCs ✓")
+
+    # --- Test 10f: QuestXP approximation ---
+    # Difficulty 5, level 2 should give ~250 XP
+    xp_l2_d5 = _estimate_quest_xp(2, 5)
+    assert 200 <= xp_l2_d5 <= 300, f"Expected ~250 XP for L2/D5, got {xp_l2_d5}"
+    # Difficulty 0 and 9 always return 0
+    assert _estimate_quest_xp(10, 0) == 0, "D0 should give 0 XP"
+    assert _estimate_quest_xp(10, 9) == 0, "D9 should give 0 XP"
+    # Higher level = more XP
+    xp_l10 = _estimate_quest_xp(10, 5)
+    xp_l20 = _estimate_quest_xp(20, 5)
+    assert xp_l20 > xp_l10, f"L20 XP ({xp_l20}) should be > L10 ({xp_l10})"
+    print(f"  10f: QuestXP approx: L2/D5={xp_l2_d5}, L10/D5={xp_l10}, "
+          f"L20/D5={xp_l20} ✓")
+
+    # --- Test 10g: Quest objectives parsed correctly ---
+    quests_with_kill = sum(1 for qt in qdb.templates.values()
+                          if any(o.obj_type == QuestObjectiveType.KILL
+                                 for o in qt.objectives))
+    quests_with_collect = sum(1 for qt in qdb.templates.values()
+                             if any(o.obj_type == QuestObjectiveType.COLLECT
+                                    for o in qt.objectives))
+    quests_with_obj = sum(1 for qt in qdb.templates.values() if qt.objectives)
+    print(f"  10g: Objectives: {quests_with_obj} total, "
+          f"{quests_with_kill} kill, {quests_with_collect} collect ✓")
+
+    # --- Test 10h: Fallback without data_dir ---
+    qdb_fallback = QuestDB(quiet=True)
+    assert not qdb_fallback.loaded, "QuestDB without data_dir should not be loaded"
+    assert len(qdb_fallback.templates) == 5, \
+        f"Fallback should have 5 hardcoded quests, got {len(qdb_fallback.templates)}"
+    print(f"  10h: Fallback: {len(qdb_fallback.templates)} hardcoded quests ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -1181,4 +1272,5 @@ if __name__ == "__main__":
     test_loot_tables()
     test_vendor_system()
     test_quest_system()
+    test_quest_csv_loading()
     print("=== ALL TESTS PASSED ===")

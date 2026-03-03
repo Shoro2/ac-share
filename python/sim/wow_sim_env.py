@@ -114,7 +114,9 @@ class WoWSimEnv(gym.Env):
         self._enable_quests = enable_quests
         if enable_quests:
             from sim.quest_db import QuestDB
-            self._quest_db = QuestDB(quiet=True)
+            quest_data_dir = creature_csv_dir or (
+                os.path.dirname(data_root) if data_root else None)
+            self._quest_db = QuestDB(data_dir=quest_data_dir, quiet=True)
 
         self.sim = CombatSimulation(num_mobs=num_mobs, seed=seed,
                                     terrain=self._terrain, env3d=self._env3d,
