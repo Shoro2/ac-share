@@ -1121,7 +1121,8 @@ def test_quest_csv_loading():
     """Test quest system CSV loading from AzerothCore exports."""
     print("=== Test 10: Quest CSV Loading ===")
 
-    from sim.quest_db import QuestDB, QuestObjectiveType, _estimate_quest_xp
+    from sim.quest_db import (QuestDB, QuestObjectiveType, _estimate_quest_xp,
+                              load_quest_xp_dbc, _quest_xp_lookup)
 
     data_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'data')
     if not os.path.isfile(os.path.join(data_dir, 'quest_template.csv')):
@@ -1168,19 +1169,32 @@ def test_quest_csv_loading():
     assert total_enders > 10, f"Expected >10 ender NPCs, got {total_enders}"
     print(f"  10d: Maps: {total_givers} giver NPCs, {total_enders} ender NPCs ✓")
 
-    # --- Test 10e: QuestXP approximation ---
-    # Difficulty 5, level 2 should give ~250 XP
-    xp_l2_d5 = _estimate_quest_xp(2, 5)
-    assert 200 <= xp_l2_d5 <= 300, f"Expected ~250 XP for L2/D5, got {xp_l2_d5}"
-    # Difficulty 0 and 9 always return 0
-    assert _estimate_quest_xp(10, 0) == 0, "D0 should give 0 XP"
-    assert _estimate_quest_xp(10, 9) == 0, "D9 should give 0 XP"
-    # Higher level = more XP
-    xp_l10 = _estimate_quest_xp(10, 5)
-    xp_l20 = _estimate_quest_xp(20, 5)
-    assert xp_l20 > xp_l10, f"L20 XP ({xp_l20}) should be > L10 ({xp_l10})"
-    print(f"  10e: QuestXP approx: L2/D5={xp_l2_d5}, L10/D5={xp_l10}, "
-          f"L20/D5={xp_l20} ✓")
+    # --- Test 10e: QuestXP from DBC ---
+    dbc_path = os.path.join(data_dir, 'QuestXP.dbc')
+    if os.path.isfile(dbc_path):
+        table = load_quest_xp_dbc(dbc_path)
+        assert len(table) == 100, f"Expected 100 levels, got {len(table)}"
+        # Known values from QuestXP.dbc
+        assert table[1][5] == 80, f"L1/D5 should be 80, got {table[1][5]}"
+        assert table[2][5] == 170, f"L2/D5 should be 170, got {table[2][5]}"
+        assert table[10][5] == 840, f"L10/D5 should be 840, got {table[10][5]}"
+        # D0 and D9 always 0
+        assert table[10][0] == 0, "D0 should be 0"
+        assert table[10][9] == 0, "D9 should be 0"
+        # _quest_xp_lookup uses DBC
+        assert _quest_xp_lookup(2, 5) == 170, "Lookup should match DBC"
+        assert _quest_xp_lookup(20, 5) > _quest_xp_lookup(10, 5), "Higher level = more XP"
+        # Quest 7 (L2, RewardXPDifficulty from CSV) should have real XP
+        qt7_xp = qdb.templates[7].rewards.xp
+        assert qt7_xp > 0, f"Quest 7 should have XP from DBC, got {qt7_xp}"
+        print(f"  10e: QuestXP.dbc: L1/D5={table[1][5]}, L2/D5={table[2][5]}, "
+              f"L10/D5={table[10][5]}, Q7 XP={qt7_xp} ✓")
+    else:
+        # Fallback approximation test
+        xp_l2_d5 = _estimate_quest_xp(2, 5)
+        assert 100 <= xp_l2_d5 <= 300, f"Expected ~170 XP for L2/D5, got {xp_l2_d5}"
+        assert _estimate_quest_xp(10, 0) == 0, "D0 should give 0 XP"
+        print(f"  10e: QuestXP fallback: L2/D5={xp_l2_d5} ✓")
 
     # --- Test 10f: Quest objectives parsed correctly ---
     quests_with_kill = sum(1 for qt in qdb.templates.values()

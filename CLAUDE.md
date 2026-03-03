@@ -30,6 +30,7 @@ ac-share/
 │   ├── quest_template.csv       <- Quest definitions (~9.5K quests)
 │   ├── quest_template_addon.csv <- Quest chain info (PrevQuestID, NextQuestID)
 │   ├── reference_loot_template.csv <- Shared loot reference tables
+│   ├── QuestXP.dbc              <- Quest XP rewards per level/difficulty (binary DBC)
 │   ├── spell_dbc.csv            <- Spell data export (30 MB)
 │   ├── map_dbc.csv              <- Map metadata from DBC files
 │   ├── 000.vmtree               <- VMAP binary index for collision/LOS
@@ -303,7 +304,7 @@ Loads quest definitions from AzerothCore CSV exports with hardcoded fallback:
 - **Quest Types**: KILL (kill N creatures), COLLECT (loot N items from creatures), EXPLORE (visit location)
 - **CSV Loading** (4 CSV files): `quest_template.csv`, `quest_template_addon.csv`, `creature_queststarter[r].csv`, `creature_questender.csv`
 - **~9500 quests** loaded from CSV (1862 kill, 4961 collect objectives), ~3170 quest NPCs with positions from creature.csv
-- **QuestXP Approximation**: Anchor-based interpolation of QuestXP.dbc (quest level × difficulty index → XP)
+- **QuestXP from DBC**: Exact quest XP from `QuestXP.dbc` (100 levels × 10 difficulty columns), fallback to anchor-based approximation
 - **Objective Parsing**: KILL from `RequiredNpcOrGo1-4`, COLLECT from `RequiredItemId1-6` (source creature = heuristic from RequiredNpcOrGo)
 - **Chain Info**: `PrevQuestID`/`NextQuestID` from `quest_template_addon.csv`
 - **NPC Positions**: Auto-loaded from `creature.csv` + names from `creature_template.csv`
@@ -463,8 +464,8 @@ Interactive map visualization for analyzing training episodes:
 6. **test_level_system()**: XP formulas, level-up mechanics, stat scaling, multi-level-up
 7. **test_loot_tables()**: LootDB loading, item score computation, group rolling distribution, sim integration, upgrade detection, fallback without DB
 8. **test_vendor_system()**: Vendor NPCs, navigation, sell mechanics, dynamic spawning, sell rewards
-9. **test_quest_system()**: QuestDB loading (hardcoded), chain prerequisites, level requirements, kill/collect/explore objectives, quest NPC interaction, turn-in rewards, consume_events, reset, env integration
-10. **test_quest_csv_loading()**: QuestDB CSV loading from AzerothCore exports, objective parsing (kill/collect), chain info, QuestXP approximation, NPC position loading, fallback behavior
+9. **test_quest_system()**: QuestDB loading (hardcoded), chain prerequisites, level requirements, kill objectives, quest NPC interaction, turn-in rewards, consume_events, reset, env integration
+10. **test_quest_csv_loading()**: QuestDB CSV loading from AzerothCore exports, objective parsing (kill/collect), chain info, QuestXP.dbc parsing, NPC position loading, fallback behavior
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -713,7 +714,6 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
 | **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
 | **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain. Loot tables provide real item data but sell copper is not tracked. |
-| **QuestXP.dbc not available** | Sim | low | Quest XP rewards are approximated via anchor-based interpolation. Exact values would need QuestXP.dbc extraction from WoW client. |
 | **COLLECT quest source creatures** | Sim | low | CSV-loaded COLLECT objectives use first RequiredNpcOrGo as source creature heuristic. Some quests may have wrong or missing source creatures — would need loot table cross-reference for accuracy. |
 | **No training artifacts** | Training | info | Neither models/ nor logs/ directories exist currently — no completed training run stored |
 

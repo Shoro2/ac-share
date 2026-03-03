@@ -8,6 +8,7 @@ Loads quest definitions from AzerothCore CSV exports:
   - creature_questender.csv        (NPC -> quest ender mapping)
   - creature_template.csv          (NPC names — reused from CreatureDB)
   - creature.csv                   (NPC spawn positions — reused from CreatureDB)
+  - QuestXP.dbc                    (exact quest XP rewards per level/difficulty)
 
 Falls back to hardcoded Northshire quests when CSVs are not available.
 
@@ -25,16 +26,16 @@ Usage:
 
 import csv
 import os
+import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
 
 
-# ─── QuestXP.dbc Approximation ─────────────────────────────────────────
-# Without the real DBC file, we approximate quest XP from quest level +
-# difficulty index using anchor-based interpolation.
-#
-# Difficulty indices (from QuestXP.dbc columns):
+# ─── QuestXP.dbc ─────────────────────────────────────────────────────
+# DBC format: WDBC header (20 bytes), 100 records × 11 uint32 fields:
+#   [Level, D0, D1, D2, D3, D4, D5, D6, D7, D8, D9]
+# Difficulty indices:
 #   0 = always 0
 #   1 = trivial ("speak with X", nearby)
 #   2 = easy delivery quests
@@ -46,6 +47,54 @@ from typing import Optional
 #   8 = chain-end / hard group quests
 #   9 = always 0
 
+# Module-level QuestXP table: {level: [d0..d9]}  — populated by load_quest_xp_dbc()
+_QUEST_XP_TABLE: dict[int, list[int]] = {}
+
+
+def load_quest_xp_dbc(filepath: str) -> dict[int, list[int]]:
+    """Parse QuestXP.dbc and return {level: [xp_d0 .. xp_d9]}."""
+    global _QUEST_XP_TABLE
+    if not os.path.isfile(filepath):
+        return {}
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    if len(data) < 20 or data[:4] != b'WDBC':
+        return {}
+    record_count, field_count, record_size, _ = struct.unpack('<4I', data[4:20])
+    if field_count != 11 or record_size != 44:
+        return {}
+    table = {}
+    for i in range(record_count):
+        pos = 20 + i * record_size
+        fields = struct.unpack('<11I', data[pos:pos + 44])
+        level = fields[0]
+        table[level] = list(fields[1:])  # D0..D9
+    _QUEST_XP_TABLE = table
+    return table
+
+
+def _quest_xp_lookup(quest_level: int, difficulty: int) -> int:
+    """Look up quest XP from QuestXP.dbc table (or fallback approximation).
+
+    Returns XP for a quest at the given level and difficulty index (0-9).
+    """
+    if difficulty < 0 or difficulty > 9 or quest_level <= 0:
+        return 0
+    # Real DBC data available
+    if _QUEST_XP_TABLE:
+        row = _QUEST_XP_TABLE.get(quest_level)
+        if row:
+            return row[difficulty]
+        # Clamp to highest available level
+        max_level = max(_QUEST_XP_TABLE)
+        if quest_level > max_level:
+            return _QUEST_XP_TABLE[max_level][difficulty]
+        return 0
+    # Fallback: anchor-based approximation
+    return _estimate_quest_xp(quest_level, difficulty)
+
+
+# ─── Fallback Approximation (when QuestXP.dbc not available) ──────────
 _QUEST_XP_LEVELS = [1, 2, 3, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80]
 _QUEST_XP_BASE_D5 = [100, 250, 400, 550, 900, 1350, 1800, 2300, 2850,
                      3900, 5100, 6300, 9500, 16800]
@@ -67,11 +116,7 @@ def _interpolate(x: int, xs: list, ys: list) -> int:
 
 
 def _estimate_quest_xp(quest_level: int, difficulty: int) -> int:
-    """Approximate QuestXP.dbc lookup.
-
-    Returns base XP for a quest at the given level and difficulty index.
-    Uses anchor-based interpolation matching creature_db.py pattern.
-    """
+    """Approximate QuestXP.dbc lookup (fallback when DBC not available)."""
     if difficulty <= 0 or difficulty >= 9 or quest_level <= 0:
         return 0
     base = _interpolate(quest_level, _QUEST_XP_LEVELS, _QUEST_XP_BASE_D5)
@@ -267,6 +312,12 @@ class QuestDB:
         if not os.path.isfile(qt_path):
             return
 
+        # 0. Try to load QuestXP.dbc for exact XP values
+        dbc_path = os.path.join(data_dir, 'QuestXP.dbc')
+        dbc_table = load_quest_xp_dbc(dbc_path)
+        if dbc_table and not quiet:
+            print(f"  [QuestDB] QuestXP.dbc loaded: {len(dbc_table)} levels")
+
         # 1. Load quest templates
         csv_templates = self._load_quest_templates(qt_path)
         if not csv_templates:
@@ -315,9 +366,9 @@ class QuestDB:
                 # Parse objectives from RequiredNpcOrGo + RequiredItemId
                 objectives = self._parse_objectives(row)
 
-                # XP reward (approximate QuestXP.dbc lookup)
+                # XP reward (from QuestXP.dbc or fallback approximation)
                 xp_difficulty = int(row.get('RewardXPDifficulty', 0))
-                xp = _estimate_quest_xp(max(1, quest_level), xp_difficulty)
+                xp = _quest_xp_lookup(max(1, quest_level), xp_difficulty)
 
                 # Money reward (negative = cost to complete)
                 copper = max(0, int(row.get('RewardMoney', 0)))
