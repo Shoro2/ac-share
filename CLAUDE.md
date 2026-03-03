@@ -56,7 +56,7 @@ ac-share/
 │   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
 │   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
 │   │   ├── train_sim.py         <- PPO training on the sim (5 bots, no server needed)
-│   │   ├── test_sim.py          <- Validation tests (9 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests)
+│   │   ├── test_sim.py          <- Validation tests (10 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading)
 │   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
@@ -105,20 +105,20 @@ ac-share/
   |    CombatSimulation        |          |  |   AzerothCore worldserver        |
   |    python/sim/combat_sim   |          |  |   (C++, AI controller module)    |
   +----------------------------+          |  |   TCP :5000, JSON state stream   |
-  | 119 hardcoded spawns       |          |  +----------------+-----------------+
+  | 84 hardcoded spawns        |          |  +----------------+-----------------+
   | + CreatureDB (full world)  |          |                   | TCP
   | 4 Spells, Mob-AI, Loot, XP |          |                   |
   | Level 1-80, Exploration    |          |  +----------------v-----------------+
   | Optional: 3D terrain       |          |  |   WoWEnv (python/wow_env.py)     |
-  +------------+---------------+          |  |   Action: Discrete(11)           |
-               | direct (in-process)      |  |   Obs:    Box(17,)               |
+  +------------+---------------+          |  |   Action: Discrete(12)           |
+               | direct (in-process)      |  |   Obs:    Box(23,)               |
                |                          |  +----------------+-----------------+
   +------------v---------------+          |                   |
   |  WoWSimEnv (Gymnasium)     |          |          +--------v----------+
   |  python/sim/wow_sim_env    |          |          | train.py / etc.   |
   +----------------------------+          |          +-------------------+
-  | Action: Discrete(11)      |          |
-  | Obs:    Box(17,)           |          |
+  | Action: Discrete(12)      |          |
+  | Obs:    Box(23,)           |          |
   | Similar override logic     |          |
   | Sparse reward design       |<---------+  ** Same interface **
   +----------+-----------------+          |
@@ -282,7 +282,7 @@ Each bot rotates in a different direction on reset to improve distribution:
 **Class**: `CombatSimulation`
 
 Simulates the complete WoW combat system in pure Python:
-- **119 hardcoded mob spawns** from real AzerothCore DB spawn positions (4 mob types, Level 1-3)
+- **84 hardcoded mob spawns** from real AzerothCore DB spawn positions (4 mob types, Level 1-3)
 - **Full-world creature spawning** via `CreatureDB` from CSV exports (chunk-based spatial indexing, 100-unit chunks)
 - **Natural difficulty gradient**: Wolves (L1) in the north -> Kobolds (L1-3) in the south/east
 - **Priest Spells**: Smite (585), Heal (2050), SW:Pain (589), PW:Shield (17)
@@ -307,7 +307,7 @@ Simulates the complete WoW combat system in pure Python:
 **Stat Scaling per Level**: HP: 72 + (L-1)*50, Mana: 123 + (L-1)*5, Smite: (13-17) + (L-1)*10, Heal: (46-56) + (L-1)*5
 
 **Initialization**: `CombatSimulation(num_mobs=None, seed=None, terrain=None, env3d=None, creature_db=None)`
-- `num_mobs=None`: Uses all 119 hardcoded spawn positions
+- `num_mobs=None`: Uses all 84 hardcoded spawn positions
 - `terrain`: `SimTerrain` instance for heights, LOS, walkability
 - `env3d`: `WoW3DEnvironment` instance for Area/Zone lookups via AreaTable.dbc
 - `creature_db`: `CreatureDB` instance for full-world chunk-based mob spawning
@@ -399,8 +399,8 @@ Extended replacement for `wow_env.py` with optional quest system:
 | XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
 | Level-Up | +15.0 * levels | per level gained |
 | Equipment Upgrade | +3.0 | |
-| Loot | min((copper * 0.01) + (score * 0.2), 3.0) | capped |
-| Sell | +2.0 | slots freed |
+| Loot | per-item quality reward (0.1 grey to 5.0 epic) + min(copper * 0.01, 1.0) | penalty if inventory full |
+| Sell | 1.0 + 7.0 * fullness + min(copper * 0.005, 2.0) | scales with inventory fill (1-8) + copper bonus |
 | New Area Entered | +1.0 | real WoW Area ID or grid fallback (once per episode) |
 | New Zone Entered | +3.0 | real WoW Zone ID (once per episode) |
 | New Map Entered | +10.0 | real WoW Map ID (once per episode) |
@@ -625,8 +625,8 @@ The module consists of 2 files without its own header or CMakeLists:
 ### Reward Parity Gap
 - The sim uses **sparse reward design** (only real outcomes: XP, kills, deaths, exploration)
 - The live env uses **more shaping** (approach, facing, discovery, action-specific bonuses)
-- XP/kill reward differs: sim=10+xp*0.2, live=3+xp*0.05
-- Death penalty differs: sim=-30, live=-5
+- XP/kill reward differs: sim=10+xp*0.5, live=3+xp*0.05
+- Death penalty differs: sim=-15, live=-5
 - OOM: sim=not terminal, live=-2 terminal
 - When transferring sim-trained models to live, reward behavior will differ
 
@@ -693,7 +693,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 - **Python**: Standard Python with `snake_case`, type hints are mostly missing
 - **No Build System in Module**: `src_module-ai-controller/` has no CMakeLists.txt — must be manually integrated into the AzerothCore module build
 - **Language**: Code comments partially in German ("Lausche auf Port 5000", "WICHTIG", "ACHTUNG")
-- **Tests**: `sim/test_sim.py` (6 tests for sim validation), `check_env.py` (live env smoke test)
+- **Tests**: `sim/test_sim.py` (10 tests for sim validation), `check_env.py` (live env smoke test)
 
 ## Progress & Status
 
@@ -701,17 +701,17 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 
 | Component | Status | Details |
 |---|---|---|
-| **CombatSimulation Engine** | done | 119 spawns + CreatureDB, 4 spells, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
-| **WoWSimEnv (Gym Interface)** | done | Discrete(11) actions, Box(17) obs, sparse rewards, stall detection |
+| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 4 spells, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
+| **WoWSimEnv (Gym Interface)** | done | Discrete(12) actions, Box(23) obs, sparse rewards, stall detection |
 | **train_sim.py (PPO Training)** | done | 5 bots, SubprocVecEnv, TensorBoard, gameplay metrics, episode logging |
 | **Loot Table System** | done | LootDB CSV loader, AzerothCore group/reference logic, item scores, upgrade detection, sim integration with fallback |
-| **test_sim.py (Validation)** | done | 7 tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables |
+| **test_sim.py (Validation)** | done | 10 tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables, vendor system, quest system, quest CSV loading |
 | **3D Terrain System** | done | Maps/VMAPs parser, HeightCache, SpatialLOSChecker, SimTerrain wrapper |
 | **AreaTable.dbc Parser** | done | Reads all areas/zones/maps of the WoW world, on-demand tile loading |
 | **Exploration System** | done | 3-tier tracking (Area/Zone/Map), rewards, TensorBoard metrics |
 | **CreatureDB (Full World)** | done | CSV loader, spatial index, stat interpolation, attackability checks |
 | **Episode Logger** | done | Zero-I/O JSONL logger, trail data, events, mob snapshots |
-| **Quest System** | done | CSV loading (~9500 quests from AzerothCore DB) + 5 hardcoded fallback quests, quest NPCs (~3170 from CSV), quest chains, obs/action space extended, rewards, TensorBoard metrics |
+| **Quest System** | done | CSV loading (~9500 quests from AzerothCore DB) + 3 hardcoded fallback quests, quest NPCs (~3170 from CSV), quest chains, obs/action space extended, rewards, TensorBoard metrics |
 | **Visualization** | done | Interactive map viewer with episode slider, zoom, bot filters, event log |
 | **Override Logic** | done | Vendor, aggro, cast guard, loot, range mgmt — in both envs |
 | **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, override logic, shaped rewards |
@@ -727,7 +727,6 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **Reward parity gap** | Both Envs | medium | Sim uses sparse design (XP=10+xp*0.5, death=-15), live uses more shaping (XP=3+xp*0.05, death=-5) — trained model may not transfer cleanly |
 | **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
 | **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
-| **Vendor system simplified** | Sim | low | Sim has no real vendors — sell action only frees slots, without copper gain. Loot tables provide real item data but sell copper is not tracked. |
 | **COLLECT quest source creatures** | Sim | low | CSV-loaded COLLECT objectives use first RequiredNpcOrGo as source creature heuristic. Some quests may have wrong or missing source creatures — would need loot table cross-reference for accuracy. |
 | **No training artifacts** | Training | info | Neither models/ nor logs/ directories exist currently — no completed training run stored |
 

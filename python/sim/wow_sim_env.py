@@ -142,7 +142,7 @@ class WoWSimEnv(gym.Env):
         self._ep_levels_gained = 0
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
-        self._steps_since_xp = 0          # stall detector: reset episode after 30k steps without XP
+        self._steps_since_xp = 0          # stall detector: reset episode after 8k steps without XP
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
         self._quest_nav_active = False     # True while bot is walking to quest NPC
 
