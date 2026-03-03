@@ -342,6 +342,41 @@ SPAWN_POSITIONS = {
 }
 
 
+# ─── Inventory Item ──────────────────────────────────────────────────
+
+@dataclass(slots=True)
+class InventoryItem:
+    """An item stored in the player's inventory."""
+    entry: int
+    name: str
+    quality: int          # 0=Poor(grey), 1=Common, 2=Uncommon, 3=Rare, 4=Epic
+    sell_price: int        # copper
+    score: float
+    inventory_type: int    # 0=non-equip, >0=equipment slot
+
+
+# ─── Vendor NPCs (from AzerothCore DB, Northshire Valley) ────────────
+
+@dataclass(slots=True)
+class VendorNPC:
+    """A vendor NPC in the simulation world."""
+    uid: int
+    name: str
+    level: int
+    x: float
+    y: float
+    z: float
+
+
+# Real vendor positions from Northshire Abbey (AzerothCore npc_memory)
+VENDOR_DATA = [
+    {"name": "Janos Hammerknuckle", "level": 5, "x": -8909.46, "y": -104.163, "z": 82.031},
+    {"name": "Godric Rothgar",      "level": 5, "x": -8898.23, "y": -119.838, "z": 82.016},
+    {"name": "Dermot Johns",        "level": 5, "x": -8897.71, "y": -115.328, "z": 81.998},
+    {"name": "Brother Danil",       "level": 5, "x": -8901.59, "y": -112.716, "z": 82.031},
+]
+
+
 # ─── Player State ─────────────────────────────────────────────────────
 
 INVENTORY_SLOTS = 30  # default bag capacity (no bag logic yet)
@@ -381,6 +416,10 @@ class Player:
     loot_failed: list = field(default_factory=list)
     # Equipped item tracking (for loot table upgrade detection)
     equipped_scores: dict = field(default_factory=dict)  # inventory_type -> best score
+    # Inventory: actual items stored (for sell copper calculation)
+    inventory: list = field(default_factory=list)  # list of InventoryItem
+    copper: int = 0                                 # total copper balance
+    sell_copper: int = 0                            # copper earned from selling this tick (consume-on-read)
     # Regen tracking
     combat_timer: int = 0       # ticks since last combat action (for OOC regen)
     ooc_regen_accumulator: float = 0.0
@@ -430,6 +469,7 @@ class CombatSimulation:
     SCAN_RANGE = 50.0         # mob visibility range
     TARGET_RANGE = 30.0       # max targeting range
     LOOT_RANGE = 10.0         # max looting range
+    SELL_RANGE = 6.0          # max vendor interaction range
     MOB_LEASH_RANGE = 60.0    # mob returns home after this distance from spawn
     OOC_DELAY_TICKS = 12      # 6 seconds out of combat before regen starts
     HP_REGEN_PER_TICK = 0.67  # 8 HP per 6 seconds = ~0.67/tick (OOC only)
@@ -461,6 +501,7 @@ class CombatSimulation:
         if self.terrain:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.mobs: list[Mob] = []
+        self.vendors: list[VendorNPC] = []
         self.target: Optional[Mob] = None
         self.tick_count: int = 0
         self.damage_dealt: int = 0
@@ -477,6 +518,7 @@ class CombatSimulation:
         self._player_chunk: Optional[tuple] = None  # (map, cx, cy)
         self._active_chunks: set[tuple] = set()
         self._chunk_mobs: dict[tuple, list[Mob]] = {}
+        self._spawn_vendors()
         if self.creature_db:
             self._update_chunks()
         else:
@@ -520,6 +562,34 @@ class CombatSimulation:
             )
             self.mobs.append(mob)
 
+    def _spawn_vendors(self):
+        """Spawn vendor NPCs from VENDOR_DATA."""
+        self.vendors.clear()
+        for vdata in VENDOR_DATA:
+            z = vdata["z"]
+            if self.terrain:
+                z = self.terrain.get_height(vdata["x"], vdata["y"])
+            self.vendors.append(VendorNPC(
+                uid=self._new_uid(),
+                name=vdata["name"],
+                level=vdata["level"],
+                x=vdata["x"], y=vdata["y"], z=z,
+            ))
+
+    def get_nearest_vendor(self) -> Optional[VendorNPC]:
+        """Return the nearest vendor NPC, or None if none exist."""
+        best = None
+        best_dist = float('inf')
+        px, py = self.player.x, self.player.y
+        for v in self.vendors:
+            dx = v.x - px
+            dy = v.y - py
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < best_dist:
+                best_dist = d
+                best = v
+        return best
+
     def reset(self) -> None:
         """Reset player and mobs to initial state."""
         self.player = Player()
@@ -530,6 +600,7 @@ class CombatSimulation:
         self.damage_dealt = 0
         self.kills = 0
         self._next_uid = 1
+        self.vendors.clear()
         self.visited_areas.clear()
         self.visited_zones.clear()
         self.visited_maps.clear()
@@ -541,6 +612,7 @@ class CombatSimulation:
         self._active_chunks.clear()
         self._chunk_mobs.clear()
         self.mobs.clear()
+        self._spawn_vendors()
         if self.creature_db:
             self._update_chunks()
         else:
@@ -739,6 +811,39 @@ class CombatSimulation:
         if self.player.orientation < -math.pi:
             self.player.orientation += 2 * math.pi
 
+    def do_move_to(self, tx: float, ty: float) -> bool:
+        """Move player toward target coordinates by MOVE_SPEED units.
+
+        Used by vendor navigation — moves directly toward (tx, ty) and
+        updates orientation to face the target. Returns False if already
+        at the target or movement is blocked.
+        """
+        if self.player.is_casting:
+            return False
+        p = self.player
+        dx = tx - p.x
+        dy = ty - p.y
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist < 0.5:
+            return False  # already there
+
+        move = min(self.MOVE_SPEED, dist)
+        new_x = p.x + (dx / dist) * move
+        new_y = p.y + (dy / dist) * move
+
+        if self.terrain:
+            self.terrain.ensure_loaded(new_x, new_y)
+            new_z = self.terrain.get_height(new_x, new_y)
+            if not self.terrain.check_walkable(p.x, p.y, p.z, new_x, new_y, new_z):
+                return False
+            p.z = new_z
+
+        p.x = new_x
+        p.y = new_y
+        # Face toward target
+        p.orientation = math.atan2(dy, dx)
+        return True
+
     def do_target_nearest(self):
         """Target the nearest alive, attackable mob in range."""
         if self.player.is_casting:
@@ -809,6 +914,14 @@ class CombatSimulation:
                     self.player.loot_score += int(result.item.score * result.count)
                     self.player.free_slots -= 1
                     self.player.loot_items.append(quality)
+                    self.player.inventory.append(InventoryItem(
+                        entry=result.item.entry,
+                        name=result.item.name,
+                        quality=result.item.quality,
+                        sell_price=result.item.sell_price,
+                        score=result.item.score,
+                        inventory_type=result.item.inventory_type,
+                    ))
                     # Check if equippable item is an upgrade
                     if result.item.inventory_type > 0:
                         current = self.player.equipped_scores.get(
@@ -822,11 +935,19 @@ class CombatSimulation:
             # Fallback: random loot (no loot_db loaded)
             if self.rng.random() < self.LOOT_CHANCE:
                 score = self.rng.randint(*self.ITEM_SCORE_RANGE)
+                sell_price = score * 2  # rough copper value
                 quality = 1  # assume Common for fallback items
                 if self.player.free_slots > 0:
                     self.player.loot_score += score
                     self.player.free_slots -= 1
                     self.player.loot_items.append(quality)
+                    self.player.inventory.append(InventoryItem(
+                        entry=0, name="Loot",
+                        quality=quality,
+                        sell_price=sell_price,
+                        score=score,
+                        inventory_type=0,
+                    ))
                     if self.rng.random() < self.UPGRADE_CHANCE:
                         self.player.equipped_upgrade = True
                 else:
@@ -834,9 +955,25 @@ class CombatSimulation:
         return True
 
     def do_sell(self) -> bool:
-        """Sell items (simplified — just restores free_slots)."""
+        """Sell all inventory items at the nearest vendor within SELL_RANGE.
+
+        Requires proximity to a vendor NPC. Converts inventory items to copper
+        based on their sell_price. Returns True if items were sold.
+        """
         if self.player.free_slots >= INVENTORY_SLOTS:
             return False
+        # Must be near a vendor
+        vendor = self.get_nearest_vendor()
+        if vendor is None:
+            return False
+        dist = self._dist(self.player.x, self.player.y, vendor.x, vendor.y)
+        if dist > self.SELL_RANGE:
+            return False
+        # Calculate copper from inventory sell prices
+        copper = sum(item.sell_price for item in self.player.inventory)
+        self.player.copper += copper
+        self.player.sell_copper += copper
+        self.player.inventory.clear()
         self.player.free_slots = INVENTORY_SLOTS
         return True
 
@@ -1134,7 +1271,7 @@ class CombatSimulation:
     # ─── State Query ─────────────────────────────────────────────
 
     def get_nearby_mobs(self, scan_range: Optional[float] = None) -> list[dict]:
-        """Get list of nearby mobs (alive and dead, within scan range)."""
+        """Get list of nearby mobs and vendors (within scan range)."""
         r = scan_range or self.SCAN_RANGE
         r_sq = r * r  # squared comparison avoids sqrt for far mobs
         px, py = self.player.x, self.player.y
@@ -1160,6 +1297,30 @@ class CombatSimulation:
                     "target_player": mob.target_player,
                     "looted": mob.looted,
                     "attackable": 1 if mob.alive else 0,
+                    "vendor": 0,
+                })
+        # Include vendor NPCs
+        for v in self.vendors:
+            dx = v.x - px
+            dy = v.y - py
+            dsq = dx * dx + dy * dy
+            if dsq <= r_sq:
+                d = _sqrt(dsq)
+                result.append({
+                    "uid": v.uid,
+                    "name": v.name,
+                    "level": v.level,
+                    "hp": 100,
+                    "max_hp": 100,
+                    "alive": True,
+                    "x": v.x,
+                    "y": v.y,
+                    "z": v.z,
+                    "dist": d,
+                    "target_player": False,
+                    "looted": False,
+                    "attackable": 0,
+                    "vendor": 1,
                 })
         return result
 
@@ -1217,7 +1378,7 @@ class CombatSimulation:
                     "name": m["name"],
                     "level": m["level"],
                     "attackable": m["attackable"],
-                    "vendor": 0,
+                    "vendor": m.get("vendor", 0),
                     "target": "1" if m["target_player"] else "0",
                     "hp": m["hp"],
                     "x": m["x"],
@@ -1239,6 +1400,7 @@ class CombatSimulation:
             "levels_gained": p.levels_gained,
             "loot_items": list(p.loot_items),
             "loot_failed": list(p.loot_failed),
+            "sell_copper": p.sell_copper,
             "new_areas": self._new_areas,
             "new_zones": self._new_zones,
             "new_maps": self._new_maps,
@@ -1251,6 +1413,7 @@ class CombatSimulation:
         p.levels_gained = 0
         p.loot_items.clear()
         p.loot_failed.clear()
+        p.sell_copper = 0
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0

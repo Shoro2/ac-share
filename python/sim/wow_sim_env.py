@@ -118,6 +118,7 @@ class WoWSimEnv(gym.Env):
         self._ep_damage_dealt = 0
         self._ep_loot_items = 0
         self._ep_loot_failed = 0
+        self._ep_sell_copper = 0
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
@@ -142,6 +143,7 @@ class WoWSimEnv(gym.Env):
         self._ep_damage_dealt = 0
         self._ep_loot_items = 0
         self._ep_loot_failed = 0
+        self._ep_sell_copper = 0
         self._ep_areas = 0
         self._ep_zones = 0
         self._ep_maps = 0
@@ -185,15 +187,25 @@ class WoWSimEnv(gym.Env):
         target_dead = self.sim.target is not None and not self.sim.target.alive
         is_casting = p.is_casting
 
-        # Vendor mode (simplified — no vendors in sim, just sell action)
+        # Vendor mode: navigate to nearest vendor, sell when in range
         vendor_mode = False
         if p.free_slots < 2 and not in_combat:
-            vendor_mode = True
-            override_action = 8  # sell
+            vendor = self.sim.get_nearest_vendor()
+            if vendor:
+                vdx = vendor.x - p.x
+                vdy = vendor.y - p.y
+                vendor_dist = math.sqrt(vdx * vdx + vdy * vdy)
+                vendor_mode = True
+                if vendor_dist <= self.sim.SELL_RANGE:
+                    override_action = 8  # close enough to sell
+                else:
+                    # Walk toward vendor (direct navigation)
+                    self.sim.do_move_to(vendor.x, vendor.y)
+                    override_action = 0  # movement already handled
 
         if not vendor_mode:
             if action == 8:
-                override_action = 0  # block sell when not needed
+                override_action = 0  # block sell when not in vendor mode
 
             # Aggro check: in combat but no living target
             if in_combat and not target_alive:
@@ -332,9 +344,13 @@ class WoWSimEnv(gym.Env):
         self._ep_loot_items += len(loot_items)
         self._ep_loot_failed += len(loot_failed)
 
-        # 8. Sold items (free_slots increased)
+        # 8. Sold items at vendor (free_slots increased + copper from sell_price)
+        sell_copper = events.get("sell_copper", 0)
         if self.last_state and state.get('free_slots', 0) > self.last_state.get('free_slots', 0):
             reward += 2.0
+        if sell_copper > 0:
+            reward += min(sell_copper * 0.005, 2.0)
+            self._ep_sell_copper += sell_copper
 
         # 9. Exploration (new area/zone/map — naturally capped, can't be farmed)
         new_areas = events.get("new_areas", 0)
@@ -405,6 +421,7 @@ class WoWSimEnv(gym.Env):
                 "final_level": self.sim.player.level,
                 "loot_items": self._ep_loot_items,
                 "loot_failed": self._ep_loot_failed,
+                "sell_copper": self._ep_sell_copper,
             }
             info["episode_stats"] = ep_stats
 

@@ -22,7 +22,7 @@ if PARENT_DIR not in sys.path:
 from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSITIONS,
                              XP_TABLE, base_xp_gain, get_gray_level,
                              player_max_hp, player_max_mana, smite_damage, heal_amount,
-                             INVENTORY_SLOTS)
+                             INVENTORY_SLOTS, VENDOR_DATA, InventoryItem)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -592,16 +592,36 @@ def test_loot_tables():
           f"failed={len(sim_part.player.loot_failed)}, "
           f"slots={sim_part.player.free_slots} ✓")
 
-    # --- Test 7i: Sell restores inventory ---
+    # --- Test 7i: Sell requires vendor proximity ---
     sim_sell = CombatSimulation(num_mobs=5, seed=42)
-    sim_sell.player.free_slots = 5
+    # Add fake items to inventory
+    for i in range(5):
+        sim_sell.player.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=5.0, inventory_type=0))
+    sim_sell.player.free_slots = INVENTORY_SLOTS - 5
+
+    # Selling far from vendor should fail
+    sim_sell.player.x = -9100.0  # far from any vendor
+    sim_sell.player.y = -200.0
     sold = sim_sell.do_sell()
-    assert sold, "Sell should succeed when inventory has items"
+    assert not sold, "Sell should fail when far from vendor"
+    assert sim_sell.player.free_slots == INVENTORY_SLOTS - 5, "Slots unchanged"
+
+    # Move near a vendor and sell
+    v = VENDOR_DATA[0]
+    sim_sell.player.x = v["x"] + 1.0
+    sim_sell.player.y = v["y"]
+    sold = sim_sell.do_sell()
+    assert sold, "Sell should succeed near vendor"
     assert sim_sell.player.free_slots == INVENTORY_SLOTS, \
         f"Sell should restore to {INVENTORY_SLOTS}, got {sim_sell.player.free_slots}"
+    assert sim_sell.player.copper == 50, f"Expected 50 copper (5×10), got {sim_sell.player.copper}"
+    assert len(sim_sell.player.inventory) == 0, "Inventory should be empty"
+
     sold_again = sim_sell.do_sell()
     assert not sold_again, "Sell should fail when inventory is already empty"
-    print(f"  7i: Sell restores slots to {INVENTORY_SLOTS} ✓")
+    print(f"  7i: Sell at vendor: copper={sim_sell.player.copper}, slots={sim_sell.player.free_slots} ✓")
 
     # --- Test 7j: consume_events includes loot_items/loot_failed ---
     sim_ev = CombatSimulation(num_mobs=50, seed=55, loot_db=loot_db)
@@ -635,6 +655,89 @@ def test_loot_tables():
     print("  PASSED\n")
 
 
+def test_vendor_system():
+    """Test vendor NPCs, navigation, and sell mechanics."""
+    print("=== Test 8: Vendor System ===")
+
+    sim = CombatSimulation(num_mobs=10, seed=42)
+
+    # --- Test 8a: Vendors are spawned ---
+    assert len(sim.vendors) == len(VENDOR_DATA), \
+        f"Expected {len(VENDOR_DATA)} vendors, got {len(sim.vendors)}"
+    print(f"  8a: {len(sim.vendors)} vendor NPCs spawned ✓")
+
+    # --- Test 8b: Vendors appear in nearby_mobs with vendor flag ---
+    # Move player close to vendors (Northshire Abbey area)
+    sim.player.x = VENDOR_DATA[0]["x"]
+    sim.player.y = VENDOR_DATA[0]["y"]
+    nearby = sim.get_nearby_mobs()
+    vendor_entries = [m for m in nearby if m.get("vendor") == 1]
+    assert len(vendor_entries) > 0, "Vendors should appear in nearby_mobs"
+    assert vendor_entries[0]["attackable"] == 0, "Vendors should not be attackable"
+    print(f"  8b: {len(vendor_entries)} vendors visible in nearby_mobs ✓")
+
+    # --- Test 8c: Vendors appear in state dict ---
+    state = sim.get_state_dict()
+    vendor_in_state = [m for m in state["nearby_mobs"] if m.get("vendor") == 1]
+    assert len(vendor_in_state) > 0, "Vendors should appear in state dict"
+    print(f"  8c: Vendors in state dict: {len(vendor_in_state)} ✓")
+
+    # --- Test 8d: get_nearest_vendor ---
+    vendor = sim.get_nearest_vendor()
+    assert vendor is not None, "Should find a nearest vendor"
+    print(f"  8d: Nearest vendor: {vendor.name} ✓")
+
+    # --- Test 8e: do_move_to navigates toward target ---
+    sim2 = CombatSimulation(num_mobs=5, seed=42)
+    start_x, start_y = sim2.player.x, sim2.player.y
+    target_x, target_y = start_x + 10, start_y + 10
+    moved = sim2.do_move_to(target_x, target_y)
+    assert moved, "do_move_to should succeed"
+    # Player should be closer to target than before
+    old_dist = math.sqrt((target_x - start_x)**2 + (target_y - start_y)**2)
+    new_dist = math.sqrt((target_x - sim2.player.x)**2 + (target_y - sim2.player.y)**2)
+    assert new_dist < old_dist, "Player should be closer to target"
+    # Should have moved exactly MOVE_SPEED units
+    moved_dist = math.sqrt((sim2.player.x - start_x)**2 + (sim2.player.y - start_y)**2)
+    assert abs(moved_dist - sim2.MOVE_SPEED) < 0.01, \
+        f"Should move {sim2.MOVE_SPEED} units, moved {moved_dist:.2f}"
+    print(f"  8e: do_move_to: moved {moved_dist:.1f} units toward target ✓")
+
+    # --- Test 8f: Sell with inventory items gives copper ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p = sim3.player
+    # Add items with known sell prices
+    p.inventory.append(InventoryItem(entry=1, name="Junk", quality=0,
+                                     sell_price=25, score=5.0, inventory_type=0))
+    p.inventory.append(InventoryItem(entry=2, name="Cloth", quality=1,
+                                     sell_price=50, score=10.0, inventory_type=0))
+    p.free_slots = INVENTORY_SLOTS - 2
+
+    # Position at vendor
+    v = VENDOR_DATA[0]
+    p.x = v["x"]
+    p.y = v["y"]
+    sold = sim3.do_sell()
+    assert sold, "Sell should succeed at vendor with items"
+    assert p.copper == 75, f"Expected 75 copper, got {p.copper}"
+    assert p.sell_copper == 75, f"Expected sell_copper=75, got {p.sell_copper}"
+    assert p.free_slots == INVENTORY_SLOTS
+    assert len(p.inventory) == 0
+
+    # Consume events should report sell_copper
+    events = sim3.consume_events()
+    assert events["sell_copper"] == 75, f"Expected sell_copper=75 in events, got {events['sell_copper']}"
+    assert p.sell_copper == 0, "sell_copper should be cleared after consume"
+    print(f"  8f: Sell copper: 25+50={events['sell_copper']} copper ✓")
+
+    # --- Test 8g: Vendors persist after reset ---
+    sim.reset()
+    assert len(sim.vendors) == len(VENDOR_DATA), "Vendors should be re-spawned after reset"
+    print(f"  8g: Vendors persist after reset ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -644,4 +747,5 @@ if __name__ == "__main__":
     test_combat_scenario()
     test_level_system()
     test_loot_tables()
+    test_vendor_system()
     print("=== ALL TESTS PASSED ===")
