@@ -211,7 +211,7 @@ def _snapshot_mobs(sim) -> list:
 def run_episode(env, model=None, max_steps: int = 4000,
                 record_interval: int = 1) -> BotRecording:
     """Run one episode, recording trail and events."""
-    env._max_steps = max_steps
+    # Episode ends on death; max_steps is a local safety limit for visualization only
 
     rec = BotRecording(name=env.bot_name)
     obs, _ = env.reset()
