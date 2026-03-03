@@ -234,15 +234,8 @@ def main():
 
     metrics_callback = GameplayMetricsCallback(verbose=1)
 
-    resuming = args.resume is not None
     try:
-        # reset_num_timesteps=False when resuming → TensorBoard continues from
-        # the previous step count instead of restarting at 0.
-        model.learn(
-            total_timesteps=args.steps,
-            callback=metrics_callback,
-            reset_num_timesteps=not resuming,
-        )
+        model.learn(total_timesteps=args.steps, callback=metrics_callback)
 
         # Modell-Versionierung: wow_bot_sim_v1, v2, v3, ...
         version = 1
