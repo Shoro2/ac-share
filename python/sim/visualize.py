@@ -654,9 +654,22 @@ class InteractiveViewer:
         by_ep = {}
         for rec in self.all_recordings:
             by_ep.setdefault(rec.episode, []).append(rec)
-        self.episode_keys = sorted(by_ep.keys())
+        # Sort by total kills descending (sum across bots in same episode)
+        self.episode_keys = sorted(
+            by_ep.keys(),
+            key=lambda k: sum(r.total_kills for r in by_ep[k]),
+            reverse=True)
         self.episodes = {k: by_ep[k] for k in self.episode_keys}
         self.num_episodes = max(len(self.episode_keys), 1)
+        # Build episode labels for the dropdown
+        self._ep_labels = []
+        for k in self.episode_keys:
+            recs = by_ep[k]
+            kills = sum(r.total_kills for r in recs)
+            lvl = max(r.final_level for r in recs)
+            bots = ", ".join(r.name for r in recs)
+            self._ep_labels.append(
+                f"Ep{k}: {kills} kills, Lv{lvl} ({bots})")
 
     # ── Figure setup ─────────────────────────────────────────────────
 
@@ -666,20 +679,24 @@ class InteractiveViewer:
         self.fig.canvas.manager.set_window_title(self.title)
 
         # ── Main map axes ────────────────────────────────────────────
-        self.ax_map = self.fig.add_axes([0.05, 0.08, 0.72, 0.82])
+        self.ax_map = self.fig.add_axes([0.05, 0.12, 0.72, 0.82])
         self.ax_map.set_facecolor("#16213e")
 
-        # ── Episode slider (top) ─────────────────────────────────────
-        ax_ep = self.fig.add_axes([0.15, 0.94, 0.55, 0.03])
-        ax_ep.set_facecolor("#2a2a4e")
-        max_ep = max(self.num_episodes - 1, 0)
-        self.ep_slider = Slider(
-            ax_ep, "Episode", 0, max(max_ep, 1),
-            valinit=0, valstep=1, color="#4a9eff",
-        )
-        self.ep_slider.label.set_color("white")
-        self.ep_slider.valtext.set_color("white")
-        self.ep_slider.on_changed(self._on_episode_changed)
+        # ── Episode selector (left side, below map) ──────────────────
+        ep_labels = self._ep_labels if self._ep_labels else ["(no episodes)"]
+        n_eps = len(ep_labels)
+        ep_h = min(max(0.025 * n_eps, 0.05), 0.35)
+        self._ax_ep = self.fig.add_axes([0.05, 0.96 - ep_h, 0.72, ep_h])
+        self._ax_ep.set_facecolor("#1a1a2e")
+        for spine in self._ax_ep.spines.values():
+            spine.set_color("#444")
+        self._ep_radio = RadioButtons(
+            self._ax_ep, ep_labels, active=0)
+        for lbl in self._ep_radio.labels:
+            lbl.set_color("white")
+            lbl.set_fontsize(8)
+            lbl.set_fontfamily("monospace")
+        self._ep_radio.on_clicked(self._on_episode_selected)
 
         # ── Zoom slider (bottom) ─────────────────────────────────────
         ax_zoom = self.fig.add_axes([0.15, 0.02, 0.55, 0.03])
@@ -797,11 +814,8 @@ class InteractiveViewer:
         self._global_bounds = _get_map_bounds(recordings)
         self._first_draw = True
 
-        # Update episode slider range
-        max_ep = max(self.num_episodes - 1, 0)
-        self.ep_slider.valmin = 0
-        self.ep_slider.valmax = max(max_ep, 1)
-        self.ep_slider.set_val(0)
+        # Rebuild episode radio buttons
+        self._rebuild_episode_selector()
 
         # Rebuild bot checkboxes
         self._ax_check.clear()
@@ -818,9 +832,26 @@ class InteractiveViewer:
 
         self._draw_map()
 
-    def _on_episode_changed(self, val):
-        self.current_ep_idx = int(val)
+    def _on_episode_selected(self, label):
+        """Episode radio button clicked."""
+        if label in self._ep_labels:
+            self.current_ep_idx = self._ep_labels.index(label)
         self._draw_map()
+
+    def _rebuild_episode_selector(self):
+        """Rebuild episode radio buttons after run change."""
+        self._ax_ep.clear()
+        self._ax_ep.set_facecolor("#1a1a2e")
+        for spine in self._ax_ep.spines.values():
+            spine.set_color("#444")
+        ep_labels = self._ep_labels if self._ep_labels else ["(no episodes)"]
+        self._ep_radio = RadioButtons(
+            self._ax_ep, ep_labels, active=0)
+        for lbl in self._ep_radio.labels:
+            lbl.set_color("white")
+            lbl.set_fontsize(8)
+            lbl.set_fontfamily("monospace")
+        self._ep_radio.on_clicked(self._on_episode_selected)
 
     def _on_zoom_changed(self, val):
         """Zoom slider: scale view around current view centre."""
@@ -921,10 +952,12 @@ class InteractiveViewer:
     def _on_key(self, event):
         if event.key == "right":
             new = min(self.current_ep_idx + 1, self.num_episodes - 1)
-            self.ep_slider.set_val(new)
+            if new != self.current_ep_idx and new < len(self._ep_labels):
+                self._ep_radio.set_active(new)
         elif event.key == "left":
             new = max(self.current_ep_idx - 1, 0)
-            self.ep_slider.set_val(new)
+            if new != self.current_ep_idx:
+                self._ep_radio.set_active(new)
         elif event.key == "r":
             self._reset_view(None)
 
