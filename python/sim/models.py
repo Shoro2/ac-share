@@ -415,6 +415,8 @@ class Player:
     quest_xp_gained: int = 0            # XP from quest turn-ins this tick
     quest_copper_gained: int = 0        # copper from quest turn-ins this tick
     quests_completed_tick: int = 0      # quests completed this tick (consume-on-read)
+    # Eat/Drink state
+    is_eating: bool = False             # True while eating/drinking (regen 5% HP+Mana/s)
 
     @property
     def total_bag_slots(self) -> int:
