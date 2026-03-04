@@ -37,6 +37,10 @@ class ItemData:
     item_class: int        # 0=Consumable, 2=Weapon, 4=Armor, ...
     item_subclass: int
     score: float           # precomputed GetItemScore
+    # WotLK 3.3.5 item stats — individual stat types and values
+    stats: dict            # {stat_type_int: value}, e.g. {7: 5, 5: 3} = +5 Stam, +3 Int
+    armor: int             # armor value for armor items
+    weapon_dps: float      # (dmg_min+dmg_max)/2 / speed for weapons
 
 
 @dataclass(slots=True)
@@ -105,6 +109,14 @@ class LootDB:
             for row in reader:
                 entry = int(row['entry'])
                 score = self._compute_score(row)
+                stats = self._parse_stats(row)
+                armor = int(row.get('armor', 0))
+                dmg_min = float(row.get('dmg_min1', 0))
+                dmg_max = float(row.get('dmg_max1', 0))
+                delay = int(row.get('delay', 1000))
+                weapon_dps = 0.0
+                if dmg_max > 0 and delay > 0:
+                    weapon_dps = (dmg_min + dmg_max) / 2.0 / (delay / 1000.0)
                 self.items[entry] = ItemData(
                     entry=entry,
                     name=row['name'],
@@ -115,7 +127,28 @@ class LootDB:
                     item_class=int(row.get('class', 0)),
                     item_subclass=int(row.get('subclass', 0)),
                     score=score,
+                    stats=stats,
+                    armor=armor,
+                    weapon_dps=weapon_dps,
                 )
+
+    @staticmethod
+    def _parse_stats(row: dict) -> dict:
+        """Parse individual stat_type/stat_value pairs from item_template.
+
+        Returns {stat_type: value} dict. WotLK ITEM_MOD enum:
+          0=Mana, 1=Health, 3=Agility, 4=Strength, 5=Intellect, 6=Spirit,
+          7=Stamina, 12=DefenseRating, 31=HitRating, 32=CritRating,
+          35=Resilience, 36=HasteRating, 38=AttackPower, 43=MP5,
+          45=SpellPower, 46=HP5, 47=SpellPenetration, etc.
+        """
+        stats = {}
+        for i in range(1, 11):
+            st = int(row.get(f'stat_type{i}', 0))
+            sv = int(row.get(f'stat_value{i}', 0))
+            if sv != 0:
+                stats[st] = stats.get(st, 0) + sv
+        return stats
 
     @staticmethod
     def _compute_score(row: dict) -> float:
