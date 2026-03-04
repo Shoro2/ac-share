@@ -4,10 +4,15 @@ WoW WotLK 3.3.5 Stat Calculation Formulas.
 Pure functions for computing derived stats: HP/Mana from primary stats,
 combat rating conversions, spell damage/heal calculations, Spirit regen,
 and attack power formulas. All formulas derived from AzerothCore C++ source.
+
+When DBC/CSV data files are loaded (via constants.py at import time), these
+functions use exact per-level lookup tables. Otherwise they fall back to
+corrected hardcoded approximations.
 """
 
 import math
 
+import sim.constants as _c
 from sim.constants import (
     CLASS_PRIEST, CLASS_WARRIOR, CLASS_PALADIN, CLASS_HUNTER, CLASS_ROGUE,
     CLASS_DEATH_KNIGHT, CLASS_SHAMAN, CLASS_MAGE, CLASS_WARLOCK, CLASS_DRUID,
@@ -24,16 +29,42 @@ from sim.constants import (
     SP_COEFF_SW_PAIN_TICK, SP_COEFF_PW_SHIELD, SP_COEFF_RENEW_TICK,
     SP_COEFF_HOLY_FIRE, SP_COEFF_HOLY_FIRE_DOT_TICK,
 )
+from sim.dbc_loader import (
+    CR_DEFENSE_SKILL as _CR_DEFENSE,
+    CR_DODGE as _CR_DODGE,
+    CR_PARRY as _CR_PARRY,
+    CR_BLOCK as _CR_BLOCK,
+    CR_HIT_MELEE as _CR_HIT_MELEE,
+    CR_HIT_RANGED as _CR_HIT_RANGED,
+    CR_HIT_SPELL as _CR_HIT_SPELL,
+    CR_CRIT_MELEE as _CR_CRIT_MELEE,
+    CR_CRIT_RANGED as _CR_CRIT_RANGED,
+    CR_CRIT_SPELL as _CR_CRIT_SPELL,
+    CR_RESILIENCE as _CR_RESILIENCE,
+    CR_HASTE_MELEE as _CR_HASTE_MELEE,
+    CR_HASTE_RANGED as _CR_HASTE_RANGED,
+    CR_HASTE_SPELL as _CR_HASTE_SPELL,
+    CR_EXPERTISE as _CR_EXPERTISE,
+    CR_ARMOR_PENETRATION as _CR_ARMOR_PEN,
+)
 
 
-# ─── Per-level stat scaling (class-generic WotLK formulas) ───────────
+# ─── Per-level stat scaling ──────────────────────────────────────────
 
 def class_base_stat(class_id: int, stat_index: int, level: int) -> int:
     """Base primary stat at given level for any class.
 
     stat_index: 0=str, 1=agi, 2=stam, 3=int, 4=spi
-    AzerothCore scales stats at ~+1 per level (simplified).
+    Uses exact per-level values from player_class_stats.csv when loaded,
+    otherwise falls back to base + (level-1) approximation.
     """
+    tbl = _c.PLAYER_CLASS_LEVEL_STATS
+    if tbl is not None:
+        key = (class_id, min(level, 80))
+        if key in tbl:
+            # tuple: (base_hp, base_mana, str, agi, sta, int, spi)
+            return tbl[key][stat_index + 2]
+    # Fallback
     base = CLASS_BASE_STATS.get(class_id, CLASS_BASE_STATS[CLASS_PRIEST])
     return base[stat_index] + (level - 1)
 
@@ -42,8 +73,19 @@ def player_max_hp(level: int, bonus_stamina: int = 0, bonus_hp: int = 0,
                   class_id: int = CLASS_PRIEST) -> int:
     """HP with WotLK Stamina formula (StatSystem.cpp:GetHealthBonusFromStamina).
 
+    base_hp from PlayerClassLevelInfo (CSV), then:
     First 20 stamina = 1 HP each, above 20 = 10 HP each.
+    bonus_stamina is gear stamina only (base stamina from level table).
     """
+    tbl = _c.PLAYER_CLASS_LEVEL_STATS
+    if tbl is not None:
+        key = (class_id, min(level, 80))
+        if key in tbl:
+            base_hp = tbl[key][0]  # BaseHP from CSV
+            total_stam = tbl[key][4] + bonus_stamina  # CSV sta + gear sta
+            stam_hp = min(total_stam, 20) + max(total_stam - 20, 0) * 10
+            return base_hp + stam_hp + bonus_hp
+    # Fallback: old formula
     base_hp_data = CLASS_BASE_HP_MANA.get(class_id, CLASS_BASE_HP_MANA[CLASS_PRIEST])
     hp_per_lvl = CLASS_HP_PER_LEVEL.get(class_id, 50)
     base_hp = base_hp_data[0] + (level - 1) * hp_per_lvl
@@ -61,6 +103,15 @@ def player_max_mana(level: int, bonus_intellect: int = 0, bonus_mana: int = 0,
     """
     if CLASS_POWER_TYPE.get(class_id, POWER_MANA) != POWER_MANA:
         return 0
+    tbl = _c.PLAYER_CLASS_LEVEL_STATS
+    if tbl is not None:
+        key = (class_id, min(level, 80))
+        if key in tbl:
+            base_mana = tbl[key][1]  # BaseMana from CSV
+            total_int = tbl[key][5] + bonus_intellect  # CSV int + gear int
+            int_mana = min(total_int, 20) + max(total_int - 20, 0) * 15
+            return base_mana + int_mana + bonus_mana
+    # Fallback
     base_mana_data = CLASS_BASE_HP_MANA.get(class_id, CLASS_BASE_HP_MANA[CLASS_PRIEST])
     mana_per_lvl = CLASS_MANA_PER_LEVEL.get(class_id, 5)
     base_mana = base_mana_data[1] + (level - 1) * mana_per_lvl
@@ -69,41 +120,52 @@ def player_max_mana(level: int, bonus_intellect: int = 0, bonus_mana: int = 0,
     return base_mana + int_mana + bonus_mana
 
 
-# ─── GtCombatRatings level scaling (from GtCombatRatings.dbc) ─────────
-# All combat ratings share the same relative growth curve per level.
-# This table stores the fraction of L80 rating_per_1pct at key levels.
-# Derived from: crit L80=45.91, crit L70=22.08, crit L60≈14.0
-# Linear interpolation between key points.
+# ─── GtCombatRatings (from GtCombatRatings.dbc) ──────────────────────
+
+# Fallback level scaling curve (used only when DBC not loaded)
 _RATING_LEVEL_SCALE = (
-    (1, 0.0125), (10, 0.0125),   # flat L1-10 (items don't have ratings here)
-    (20, 0.05), (30, 0.10),       # slow growth
-    (40, 0.17), (50, 0.25),       # moderate growth
-    (60, 0.305), (70, 0.481),     # steeper (L60/L70 from known WotLK data)
-    (80, 1.00),                    # reference level
+    (1, 0.0125), (10, 0.0125),
+    (20, 0.05), (30, 0.10),
+    (40, 0.17), (50, 0.25),
+    (60, 0.305), (70, 0.481),
+    (80, 1.00),
 )
 
 
-def _rating_to_pct(rating: int, l80_value: float, level: int) -> float:
-    """Convert combat rating to percentage bonus (WotLK GtCombatRatings scaling).
+def _rating_to_pct(rating, l80_value_or_cr_type, level):
+    """Convert combat rating to percentage bonus.
 
-    Uses the actual non-linear per-level scaling from GtCombatRatings.dbc:
-    - Levels 1-10: flat, very low requirement (ratings very effective)
-    - Levels 10-60: grows roughly as power curve
-    - Levels 60-80: steep growth (ratings much less effective)
-
-    This matches the WoW behavior where 100 crit rating at L1 gives far
-    more crit% than the same 100 crit rating at L80.
+    When GT_COMBAT_RATINGS is loaded from DBC, l80_value_or_cr_type can be
+    the CR_TYPE_* enum for exact per-level lookup. Otherwise uses the L80
+    anchor value with interpolated scaling curve.
     """
     if rating <= 0:
         return 0.0
-    # Interpolate level scaling factor from lookup table
+
+    # Try DBC lookup first
+    gt = _c.GT_COMBAT_RATINGS
+    if gt is not None:
+        # Determine CR type — if it's a float, map it to the enum
+        cr_type = l80_value_or_cr_type
+        if isinstance(cr_type, float):
+            cr_type = _l80_to_cr_type(cr_type)
+        if cr_type is not None:
+            lvl = min(max(level, 1), 100)
+            val = gt.get((cr_type, lvl))
+            if val is not None and val > 0:
+                return rating / val
+
+    # Fallback: interpolated scaling from L80 anchor
+    l80_value = l80_value_or_cr_type
+    if not isinstance(l80_value, (int, float)):
+        return 0.0
     scale = _RATING_LEVEL_SCALE
     if level <= scale[0][0]:
         factor = scale[0][1]
     elif level >= scale[-1][0]:
         factor = scale[-1][1]
     else:
-        factor = scale[-1][1]  # fallback
+        factor = scale[-1][1]
         for i in range(len(scale) - 1):
             if scale[i][0] <= level <= scale[i + 1][0]:
                 t = (level - scale[i][0]) / (scale[i + 1][0] - scale[i][0])
@@ -113,16 +175,92 @@ def _rating_to_pct(rating: int, l80_value: float, level: int) -> float:
     return rating / rating_per_pct
 
 
+# Map L80 anchor floats to CR type enums (for backward compat with old callers)
+_L80_TO_CR = None
+
+def _l80_to_cr_type(l80_value):
+    """Map an L80 anchor value to CR type enum."""
+    global _L80_TO_CR
+    if _L80_TO_CR is None:
+        _L80_TO_CR = {
+            CR_DEFENSE_L80: _CR_DEFENSE,
+            CR_DODGE_L80: _CR_DODGE,
+            CR_PARRY_L80: _CR_PARRY,
+            CR_BLOCK_L80: _CR_BLOCK,
+            CR_HIT_MELEE_L80: _CR_HIT_MELEE,
+            CR_HIT_RANGED_L80: _CR_HIT_RANGED,
+            CR_HIT_SPELL_L80: _CR_HIT_SPELL,
+            CR_CRIT_MELEE_L80: _CR_CRIT_MELEE,
+            CR_CRIT_RANGED_L80: _CR_CRIT_RANGED,
+            CR_CRIT_SPELL_L80: _CR_CRIT_SPELL,
+            CR_HASTE_MELEE_L80: _CR_HASTE_MELEE,
+            CR_HASTE_RANGED_L80: _CR_HASTE_RANGED,
+            CR_HASTE_SPELL_L80: _CR_HASTE_SPELL,
+            CR_EXPERTISE_L80: _CR_EXPERTISE,
+            CR_ARMOR_PENETRATION_L80: _CR_ARMOR_PEN,
+            CR_RESILIENCE_L80: _CR_RESILIENCE,
+        }
+    return _L80_TO_CR.get(l80_value)
+
+
+# ─── Crit from stats ─────────────────────────────────────────────────
+
+def _get_melee_crit_from_agi(class_id, level):
+    """Get melee crit-per-agility ratio from DBC or fallback."""
+    tbl = _c.GT_MELEE_CRIT_TABLE
+    if tbl is not None:
+        val = tbl.get((class_id, min(level, 80)))
+        if val is not None:
+            return val
+    # Fallback: lerp L1..L80
+    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
+    t = min((level - 1) / 79.0, 1.0)
+    return gt[1] * (1 - t) + gt[2] * t
+
+
+def _get_melee_crit_base(class_id):
+    """Get base melee crit fraction from DBC or fallback."""
+    tbl = _c.GT_MELEE_CRIT_BASE_TABLE
+    if tbl is not None:
+        val = tbl.get(class_id)
+        if val is not None:
+            return val
+    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
+    return gt[0]
+
+
+def _get_spell_crit_from_int(class_id, level):
+    """Get spell crit-per-intellect ratio from DBC or fallback."""
+    tbl = _c.GT_SPELL_CRIT_TABLE
+    if tbl is not None:
+        val = tbl.get((class_id, min(level, 80)))
+        if val is not None:
+            return val
+    gt = GT_SPELL_CRIT.get(class_id, GT_SPELL_CRIT[CLASS_PRIEST])
+    t = min((level - 1) / 79.0, 1.0)
+    return gt[1] * (1 - t) + gt[2] * t
+
+
+def _get_spell_crit_base(class_id):
+    """Get base spell crit fraction from DBC or fallback."""
+    tbl = _c.GT_SPELL_CRIT_BASE_TABLE
+    if tbl is not None:
+        val = tbl.get(class_id)
+        if val is not None:
+            return val
+    gt = GT_SPELL_CRIT.get(class_id, GT_SPELL_CRIT[CLASS_PRIEST])
+    return gt[0]
+
+
 def melee_crit_chance(level: int, total_agility: int, crit_rating: int = 0,
                       class_id: int = CLASS_PRIEST) -> float:
     """Melee crit % from Agility + Crit Rating (GtChanceToMeleeCrit.dbc).
 
     Formula: (base + agi * ratio) * 100 + rating_bonus
     """
-    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
-    t = min((level - 1) / 79.0, 1.0)
-    agi_ratio = gt[1] * (1 - t) + gt[2] * t
-    crit = (gt[0] + total_agility * agi_ratio) * 100.0
+    base = _get_melee_crit_base(class_id)
+    agi_ratio = _get_melee_crit_from_agi(class_id, level)
+    crit = (base + total_agility * agi_ratio) * 100.0
     crit += _rating_to_pct(crit_rating, CR_CRIT_MELEE_L80, level)
     return max(crit, 0.0)
 
@@ -130,10 +268,9 @@ def melee_crit_chance(level: int, total_agility: int, crit_rating: int = 0,
 def ranged_crit_chance(level: int, total_agility: int, crit_rating: int = 0,
                        class_id: int = CLASS_PRIEST) -> float:
     """Ranged crit % — same Agility formula as melee, different rating."""
-    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
-    t = min((level - 1) / 79.0, 1.0)
-    agi_ratio = gt[1] * (1 - t) + gt[2] * t
-    crit = (gt[0] + total_agility * agi_ratio) * 100.0
+    base = _get_melee_crit_base(class_id)
+    agi_ratio = _get_melee_crit_from_agi(class_id, level)
+    crit = (base + total_agility * agi_ratio) * 100.0
     crit += _rating_to_pct(crit_rating, CR_CRIT_RANGED_L80, level)
     return max(crit, 0.0)
 
@@ -141,14 +278,15 @@ def ranged_crit_chance(level: int, total_agility: int, crit_rating: int = 0,
 def spell_crit_chance(level: int, bonus_intellect: int = 0, bonus_crit_rating: int = 0,
                       class_id: int = CLASS_PRIEST) -> float:
     """Spell crit % from Intellect + Crit Rating (GtChanceToSpellCrit.dbc)."""
-    gt = GT_SPELL_CRIT.get(class_id, GT_SPELL_CRIT[CLASS_PRIEST])
+    base = _get_spell_crit_base(class_id)
     total_int = class_base_stat(class_id, 3, level) + bonus_intellect
-    t = min((level - 1) / 79.0, 1.0)
-    int_ratio = gt[1] * (1 - t) + gt[2] * t
-    crit = (gt[0] + total_int * int_ratio) * 100.0
+    int_ratio = _get_spell_crit_from_int(class_id, level)
+    crit = (base + total_int * int_ratio) * 100.0
     crit += _rating_to_pct(bonus_crit_rating, CR_CRIT_SPELL_L80, level)
     return max(crit, 0.0)
 
+
+# ─── Haste ────────────────────────────────────────────────────────────
 
 def melee_haste_pct(level: int, haste_rating: int = 0) -> float:
     """Melee haste % from Haste Rating."""
@@ -165,15 +303,15 @@ def spell_haste_pct(level: int, bonus_haste_rating: int = 0) -> float:
     return _rating_to_pct(bonus_haste_rating, CR_HASTE_SPELL_L80, level)
 
 
+# ─── Dodge / Parry / Block ───────────────────────────────────────────
+
 def dodge_chance(level: int, total_agility: int, dodge_rating: int = 0,
                  defense_rating: int = 0, class_id: int = CLASS_PRIEST) -> float:
     """Dodge % from Agility + Dodge Rating + Defense (WotLK diminishing returns).
 
     From Player.cpp:GetDodgeFromAgility + StatSystem.cpp:UpdateDodgePercentage.
     """
-    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
-    t = min((level - 1) / 79.0, 1.0)
-    agi_ratio = gt[1] * (1 - t) + gt[2] * t
+    agi_ratio = _get_melee_crit_from_agi(class_id, level)
     c2d = CRIT_TO_DODGE.get(class_id, CRIT_TO_DODGE[CLASS_PRIEST])
     db = DODGE_BASE.get(class_id, DODGE_BASE[CLASS_PRIEST])
 
@@ -219,6 +357,8 @@ def block_chance(level: int, block_rating: int = 0, defense_rating: int = 0) -> 
     return max(base, 0.0)
 
 
+# ─── Attack Power ─────────────────────────────────────────────────────
+
 def melee_attack_power(level: int, total_str: int, total_agi: int,
                        class_id: int = CLASS_PRIEST) -> int:
     """Melee Attack Power from stats (StatSystem.cpp:UpdateAttackPowerAndDamage).
@@ -254,6 +394,8 @@ def ranged_attack_power(level: int, total_str: int, total_agi: int,
     return int(total_agi - 10.0)
 
 
+# ─── Other combat stats ──────────────────────────────────────────────
+
 def expertise_pct(level: int, expertise_rating: int = 0) -> float:
     """Expertise reduces dodge/parry by 0.25% per point.
 
@@ -288,6 +430,8 @@ def hit_chance_spell(level: int, hit_rating: int = 0) -> float:
     return _rating_to_pct(hit_rating, CR_HIT_SPELL_L80, level)
 
 
+# ─── Spirit Regen ─────────────────────────────────────────────────────
+
 def spirit_mana_regen(level: int, bonus_intellect: int = 0, bonus_spirit: int = 0,
                       class_id: int = CLASS_PRIEST) -> float:
     """Spirit-based mana regen per tick (0.5s) while NOT casting.
@@ -296,13 +440,21 @@ def spirit_mana_regen(level: int, bonus_intellect: int = 0, bonus_spirit: int = 
       power_regen = sqrt(int) * spirit * coeff
     Returns per-tick value (0.5s).
     """
-    gt = GT_REGEN_MP_PER_SPT.get(class_id)
-    if gt is None:
-        return 0.0  # non-mana classes
+    # Get coefficient from DBC table or fallback
+    tbl = _c.GT_REGEN_MP_PER_SPT_TABLE
+    if tbl is not None:
+        coeff = tbl.get((class_id, min(level, 80)))
+        if coeff is None or coeff <= 0:
+            return 0.0
+    else:
+        gt = GT_REGEN_MP_PER_SPT.get(class_id)
+        if gt is None:
+            return 0.0
+        t = min((level - 1) / 79.0, 1.0)
+        coeff = gt[0] * (1 - t) + gt[1] * t
+
     total_int = class_base_stat(class_id, 3, level) + bonus_intellect
     total_spirit = class_base_stat(class_id, 4, level) + bonus_spirit
-    t = min((level - 1) / 79.0, 1.0)
-    coeff = gt[0] * (1 - t) + gt[1] * t
     regen_per_sec = math.sqrt(max(total_int, 1)) * total_spirit * coeff
     return regen_per_sec * 0.5  # per tick
 
@@ -311,14 +463,24 @@ def spirit_hp_regen(level: int, total_spirit: int,
                     class_id: int = CLASS_PRIEST) -> float:
     """Spirit-based HP regen per tick (0.5s) while OOC.
 
-    Very small contribution — most HP regen is flat OOC regen.
+    Uses GtRegenHPPerSpt.dbc coefficient when available.
     """
-    coeff = GT_HP_REGEN_PER_SPT.get(class_id, 0.0)
+    tbl = _c.GT_REGEN_HP_PER_SPT_TABLE
+    if tbl is not None:
+        coeff = tbl.get((class_id, min(level, 80)), 0.0)
+    else:
+        gt = GT_HP_REGEN_PER_SPT.get(class_id, (0.0, 0.0))
+        if isinstance(gt, (int, float)):
+            coeff = gt
+        else:
+            t = min((level - 1) / 79.0, 1.0)
+            coeff = gt[0] * (1 - t) + gt[1] * t
     if coeff <= 0:
         return 0.0
-    extra_spirit = max(0, total_spirit - 50)
-    return extra_spirit * coeff * 0.5
+    return total_spirit * coeff * 0.5
 
+
+# ─── Spell Damage / Heal Formulas ────────────────────────────────────
 
 def smite_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
     """Smite damage range: base (13-17) + 10 per level + SP*coeff."""
@@ -537,5 +699,3 @@ def resolve_spell_hit(player_level: int, mob_level: int,
     if roll_crit < spell_crit_pct:
         return SPELL_CRIT
     return SPELL_HIT
-
-

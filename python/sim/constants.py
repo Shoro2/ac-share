@@ -3,9 +3,22 @@ WoW WotLK 3.3.5 Constants and DBC Tables.
 
 All game constants, class definitions, stat weights, equipment slots,
 base stats, combat rating tables, and spell power coefficients.
-Derived from AzerothCore C++ source (SharedDefines.h, Player.h,
-StatSystem.cpp, GtCombatRatings.dbc, spell_bonus_data).
+
+Primary stat tables (base stats, HP/Mana per level) and GameTable values
+(combat ratings, crit from stat, spirit regen) are loaded from DBC/CSV files
+at import time when available. Hardcoded fallback values are used when the
+data files are not found.
+
+Data files expected in <repo>/data/:
+  - player_class_stats.csv  (per-class per-level base stats from AzerothCore DB)
+  - dbc/gtCombatRatings.dbc (combat rating conversion tables)
+  - dbc/gtChanceToMeleeCrit.dbc, dbc/gtChanceToMeleeCritBase.dbc
+  - dbc/gtChanceToSpellCrit.dbc, dbc/gtChanceToSpellCritBase.dbc
+  - dbc/gtRegenMPPerSpt.dbc, dbc/gtRegenHPPerSpt.dbc
+  - dbc/gtOCTRegenHP.dbc, dbc/gtOCTRegenMP.dbc
 """
+
+import os
 
 # ─── XP Table (cumulative XP needed to reach level N) ────────────────
 # Index = level, value = total XP required.  XP_TABLE[1] = 0 (start).
@@ -623,43 +636,49 @@ INVTYPE_TWO_HAND = 17  # Two-hand weapons clear offhand on equip
 
 # ─── WotLK Base Stats per Class (from PlayerClassLevelInfo at L1) ────
 # {class_id: (strength, agility, stamina, intellect, spirit)}
-# Values from Human race, level 1. Other races differ by ~1-3.
+# Fallback values — overridden by player_class_stats.csv when available.
 CLASS_BASE_STATS = {
-    CLASS_WARRIOR:      (23, 20, 22, 17, 19),
-    CLASS_PALADIN:      (22, 17, 21, 20, 20),
-    CLASS_HUNTER:       (16, 24, 21, 17, 20),
-    CLASS_ROGUE:        (18, 24, 20, 17, 19),
-    CLASS_PRIEST:       (15, 17, 20, 22, 23),
+    CLASS_WARRIOR:      (23, 20, 22, 20, 20),
+    CLASS_PALADIN:      (22, 20, 22, 20, 21),
+    CLASS_HUNTER:       (20, 23, 22, 20, 21),
+    CLASS_ROGUE:        (21, 23, 21, 20, 20),
+    CLASS_PRIEST:       (20, 20, 20, 22, 23),
     CLASS_DEATH_KNIGHT: (24, 16, 23, 11, 18),
-    CLASS_SHAMAN:       (18, 16, 21, 20, 22),
-    CLASS_MAGE:         (15, 17, 18, 24, 22),
-    CLASS_WARLOCK:      (15, 17, 20, 22, 22),
-    CLASS_DRUID:        (17, 17, 19, 22, 22),
+    CLASS_SHAMAN:       (21, 20, 21, 21, 22),
+    CLASS_MAGE:         (20, 20, 20, 24, 22),
+    CLASS_WARLOCK:      (20, 20, 21, 22, 23),
+    CLASS_DRUID:        (21, 20, 20, 22, 23),
 }
 
-# Base HP / Mana at level 1 per class (from PlayerClassInfo)
-# (base_hp, base_mana_or_power)
+# Base HP / Mana at level 1 per class (from PlayerClassLevelInfo)
+# (base_hp, base_mana) — the "create" values before stamina/intellect bonus.
+# Fallback values — overridden by player_class_stats.csv when available.
 CLASS_BASE_HP_MANA = {
-    CLASS_WARRIOR:      (60, 0),      # rage = 0 base
-    CLASS_PALADIN:      (68, 80),
-    CLASS_HUNTER:       (56, 85),
-    CLASS_ROGUE:        (55, 100),    # energy = 100
-    CLASS_PRIEST:       (72, 123),
-    CLASS_DEATH_KNIGHT: (130, 100),   # runic = 100
-    CLASS_SHAMAN:       (57, 78),
-    CLASS_MAGE:         (52, 130),
-    CLASS_WARLOCK:      (58, 110),
-    CLASS_DRUID:        (56, 90),
+    CLASS_WARRIOR:      (20, 0),
+    CLASS_PALADIN:      (28, 60),
+    CLASS_HUNTER:       (36, 65),
+    CLASS_ROGUE:        (25, 0),
+    CLASS_PRIEST:       (52, 73),
+    CLASS_DEATH_KNIGHT: (130, 0),
+    CLASS_SHAMAN:       (37, 55),
+    CLASS_MAGE:         (32, 100),
+    CLASS_WARLOCK:      (23, 90),
+    CLASS_DRUID:        (34, 60),
 }
 
-# HP gain per level (simplified — real values from DBC vary slightly)
+# Per-class per-level stat table loaded from CSV (populated at module init).
+# {(class_id, level): (base_hp, base_mana, str, agi, sta, int, spi)}
+# When loaded, class_base_stat() and player_max_hp/mana use this directly.
+PLAYER_CLASS_LEVEL_STATS = None
+
+# HP gain per level — fallback only (unused when CSV is loaded)
 CLASS_HP_PER_LEVEL = {
     CLASS_WARRIOR: 60, CLASS_PALADIN: 55, CLASS_HUNTER: 46,
     CLASS_ROGUE: 45, CLASS_PRIEST: 50, CLASS_DEATH_KNIGHT: 60,
     CLASS_SHAMAN: 52, CLASS_MAGE: 42, CLASS_WARLOCK: 48, CLASS_DRUID: 50,
 }
 
-# Mana gain per level for mana classes (simplified)
+# Mana gain per level — fallback only (unused when CSV is loaded)
 CLASS_MANA_PER_LEVEL = {
     CLASS_PALADIN: 18, CLASS_HUNTER: 15, CLASS_PRIEST: 5,
     CLASS_SHAMAN: 17, CLASS_MAGE: 22, CLASS_WARLOCK: 20, CLASS_DRUID: 18,
@@ -670,34 +689,45 @@ CLASS_MANA_PER_LEVEL = {
 # {class_id: (base_crit_fraction, ratio_L1, ratio_L80)}
 # base is from GtChanceToMeleeCritBase, ratio from GtChanceToMeleeCrit
 # C++ formula: (base + agi * ratio) * 100.0f → percentage
+# Fallback values — corrected from DBC. Overridden by per-level DBC tables.
 GT_MELEE_CRIT = {
-    CLASS_WARRIOR:      (0.0000, 0.000523, 0.000080),
-    CLASS_PALADIN:      (0.0327, 0.000441, 0.000068),
-    CLASS_HUNTER:       (-0.0115, 0.000302, 0.000113),
-    CLASS_ROGUE:        (-0.0295, 0.000273, 0.000145),
-    CLASS_PRIEST:       (0.0157, 0.000441, 0.000068),
-    CLASS_DEATH_KNIGHT: (0.0000, 0.000523, 0.000080),
-    CLASS_SHAMAN:       (0.0167, 0.000376, 0.000078),
-    CLASS_MAGE:         (0.0335, 0.000508, 0.000078),
-    CLASS_WARLOCK:      (0.0183, 0.000441, 0.000068),
-    CLASS_DRUID:        (0.0188, 0.000376, 0.000116),
+    CLASS_WARRIOR:      (0.031891, 0.002587, 0.000160),
+    CLASS_PALADIN:      (0.032685, 0.002164, 0.000192),
+    CLASS_HUNTER:       (-0.015320, 0.002840, 0.000120),
+    CLASS_ROGUE:        (-0.002950, 0.004476, 0.000120),
+    CLASS_PRIEST:       (0.031765, 0.000912, 0.000192),
+    CLASS_DEATH_KNIGHT: (0.031891, 0.002587, 0.000160),
+    CLASS_SHAMAN:       (0.029220, 0.001039, 0.000120),
+    CLASS_MAGE:         (0.034540, 0.000773, 0.000196),
+    CLASS_WARLOCK:      (0.026220, 0.001189, 0.000198),
+    CLASS_DRUID:        (0.074755, 0.001262, 0.000120),
 }
 
 # ─── WotLK Spell Crit from Intellect (from GtChanceToSpellCrit.dbc) ─
 # {class_id: (base_crit_fraction, ratio_L1, ratio_L80)}
 # C++ formula: (base + int * ratio) * 100.0f → percentage
+# Fallback values — corrected from DBC. Overridden by per-level DBC tables.
 GT_SPELL_CRIT = {
     CLASS_WARRIOR:      (0.0000, 0.000000, 0.000000),
-    CLASS_PALADIN:      (0.0328, 0.000342, 0.000068),
-    CLASS_HUNTER:       (0.0115, 0.000441, 0.000068),
+    CLASS_PALADIN:      (0.033355, 0.000832, 0.000060),
+    CLASS_HUNTER:       (0.036020, 0.000699, 0.000060),
     CLASS_ROGUE:        (0.0000, 0.000000, 0.000000),
-    CLASS_PRIEST:       (0.0124, 0.000660, 0.000060),
+    CLASS_PRIEST:       (0.012375, 0.001710, 0.000060),
     CLASS_DEATH_KNIGHT: (0.0000, 0.000000, 0.000000),
-    CLASS_SHAMAN:       (0.0229, 0.000376, 0.000078),
-    CLASS_MAGE:         (0.0091, 0.000508, 0.000078),
-    CLASS_WARLOCK:      (0.0170, 0.000441, 0.000068),
-    CLASS_DRUID:        (0.0188, 0.000376, 0.000078),
+    CLASS_SHAMAN:       (0.022010, 0.001333, 0.000060),
+    CLASS_MAGE:         (0.009075, 0.001637, 0.000060),
+    CLASS_WARLOCK:      (0.017000, 0.001500, 0.000060),
+    CLASS_DRUID:        (0.018515, 0.000000, 0.000000),
 }
+
+# Per-level DBC lookup tables (populated at module init if DBC files found)
+GT_MELEE_CRIT_TABLE = None      # {(class_id, level): crit_per_agi}
+GT_MELEE_CRIT_BASE_TABLE = None # {class_id: base_crit_fraction}
+GT_SPELL_CRIT_TABLE = None      # {(class_id, level): crit_per_int}
+GT_SPELL_CRIT_BASE_TABLE = None # {class_id: base_crit_fraction}
+GT_COMBAT_RATINGS = None        # {(cr_type, level): rating_per_pct}
+GT_REGEN_MP_PER_SPT_TABLE = None  # {(class_id, level): coeff}
+GT_REGEN_HP_PER_SPT_TABLE = None  # {(class_id, level): coeff}
 
 # ─── WotLK Dodge from Agility (from GetDodgeFromAgility in Player.cpp) ─
 # base_dodge[class] + agility * crit_ratio * crit_to_dodge_coeff
@@ -741,48 +771,74 @@ PARRY_CAP = {
 
 
 # ─── WotLK Spirit->Mana Regen (from GtRegenMPPerSpt.dbc) ────────────
-# {class_id: (coeff_L1, coeff_L80)}
+# {class_id: (coeff_L1, coeff_L80)} — fallback when DBC not loaded.
+# Corrected: all mana classes share the same DBC values (0.062937 at L1).
 # C++ formula: sqrt(int) * spirit * coeff → mana per second (OOC)
 GT_REGEN_MP_PER_SPT = {
-    CLASS_PALADIN:  (0.0230, 0.0056),
-    CLASS_HUNTER:   (0.0230, 0.0045),
-    CLASS_PRIEST:   (0.0250, 0.0060),
-    CLASS_SHAMAN:   (0.0240, 0.0058),
-    CLASS_MAGE:     (0.0250, 0.0060),
-    CLASS_WARLOCK:  (0.0240, 0.0058),
-    CLASS_DRUID:    (0.0240, 0.0060),
+    CLASS_PALADIN:  (0.062937, 0.003345),
+    CLASS_HUNTER:   (0.062937, 0.003345),
+    CLASS_PRIEST:   (0.062937, 0.003345),
+    CLASS_SHAMAN:   (0.062937, 0.003345),
+    CLASS_MAGE:     (0.062937, 0.003345),
+    CLASS_WARLOCK:  (0.062937, 0.003345),
+    CLASS_DRUID:    (0.062937, 0.003345),
 }
 
-# ─── WotLK Spirit->HP Regen (from GtOCTRegenHP + GtRegenHPPerSpt) ───
-# base_regen + (spirit_above_50 * spirit_ratio) — simplified
-# For most classes it's negligible and handled by OOC flat regen
+# ─── WotLK Spirit->HP Regen (from GtRegenHPPerSpt.dbc) ──────────────
+# {class_id: (coeff_L1, coeff_L80)} — fallback when DBC not loaded.
 GT_HP_REGEN_PER_SPT = {
-    CLASS_WARRIOR: 0.0, CLASS_PALADIN: 0.0, CLASS_HUNTER: 0.0,
-    CLASS_ROGUE: 0.0, CLASS_PRIEST: 0.008, CLASS_DEATH_KNIGHT: 0.0,
-    CLASS_SHAMAN: 0.008, CLASS_MAGE: 0.008, CLASS_WARLOCK: 0.008,
-    CLASS_DRUID: 0.008,
+    CLASS_WARRIOR: (1.500000, 0.500000),
+    CLASS_PALADIN: (0.375000, 0.125000),
+    CLASS_HUNTER:  (0.375000, 0.125000),
+    CLASS_ROGUE:   (1.000000, 0.333333),
+    CLASS_PRIEST:  (0.125000, 0.041667),
+    CLASS_DEATH_KNIGHT: (1.500000, 0.500000),
+    CLASS_SHAMAN:  (0.214286, 0.071429),
+    CLASS_MAGE:    (0.125000, 0.041667),
+    CLASS_WARLOCK: (0.136364, 0.045455),
+    CLASS_DRUID:   (0.0, 0.0),
 }
 
 
 # ─── WotLK Combat Rating Conversions (from GtCombatRatings.dbc) ─────
-# Rating needed for 1% at level 80. Scales linearly with level.
-# For levels below 80: rating_for_1pct = L80_value * level / 80
-CR_DEFENSE_L80 = 4.92       # defense skill rating -> 1 defense skill point
-CR_DODGE_L80 = 39.35
-CR_PARRY_L80 = 39.35
-CR_BLOCK_L80 = 16.39
-CR_HIT_MELEE_L80 = 32.79
-CR_HIT_RANGED_L80 = 32.79
-CR_HIT_SPELL_L80 = 26.23
-CR_CRIT_MELEE_L80 = 45.91
-CR_CRIT_RANGED_L80 = 45.91
-CR_CRIT_SPELL_L80 = 45.91
-CR_HASTE_MELEE_L80 = 32.79
-CR_HASTE_RANGED_L80 = 32.79
-CR_HASTE_SPELL_L80 = 32.79
-CR_EXPERTISE_L80 = 8.20     # per 1 expertise (reduces dodge/parry by 0.25%)
-CR_ARMOR_PENETRATION_L80 = 13.99
-CR_RESILIENCE_L80 = 81.97   # for 1% reduction
+# Rating needed for 1% at level 80. Used as fallback when DBC not loaded.
+# Corrected from actual DBC values (Dodge/Parry/Resilience/ArP were wrong).
+CR_DEFENSE_L80 = 4.918498
+CR_DODGE_L80 = 45.250187
+CR_PARRY_L80 = 45.250187
+CR_BLOCK_L80 = 16.394995
+CR_HIT_MELEE_L80 = 32.789989
+CR_HIT_RANGED_L80 = 32.789989
+CR_HIT_SPELL_L80 = 26.231993
+CR_CRIT_MELEE_L80 = 45.905987
+CR_CRIT_RANGED_L80 = 45.905987
+CR_CRIT_SPELL_L80 = 45.905987
+CR_HASTE_MELEE_L80 = 32.789989
+CR_HASTE_RANGED_L80 = 32.789989
+CR_HASTE_SPELL_L80 = 32.789989
+CR_EXPERTISE_L80 = 8.197496
+CR_ARMOR_PENETRATION_L80 = 15.395300
+CR_RESILIENCE_L80 = 94.271225
+
+# Combat rating type enum (from SharedDefines.h, used with GT_COMBAT_RATINGS)
+from sim.dbc_loader import (  # noqa: E402
+    CR_DEFENSE_SKILL as CR_TYPE_DEFENSE,
+    CR_DODGE as CR_TYPE_DODGE,
+    CR_PARRY as CR_TYPE_PARRY,
+    CR_BLOCK as CR_TYPE_BLOCK,
+    CR_HIT_MELEE as CR_TYPE_HIT_MELEE,
+    CR_HIT_RANGED as CR_TYPE_HIT_RANGED,
+    CR_HIT_SPELL as CR_TYPE_HIT_SPELL,
+    CR_CRIT_MELEE as CR_TYPE_CRIT_MELEE,
+    CR_CRIT_RANGED as CR_TYPE_CRIT_RANGED,
+    CR_CRIT_SPELL as CR_TYPE_CRIT_SPELL,
+    CR_RESILIENCE as CR_TYPE_RESILIENCE,
+    CR_HASTE_MELEE as CR_TYPE_HASTE_MELEE,
+    CR_HASTE_RANGED as CR_TYPE_HASTE_RANGED,
+    CR_HASTE_SPELL as CR_TYPE_HASTE_SPELL,
+    CR_EXPERTISE as CR_TYPE_EXPERTISE,
+    CR_ARMOR_PENETRATION as CR_TYPE_ARMOR_PEN,
+)
 
 
 # ─── WotLK Spell Power Coefficients (from spell_bonus_data DB) ──────
@@ -794,4 +850,62 @@ SP_COEFF_PW_SHIELD = 0.8068       # absorb coefficient
 SP_COEFF_RENEW_TICK = 0.1         # per tick (~0.5 total over 5 ticks)
 SP_COEFF_HOLY_FIRE = 0.5711       # direct
 SP_COEFF_HOLY_FIRE_DOT_TICK = 0.024  # per tick
+
+
+# ─── Load DBC/CSV data at import time ────────────────────────────────
+# Auto-discovers data/ directory relative to this module's location.
+# If data files are found, the module-level lookup tables are populated
+# and formulas.py will use them for exact per-level values.
+
+def _init_dbc_tables():
+    """Try to load DBC/CSV tables from repo data/ directory."""
+    global PLAYER_CLASS_LEVEL_STATS
+    global GT_COMBAT_RATINGS, GT_MELEE_CRIT_TABLE, GT_MELEE_CRIT_BASE_TABLE
+    global GT_SPELL_CRIT_TABLE, GT_SPELL_CRIT_BASE_TABLE
+    global GT_REGEN_MP_PER_SPT_TABLE, GT_REGEN_HP_PER_SPT_TABLE
+    global CLASS_BASE_STATS, CLASS_BASE_HP_MANA
+
+    from sim.dbc_loader import load_all_dbc_tables
+
+    # Look for data/ relative to this file: python/sim/constants.py -> ../../data
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            '..', '..', 'data')
+    data_dir = os.path.normpath(data_dir)
+
+    if not os.path.isdir(data_dir):
+        return
+
+    tables = load_all_dbc_tables(data_dir)
+
+    # Player class-level stat table (per-class per-level base stats)
+    if tables['player_class_stats']:
+        PLAYER_CLASS_LEVEL_STATS = tables['player_class_stats']
+        # Update CLASS_BASE_STATS and CLASS_BASE_HP_MANA from the loaded L1 data
+        for cid in [CLASS_WARRIOR, CLASS_PALADIN, CLASS_HUNTER, CLASS_ROGUE,
+                    CLASS_PRIEST, CLASS_DEATH_KNIGHT, CLASS_SHAMAN, CLASS_MAGE,
+                    CLASS_WARLOCK, CLASS_DRUID]:
+            key = (cid, 1)
+            if key in PLAYER_CLASS_LEVEL_STATS:
+                hp, mana, s, a, st, i, sp = PLAYER_CLASS_LEVEL_STATS[key]
+                CLASS_BASE_STATS[cid] = (s, a, st, i, sp)
+                CLASS_BASE_HP_MANA[cid] = (hp, mana)
+
+    # GameTable DBC tables
+    if tables['gt_combat_ratings']:
+        GT_COMBAT_RATINGS = tables['gt_combat_ratings']
+    if tables['gt_melee_crit']:
+        GT_MELEE_CRIT_TABLE = tables['gt_melee_crit']
+    if tables['gt_melee_crit_base']:
+        GT_MELEE_CRIT_BASE_TABLE = tables['gt_melee_crit_base']
+    if tables['gt_spell_crit']:
+        GT_SPELL_CRIT_TABLE = tables['gt_spell_crit']
+    if tables['gt_spell_crit_base']:
+        GT_SPELL_CRIT_BASE_TABLE = tables['gt_spell_crit_base']
+    if tables['gt_regen_mp_per_spt']:
+        GT_REGEN_MP_PER_SPT_TABLE = tables['gt_regen_mp_per_spt']
+    if tables['gt_regen_hp_per_spt']:
+        GT_REGEN_HP_PER_SPT_TABLE = tables['gt_regen_hp_per_spt']
+
+
+_init_dbc_tables()
 
