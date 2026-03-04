@@ -44,7 +44,9 @@ from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSIT
                              EQUIPMENT_SLOT_RANGED, EQUIPMENT_SLOT_FINGER1,
                              EQUIPMENT_SLOT_FINGER2, EQUIPMENT_SLOT_TRINKET1,
                              EQUIPMENT_SLOT_TRINKET2, INVTYPE_TO_SLOTS,
-                             class_aware_score, CLASS_STAT_WEIGHTS)
+                             class_aware_score, CLASS_STAT_WEIGHTS,
+                             BAG_SLOT_START, BAG_SLOT_END, NUM_BAG_SLOTS,
+                             DEFAULT_BACKPACK_SLOTS, INVTYPE_BAG, EquippedBag)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -560,11 +562,11 @@ def test_loot_tables():
             print(f"  7f: Fallback loot (no DB): copper={sim_no_loot.player.loot_copper} ✓")
             break
 
-    # --- Test 7g: Inventory capacity (30 slots) ---
-    assert INVENTORY_SLOTS == 30, f"Expected 30 inventory slots, got {INVENTORY_SLOTS}"
+    # --- Test 7g: Inventory capacity (default backpack = 16 slots) ---
+    assert DEFAULT_BACKPACK_SLOTS == 16, f"Expected 16 backpack slots, got {DEFAULT_BACKPACK_SLOTS}"
     sim_inv = CombatSimulation(num_mobs=50, seed=123, loot_db=loot_db)
-    assert sim_inv.player.free_slots == INVENTORY_SLOTS, \
-        f"Player should start with {INVENTORY_SLOTS} free slots"
+    assert sim_inv.player.free_slots == DEFAULT_BACKPACK_SLOTS, \
+        f"Player should start with {DEFAULT_BACKPACK_SLOTS} free slots"
 
     # Fill inventory completely
     sim_inv.player.free_slots = 0
@@ -884,17 +886,19 @@ def test_vendor_system():
     # --- Test 8l: AI-driven sell via WoWSimEnv (action 8 triggers vendor nav) ---
     env = WoWSimEnv(num_mobs=5, seed=42)
     obs, _ = env.reset()
-    # Fill inventory with items
-    for i in range(20):
+    # Fill inventory with items (fill to near capacity)
+    fill_count = DEFAULT_BACKPACK_SLOTS - 2
+    for i in range(fill_count):
         env.sim.player.inventory.append(InventoryItem(
             entry=100+i, name=f"Junk_{i}", quality=0,
             sell_price=10, score=3.0, inventory_type=0))
-    env.sim.player.free_slots = INVENTORY_SLOTS - 20
+    env.sim.player.recalculate_free_slots()
 
     # Action 8 should activate vendor navigation
+    total_slots = env.sim.player.total_bag_slots
     assert not env._vendor_nav_active, "Should start inactive"
     obs, reward, done, trunc, info = env.step(8)
-    assert env._vendor_nav_active or env.sim.player.free_slots == INVENTORY_SLOTS, \
+    assert env._vendor_nav_active or env.sim.player.free_slots == total_slots, \
         "Action 8 should activate vendor nav (or sell if already at vendor)"
 
     # Run steps until vendor nav completes (max 500 steps)
@@ -902,10 +906,10 @@ def test_vendor_system():
         obs, reward, done, trunc, info = env.step(0)  # noop while override navigates
         if done or trunc:
             break
-        if env.sim.player.free_slots == INVENTORY_SLOTS:
+        if env.sim.player.free_slots == total_slots:
             break  # sold!
 
-    assert env.sim.player.free_slots == INVENTORY_SLOTS, \
+    assert env.sim.player.free_slots == total_slots, \
         f"Bot should have sold all items, but free_slots={env.sim.player.free_slots}"
     assert not env._vendor_nav_active, "Vendor nav should be deactivated after sell"
     assert env.sim.player.copper > 0, "Should have earned copper from selling"
@@ -1858,6 +1862,165 @@ def test_attribute_system():
     print("  PASSED\n")
 
 
+def test_bag_system():
+    """Test 13: Bag system — equip, upgrade, capacity, sell."""
+    print("Test 13: Bag System")
+
+    # --- 13a: Default backpack only (16 slots) ---
+    sim = CombatSimulation(num_mobs=5, seed=42)
+    p = sim.player
+    assert p.total_bag_slots == DEFAULT_BACKPACK_SLOTS, \
+        f"Starting capacity should be {DEFAULT_BACKPACK_SLOTS}, got {p.total_bag_slots}"
+    assert p.free_slots == DEFAULT_BACKPACK_SLOTS, \
+        f"Starting free_slots should be {DEFAULT_BACKPACK_SLOTS}, got {p.free_slots}"
+    assert len(p.bags) == 0, "Should start with no equipped bags"
+    print(f"  13a: Default backpack = {DEFAULT_BACKPACK_SLOTS} slots ✓")
+
+    # --- 13b: Equip a bag into empty slot ---
+    # Create a mock bag item (like ItemData from loot_db)
+    class MockBag:
+        def __init__(self, entry, name, container_slots, quality=1, sell_price=100,
+                     bag_family=0):
+            self.entry = entry
+            self.name = name
+            self.container_slots = container_slots
+            self.quality = quality
+            self.sell_price = sell_price
+            self.bag_family = bag_family
+            self.inventory_type = INVTYPE_BAG
+
+    bag6 = MockBag(4238, "Linen Bag", 6)
+    result = sim.try_equip_bag(bag6)
+    assert result is True, "Should equip bag into empty slot"
+    assert len(p.bags) == 1, "Should have 1 equipped bag"
+    assert p.total_bag_slots == DEFAULT_BACKPACK_SLOTS + 6, \
+        f"Total should be {DEFAULT_BACKPACK_SLOTS + 6}, got {p.total_bag_slots}"
+    assert p.free_slots == DEFAULT_BACKPACK_SLOTS + 6, \
+        f"Free should be {DEFAULT_BACKPACK_SLOTS + 6}, got {p.free_slots}"
+    print(f"  13b: Equip 6-slot bag → {p.total_bag_slots} total slots ✓")
+
+    # --- 13c: Fill all 4 bag slots ---
+    bag8 = MockBag(4240, "Woolen Bag", 8)
+    bag10 = MockBag(804, "Large Blue Sack", 10)
+    bag12 = MockBag(1623, "Raptor Skin Pouch", 12)
+    assert sim.try_equip_bag(bag8) is True
+    assert sim.try_equip_bag(bag10) is True
+    assert sim.try_equip_bag(bag12) is True
+    assert len(p.bags) == NUM_BAG_SLOTS, f"Should have {NUM_BAG_SLOTS} bags"
+    expected = DEFAULT_BACKPACK_SLOTS + 6 + 8 + 10 + 12
+    assert p.total_bag_slots == expected, \
+        f"Total should be {expected}, got {p.total_bag_slots}"
+    print(f"  13c: 4 bags equipped → {p.total_bag_slots} total slots ✓")
+
+    # --- 13d: Upgrade smallest bag (6-slot) with larger one (14-slot) ---
+    bag14 = MockBag(1685, "Troll-hide Bag", 14)
+    old_total = p.total_bag_slots
+    result = sim.try_equip_bag(bag14)
+    assert result is True, "Should replace 6-slot bag with 14-slot"
+    new_total = p.total_bag_slots
+    assert new_total == old_total - 6 + 14, \
+        f"Expected {old_total - 6 + 14}, got {new_total}"
+    # Old bag should be in inventory
+    bag_in_inv = [i for i in p.inventory if i.entry == 4238]
+    assert len(bag_in_inv) == 1, "Old 6-slot bag should be in inventory"
+    print(f"  13d: Upgrade 6→14 slot bag → {p.total_bag_slots} total ✓")
+
+    # --- 13e: Reject smaller bag when all slots full with bigger bags ---
+    bag4 = MockBag(9999, "Tiny Bag", 4)
+    result = sim.try_equip_bag(bag4)
+    assert result is False, "Should reject bag smaller than any equipped"
+    print("  13e: Reject smaller bag ✓")
+
+    # --- 13f: Reject profession bags (bag_family != 0) ---
+    herb_bag = MockBag(8000, "Herb Bag", 20, bag_family=32)
+    result = sim.try_equip_bag(herb_bag)
+    assert result is False, "Should reject profession-specific bags"
+    print("  13f: Reject profession bags (bag_family != 0) ✓")
+
+    # --- 13g: Combat blocks bag equip ---
+    p.in_combat = True
+    bag20 = MockBag(1977, "20-slot Bag", 20)
+    result = sim.equip_bag(bag20)
+    assert result is False, "Should block bag equip during combat"
+    p.in_combat = False
+    print("  13g: Combat blocks bag equip ✓")
+
+    # --- 13h: Free slots with inventory items ---
+    sim2 = CombatSimulation(num_mobs=5, seed=42)
+    p2 = sim2.player
+    # Add 10 items to inventory
+    for i in range(10):
+        p2.inventory.append(InventoryItem(
+            entry=i, name=f"Item {i}", quality=0, sell_price=10,
+            score=1.0, inventory_type=0))
+    p2.recalculate_free_slots()
+    assert p2.free_slots == DEFAULT_BACKPACK_SLOTS - 10, \
+        f"Should have {DEFAULT_BACKPACK_SLOTS - 10} free, got {p2.free_slots}"
+    # Equip a bag — should increase free slots
+    bag10b = MockBag(804, "Large Blue Sack", 10)
+    sim2.equip_bag(bag10b)
+    assert p2.free_slots == DEFAULT_BACKPACK_SLOTS + 10 - 10, \
+        f"Should have {DEFAULT_BACKPACK_SLOTS + 10 - 10} free, got {p2.free_slots}"
+    print(f"  13h: Bag equip updates free_slots with items in inventory ✓")
+
+    # --- 13i: Sell clears inventory but preserves bags ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p3 = sim3.player
+    sim3.equip_bag(MockBag(4238, "Linen Bag", 6))
+    sim3.equip_bag(MockBag(4240, "Woolen Bag", 8))
+    # Add items to inventory
+    for i in range(5):
+        p3.inventory.append(InventoryItem(
+            entry=i, name=f"Item {i}", quality=0, sell_price=10,
+            score=1.0, inventory_type=0))
+    p3.recalculate_free_slots()
+    assert len(p3.bags) == 2
+    old_bag_count = len(p3.bags)
+    # Sell: move player near vendor
+    p3.x = sim3.vendors[0].x
+    p3.y = sim3.vendors[0].y
+    sim3.do_sell()
+    assert len(p3.bags) == old_bag_count, "Bags should be preserved after sell"
+    assert len(p3.inventory) == 0, "Inventory should be empty after sell"
+    assert p3.free_slots == DEFAULT_BACKPACK_SLOTS + 6 + 8, \
+        f"Free slots should reflect bags after sell, got {p3.free_slots}"
+    print(f"  13i: Sell preserves equipped bags, free_slots={p3.free_slots} ✓")
+
+    # --- 13j: state_dict includes bag info ---
+    state = sim.get_state_dict()
+    assert "bags" in state, "state_dict should have 'bags'"
+    assert "total_bag_slots" in state, "state_dict should have 'total_bag_slots'"
+    assert "bag_slots_used" in state, "state_dict should have 'bag_slots_used'"
+    assert state["bag_slots_used"] == NUM_BAG_SLOTS, \
+        f"Should report {NUM_BAG_SLOTS} bag slots used"
+    print(f"  13j: state_dict has bag info ✓")
+
+    # --- 13k: Reset clears bags ---
+    sim.reset()
+    assert len(sim.player.bags) == 0, "Reset should clear bags"
+    assert sim.player.total_bag_slots == DEFAULT_BACKPACK_SLOTS, \
+        "Reset should restore default capacity"
+    assert sim.player.free_slots == DEFAULT_BACKPACK_SLOTS, \
+        "Reset should restore default free_slots"
+    print(f"  13k: Reset clears bags → {DEFAULT_BACKPACK_SLOTS} slots ✓")
+
+    # --- 13l: Gym env works with bag system ---
+    env = WoWSimEnv(num_mobs=5, seed=42)
+    obs, info = env.reset()
+    # free_slots should be normalized: DEFAULT_BACKPACK_SLOTS / 20.0
+    expected_norm = DEFAULT_BACKPACK_SLOTS / 20.0
+    assert abs(obs[9] - expected_norm) < 0.01, \
+        f"Obs[9] should be {expected_norm}, got {obs[9]}"
+    # Run a few steps to make sure nothing crashes
+    for _ in range(20):
+        obs, rew, done, trunc, info = env.step(env.action_space.sample())
+        if done or trunc:
+            obs, info = env.reset()
+    print(f"  13l: Gym env works with bag system ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -1871,4 +2034,5 @@ if __name__ == "__main__":
     test_quest_system()
     test_quest_csv_loading()
     test_attribute_system()
+    test_bag_system()
     print("=== ALL TESTS PASSED ===")

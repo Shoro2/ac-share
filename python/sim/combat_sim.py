@@ -574,6 +574,14 @@ EQUIPMENT_SLOT_RANGED = 17
 EQUIPMENT_SLOT_TABARD = 18
 EQUIPMENT_SLOT_END = 19
 
+# ─── WoW Bag Slots (Player.h INVENTORY_SLOT_BAG_*) ──────────────────
+# 4 equippable bag slots (in addition to the default 16-slot backpack)
+BAG_SLOT_START = 19   # first bag slot (after equipment)
+BAG_SLOT_END = 23     # exclusive end (4 bag slots: 19, 20, 21, 22)
+NUM_BAG_SLOTS = BAG_SLOT_END - BAG_SLOT_START  # 4
+DEFAULT_BACKPACK_SLOTS = 16   # default WoW backpack, not removable
+INVTYPE_BAG = 18              # WoW InventoryType for bags
+
 EQUIPMENT_SLOT_NAMES = {
     EQUIPMENT_SLOT_HEAD: "Head",
     EQUIPMENT_SLOT_NECK: "Neck",
@@ -814,6 +822,16 @@ class EquippedItem:
     stats: dict        # {ITEM_MOD_X: value}
     armor: int = 0
     weapon_dps: float = 0.0
+
+
+@dataclass(slots=True)
+class EquippedBag:
+    """A bag equipped in one of the 4 bag slots."""
+    entry: int
+    name: str
+    container_slots: int   # number of inventory slots this bag provides
+    quality: int = 0
+    sell_price: int = 0
 
 
 # ─── Per-level stat scaling (class-generic WotLK formulas) ───────────
@@ -1413,7 +1431,7 @@ VENDOR_DATA = [
 
 # ─── Player State ─────────────────────────────────────────────────────
 
-INVENTORY_SLOTS = 30  # default bag capacity (no bag logic yet)
+INVENTORY_SLOTS = DEFAULT_BACKPACK_SLOTS  # starting capacity (16 slots, just the default backpack)
 
 
 @dataclass
@@ -1466,6 +1484,8 @@ class Player:
     # Equipment system: EQUIPMENT_SLOT_* -> EquippedItem
     equipment: dict = field(default_factory=dict)  # slot -> EquippedItem
     equipped_scores: dict = field(default_factory=dict)  # slot -> best score (compat)
+    # Bag system: BAG_SLOT (19-22) -> EquippedBag
+    bags: dict = field(default_factory=dict)  # bag_slot -> EquippedBag
     # ─── Gear stats (accumulated from equipped items) ────────────────
     gear_strength: int = 0
     gear_agility: int = 0
@@ -1538,6 +1558,16 @@ class Player:
     quest_xp_gained: int = 0            # XP from quest turn-ins this tick
     quest_copper_gained: int = 0        # copper from quest turn-ins this tick
     quests_completed_tick: int = 0      # quests completed this tick (consume-on-read)
+
+    @property
+    def total_bag_slots(self) -> int:
+        """Total inventory capacity: default backpack + all equipped bag slots."""
+        return DEFAULT_BACKPACK_SLOTS + sum(
+            bag.container_slots for bag in self.bags.values())
+
+    def recalculate_free_slots(self):
+        """Recompute free_slots from total capacity minus inventory count."""
+        self.free_slots = self.total_bag_slots - len(self.inventory)
 
 
 # ─── Mob Instance ─────────────────────────────────────────────────────
@@ -1808,7 +1838,7 @@ class CombatSimulation:
                     if item.entry != obj.target or (items_to_remove := items_to_remove - 1) < 0
                 ]
                 # Recalculate free slots
-                p.free_slots = INVENTORY_SLOTS - len(p.inventory)
+                p.recalculate_free_slots()
 
         # Move to completed
         del self.active_quests[qt.quest_id]
@@ -2314,6 +2344,92 @@ class CombatSimulation:
             self.player.equipped_upgrade += score_diff
         return success
 
+    # ─── Bag System ─────────────────────────────────────────────────
+
+    def _find_bag_slot(self, container_slots: int) -> int | None:
+        """Find best bag slot: empty first, then smallest existing bag.
+
+        Returns bag slot index (BAG_SLOT_START..BAG_SLOT_END-1) or None.
+        Only replaces if new bag is strictly larger than the smallest equipped.
+        """
+        p = self.player
+        # Prefer empty slot
+        for slot in range(BAG_SLOT_START, BAG_SLOT_END):
+            if slot not in p.bags:
+                return slot
+        # All slots full — find the smallest bag
+        smallest_slot = min(p.bags, key=lambda s: p.bags[s].container_slots)
+        if container_slots > p.bags[smallest_slot].container_slots:
+            return smallest_slot
+        return None
+
+    def equip_bag(self, item_data, slot: int = None) -> bool:
+        """Equip a bag into a bag slot.
+
+        If replacing a smaller bag, the old bag goes to inventory.
+        Not allowed during combat. Returns True if equipped.
+        """
+        p = self.player
+        if p.in_combat:
+            return False
+
+        container_slots = getattr(item_data, 'container_slots', 0)
+        if container_slots <= 0:
+            return False
+
+        if slot is None:
+            slot = self._find_bag_slot(container_slots)
+        if slot is None:
+            return False
+
+        old_bag = p.bags.pop(slot, None)
+
+        # Equip new bag
+        p.bags[slot] = EquippedBag(
+            entry=item_data.entry,
+            name=item_data.name,
+            container_slots=container_slots,
+            quality=getattr(item_data, 'quality', 0),
+            sell_price=getattr(item_data, 'sell_price', 0),
+        )
+
+        # Return old bag to inventory if there was one and space exists
+        if old_bag is not None:
+            # Recalculate capacity first (new bag already equipped)
+            p.recalculate_free_slots()
+            if p.free_slots > 0:
+                p.inventory.append(InventoryItem(
+                    entry=old_bag.entry,
+                    name=old_bag.name,
+                    quality=old_bag.quality,
+                    sell_price=old_bag.sell_price,
+                    score=0.0,
+                    inventory_type=INVTYPE_BAG,
+                ))
+                p.recalculate_free_slots()
+        else:
+            p.recalculate_free_slots()
+        return True
+
+    def try_equip_bag(self, item_data) -> bool:
+        """Try to equip a bag if it would increase total inventory capacity.
+
+        Only equips normal bags (bag_family == 0). Auto-selects the best slot.
+        Returns True if bag was equipped.
+        """
+        bag_family = getattr(item_data, 'bag_family', 0)
+        if bag_family != 0:
+            return False
+        container_slots = getattr(item_data, 'container_slots', 0)
+        if container_slots <= 0:
+            return False
+
+        slot = self._find_bag_slot(container_slots)
+        if slot is None:
+            return False
+
+        return self.equip_bag(item_data, slot)
+
     def _update_exploration(self):
         """Track area/zone/map discovery based on player position.
 
@@ -2647,6 +2763,13 @@ class CombatSimulation:
             results = self.loot_db.roll_loot(loot_id, self.rng)
             for result in results:
                 quality = result.item.quality
+                # Bag items: try to equip directly (normal bags only)
+                if (result.item.inventory_type == INVTYPE_BAG
+                        and getattr(result.item, 'container_slots', 0) > 0
+                        and getattr(result.item, 'bag_family', 0) == 0):
+                    if self.try_equip_bag(result.item):
+                        self.player.loot_items.append(quality)
+                        continue
                 if self.player.free_slots > 0:
                     self.player.loot_score += int(result.item.score * result.count)
                     self.player.free_slots -= 1
@@ -2698,23 +2821,24 @@ class CombatSimulation:
         Requires proximity to a vendor NPC. Converts inventory items to copper
         based on their sell_price. Returns True if items were sold.
         """
-        if self.player.free_slots >= INVENTORY_SLOTS:
+        p = self.player
+        if len(p.inventory) == 0:
             return False
         # Must be near a vendor
         vendor = self.get_nearest_vendor()
         if vendor is None:
             return False
-        dist = self._dist(self.player.x, self.player.y, vendor.x, vendor.y)
+        dist = self._dist(p.x, p.y, vendor.x, vendor.y)
         if dist > self.SELL_RANGE:
             return False
         # Calculate copper from inventory sell prices
-        num_items = len(self.player.inventory)
-        copper = sum(item.sell_price for item in self.player.inventory)
-        self.player.copper += copper
-        self.player.sell_copper += copper
-        self.player.items_sold += num_items
-        self.player.inventory.clear()
-        self.player.free_slots = INVENTORY_SLOTS
+        num_items = len(p.inventory)
+        copper = sum(item.sell_price for item in p.inventory)
+        p.copper += copper
+        p.sell_copper += copper
+        p.items_sold += num_items
+        p.inventory.clear()
+        p.recalculate_free_slots()
         return True
 
     def _start_cast(self, spell_id: int) -> bool:
@@ -3360,6 +3484,17 @@ class CombatSimulation:
                 for slot, item in p.equipment.items()
             },
             "equipment_slots_used": len(p.equipment),
+            # Bag system (sim-only)
+            "bags": {
+                str(slot): {
+                    "entry": bag.entry,
+                    "name": bag.name,
+                    "slots": bag.container_slots,
+                }
+                for slot, bag in p.bags.items()
+            },
+            "bag_slots_used": len(p.bags),
+            "total_bag_slots": p.total_bag_slots,
             # Quest state (sim-only, not present in live TCP stream)
             "quest_active": len(self.active_quests) > 0,
             "quest_progress": self._get_quest_progress_ratio(),
