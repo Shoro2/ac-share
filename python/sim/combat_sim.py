@@ -415,6 +415,7 @@ class Player:
     # Shield state
     shield_absorb: int = 0
     shield_remaining: int = 0   # ticks
+    shield_cooldown: int = 0    # Weakened Soul debuff (ticks)
     # Accumulated rewards (consumed on read like real server)
     xp_gained: int = 0
     loot_copper: int = 0
@@ -1233,8 +1234,9 @@ class CombatSimulation:
                 ):
                     return False
 
-        # Shield: check if already shielded
-        if spell_id == 17 and self.player.shield_remaining > 0:
+        # Shield: check if already shielded or Weakened Soul active
+        if spell_id == 17 and (self.player.shield_remaining > 0
+                               or self.player.shield_cooldown > 0):
             return False
 
         # Spend mana
@@ -1280,6 +1282,7 @@ class CombatSimulation:
         elif spell_id == 17:  # PW:Shield
             self.player.shield_absorb = spell.shield_absorb
             self.player.shield_remaining = spell.shield_duration
+            self.player.shield_cooldown = 30  # Weakened Soul: 15s = 30 ticks
 
     def _damage_mob(self, mob: Mob, damage: int):
         """Apply damage to a mob, handle death."""
@@ -1434,6 +1437,8 @@ class CombatSimulation:
             p.shield_remaining -= 1
             if p.shield_remaining <= 0:
                 p.shield_absorb = 0
+        if p.shield_cooldown > 0:
+            p.shield_cooldown -= 1
 
         # --- Regen ---
         if p.in_combat:
