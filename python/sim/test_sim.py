@@ -1317,14 +1317,27 @@ def test_attribute_system():
     print(f"  11d: Spell crit: Priest={crit_l1:.2f}%, Mage={crit_mage:.2f}%, "
           f"Warrior={crit_war:.2f}%, +50int={crit_l1_int:.2f}% ✓")
 
-    # --- Test 11e: Spell haste from rating ---
+    # --- Test 11e: Rating scaling (GtCombatRatings non-linear curve) ---
+    # Ratings are much more effective at low levels than at high levels
     assert spell_haste_pct(1, 0) == 0.0, "No haste without rating"
-    haste = spell_haste_pct(1, bonus_haste_rating=50)
-    assert haste > 0.0, "Haste rating should give haste %"
-    # Higher level needs more rating for same %
+    haste_l1 = spell_haste_pct(1, bonus_haste_rating=50)
+    haste_l40 = spell_haste_pct(40, bonus_haste_rating=50)
+    haste_l60 = spell_haste_pct(60, bonus_haste_rating=50)
     haste_l80 = spell_haste_pct(80, bonus_haste_rating=50)
-    assert haste_l80 < haste, "Haste should be harder to get at higher levels"
-    print(f"  11e: Haste: L1+50rat={haste:.2f}%, L80+50rat={haste_l80:.2f}% ✓")
+    assert haste_l1 > haste_l40, "L1 haste should be > L40 haste for same rating"
+    assert haste_l40 > haste_l60, "L40 haste should be > L60 haste"
+    assert haste_l60 > haste_l80, "L60 haste should be > L80 haste"
+    # L80 value should match known WotLK: 32.79 rating per 1%
+    assert abs(haste_l80 - 50 / 32.79) < 0.1, \
+        f"L80 haste should be ~1.52%, got {haste_l80:.2f}%"
+    # Crit rating also scales: L1 benefit >> L80 benefit
+    crit_bonus_l1 = spell_crit_chance(1, bonus_crit_rating=100) - spell_crit_chance(1)
+    crit_bonus_l80 = spell_crit_chance(80, bonus_crit_rating=100) - spell_crit_chance(80)
+    assert crit_bonus_l1 > crit_bonus_l80 * 10, \
+        f"100 crit rating at L1 ({crit_bonus_l1:.1f}%) should be >10x L80 ({crit_bonus_l80:.1f}%)"
+    print(f"  11e: Rating scaling: Haste(50r) L1={haste_l1:.1f}% → L40={haste_l40:.1f}% "
+          f"→ L60={haste_l60:.1f}% → L80={haste_l80:.2f}%, "
+          f"CritBonus(100r) L1={crit_bonus_l1:.1f}%/L80={crit_bonus_l80:.1f}% ✓")
 
     # --- Test 11f: Spirit mana regen ---
     regen = spirit_mana_regen(1)  # Priest default
