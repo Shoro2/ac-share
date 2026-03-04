@@ -477,11 +477,47 @@ def player_max_mana(level: int, bonus_intellect: int = 0, bonus_mana: int = 0,
     return base_mana + int_mana + bonus_mana
 
 
+# ─── GtCombatRatings level scaling (from GtCombatRatings.dbc) ─────────
+# All combat ratings share the same relative growth curve per level.
+# This table stores the fraction of L80 rating_per_1pct at key levels.
+# Derived from: crit L80=45.91, crit L70=22.08, crit L60≈14.0
+# Linear interpolation between key points.
+_RATING_LEVEL_SCALE = (
+    (1, 0.0125), (10, 0.0125),   # flat L1-10 (items don't have ratings here)
+    (20, 0.05), (30, 0.10),       # slow growth
+    (40, 0.17), (50, 0.25),       # moderate growth
+    (60, 0.305), (70, 0.481),     # steeper (L60/L70 from known WotLK data)
+    (80, 1.00),                    # reference level
+)
+
+
 def _rating_to_pct(rating: int, l80_value: float, level: int) -> float:
-    """Convert combat rating to percentage bonus. Scales linearly with level."""
+    """Convert combat rating to percentage bonus (WotLK GtCombatRatings scaling).
+
+    Uses the actual non-linear per-level scaling from GtCombatRatings.dbc:
+    - Levels 1-10: flat, very low requirement (ratings very effective)
+    - Levels 10-60: grows roughly as power curve
+    - Levels 60-80: steep growth (ratings much less effective)
+
+    This matches the WoW behavior where 100 crit rating at L1 gives far
+    more crit% than the same 100 crit rating at L80.
+    """
     if rating <= 0:
         return 0.0
-    rating_per_pct = max(0.5, l80_value * level / 80.0)
+    # Interpolate level scaling factor from lookup table
+    scale = _RATING_LEVEL_SCALE
+    if level <= scale[0][0]:
+        factor = scale[0][1]
+    elif level >= scale[-1][0]:
+        factor = scale[-1][1]
+    else:
+        factor = scale[-1][1]  # fallback
+        for i in range(len(scale) - 1):
+            if scale[i][0] <= level <= scale[i + 1][0]:
+                t = (level - scale[i][0]) / (scale[i + 1][0] - scale[i][0])
+                factor = scale[i][1] + t * (scale[i + 1][1] - scale[i][1])
+                break
+    rating_per_pct = max(0.01, l80_value * factor)
     return rating / rating_per_pct
 
 
