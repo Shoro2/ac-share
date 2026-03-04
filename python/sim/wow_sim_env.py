@@ -542,6 +542,9 @@ class WoWSimEnv(gym.Env):
                 "sell_copper": self._ep_sell_copper,
                 "quests_completed": self._ep_quests_completed,
                 "quest_xp": self._ep_quest_xp,
+                "equipped_items": len(self.sim.player.equipment),
+                "equipped_bags": len(self.sim.player.bags),
+                "total_bag_slots": self.sim.player.total_bag_slots,
             }
             info["episode_stats"] = ep_stats
 
