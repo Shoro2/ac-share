@@ -1891,6 +1891,7 @@ class CombatSimulation:
 
         Unlike try_equip_item(), this always equips regardless of score.
         The displaced item (if any) is returned to inventory.
+        Blocked while in combat (WoW behaviour).
 
         Args:
             item_data: ItemData, InventoryItem, or any object with entry/name/
@@ -1900,6 +1901,9 @@ class CombatSimulation:
         Returns:
             (success: bool, old_item: EquippedItem | None)
         """
+        if self.player.in_combat:
+            return (False, None)
+
         inv_type = item_data.inventory_type
         if inv_type <= 0:
             return (False, None)
@@ -1933,14 +1937,17 @@ class CombatSimulation:
         """Remove item from equipment slot, recalculate stats.
 
         The removed item is added to the player's inventory (if space).
+        Blocked while in combat (WoW behaviour).
 
         Args:
             slot: EQUIPMENT_SLOT_* constant.
 
         Returns:
-            The removed EquippedItem, or None if slot was empty.
+            The removed EquippedItem, or None if slot was empty/in combat.
         """
         p = self.player
+        if p.in_combat:
+            return None
         item = p.equipment.pop(slot, None)
         if item is None:
             return None
