@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from sim.constants import (
     CLASS_PRIEST, DEFAULT_BACKPACK_SLOTS,
     SPELL_LEVEL_REQ, SPELL_MANA_PCT,
+    FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_SW_PAIN,
+    FAMILY_PW_SHIELD, FAMILY_MIND_BLAST, FAMILY_RENEW, FAMILY_HOLY_FIRE,
+    FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
 )
 
 
@@ -45,109 +48,251 @@ class SpellDef:
     name: str
     cast_ticks: int       # cast time in ticks (1 tick = 0.5s)
     mana_cost: int        # legacy flat cost (used if mana_pct == 0)
+    spell_family: int = 0 # family ID (first rank's spell_id), e.g. FAMILY_SMITE=585
     level_req: int = 1    # min player level to learn/cast (from trainer_spell)
     mana_pct: int = 0     # % of class base mana (from Spell.dbc ManaCostPercentage)
+    # DBC base values for generic damage/heal calculation
+    base_points: int = 0  # DBC BasePoints (damage = base_points+1 to base_points+die_sides)
+    die_sides: int = 0    # DBC DieSides (random range)
+    rpl: float = 0.0      # DBC RealPointsPerLevel (per-level scaling)
+    max_level: int = 0    # DBC MaxLevel cap for RPL scaling (0 = use spell level)
+    # Legacy direct values (computed from DBC for backward compat)
     min_damage: int = 0
     max_damage: int = 0
     min_heal: int = 0
     max_heal: int = 0
     spell_range: float = 0.0
     is_dot: bool = False
-    dot_damage: int = 0
+    dot_damage: int = 0   # total DoT damage (base, no SP)
+    dot_per_tick: int = 0 # DBC damage per tick (base)
     dot_ticks: int = 0     # total duration in ticks
     dot_interval: int = 6  # ticks between dot ticks (3s = 6 ticks)
     is_shield: bool = False
-    shield_absorb: int = 0
+    shield_base: int = 0  # DBC BasePoints for absorb
+    shield_die: int = 0   # DBC DieSides for absorb
+    shield_rpl: float = 0.0  # DBC RPL for absorb
+    shield_max_level: int = 0
+    shield_absorb: int = 0   # total absorb at base level (base_points + die_sides)
     shield_duration: int = 0  # ticks
     gcd_ticks: int = 3    # 1.5s = 3 ticks
     cooldown_ticks: int = 0   # spell-specific cooldown (ticks), 0 = none
     is_hot: bool = False
-    hot_heal: int = 0      # total HoT healing
+    hot_heal: int = 0      # total HoT healing (base, no SP)
+    hot_per_tick: int = 0  # DBC heal per tick (base)
     hot_ticks: int = 0     # total duration in ticks
     hot_interval: int = 6  # ticks between hot ticks (3s = 6 ticks)
     is_buff: bool = False
     buff_duration: int = 0  # ticks
+    buff_value: int = 0    # generic buff value (armor for Inner Fire, stamina for Fort)
 
 
 # All values verified from Spell.dbc binary (WotLK 3.3.5 build 12340),
 # trainer_spell.csv (level requirements), and spell_bonus_data.csv (SP coefficients).
 # Mana costs use ManaCostPercentage from DBC — actual cost = BaseMana * pct / 100.
+#
+# DBC damage formula: min = BasePoints + 1 + floor(RPL * (min(level, MaxLevel) - SpellLevel))
+#                     max = BasePoints + DieSides + floor(RPL * ...)
+# For DoTs/HoTs: dot_per_tick is the base amount per tick from DBC.
+#
+# All ranks up to level 60 for each spell family.
+
+def _sd(sid, name, family, cast_ticks, mana_cost=0, spell_range=0.0,
+        bp=0, ds=0, rpl=0.0, ml=0,
+        is_dot=False, dot_per_tick=0, dot_dur_ticks=0, dot_interval=6,
+        is_shield=False, s_bp=0, s_ds=0, s_rpl=0.0, s_ml=0, s_dur=0,
+        is_hot=False, hot_per_tick=0, hot_dur_ticks=0, hot_interval=6,
+        is_buff=False, buff_dur=0, buff_val=0,
+        cd=0):
+    """Helper to build SpellDef with DBC values."""
+    lvl = SPELL_LEVEL_REQ.get(sid, 1)
+    pct = SPELL_MANA_PCT.get(sid, 0)
+    n_dot_ticks = dot_dur_ticks // dot_interval if dot_interval > 0 and dot_dur_ticks > 0 else 0
+    n_hot_ticks = hot_dur_ticks // hot_interval if hot_interval > 0 and hot_dur_ticks > 0 else 0
+    return SpellDef(
+        id=sid, name=name, cast_ticks=cast_ticks, mana_cost=mana_cost,
+        spell_family=family, level_req=lvl, mana_pct=pct,
+        base_points=bp, die_sides=ds, rpl=rpl, max_level=ml,
+        min_damage=bp + 1 if ds > 0 and not is_hot else 0,
+        max_damage=bp + ds if ds > 0 and not is_hot else 0,
+        min_heal=bp + 1 if ds > 0 and name in ('Lesser Heal', 'Heal', 'Greater Heal', 'Flash Heal') else 0,
+        max_heal=bp + ds if ds > 0 and name in ('Lesser Heal', 'Heal', 'Greater Heal', 'Flash Heal') else 0,
+        spell_range=spell_range,
+        is_dot=is_dot, dot_damage=dot_per_tick * n_dot_ticks, dot_per_tick=dot_per_tick,
+        dot_ticks=dot_dur_ticks, dot_interval=dot_interval,
+        is_shield=is_shield,
+        shield_base=s_bp, shield_die=s_ds, shield_rpl=s_rpl, shield_max_level=s_ml,
+        shield_absorb=s_bp + s_ds if s_ds > 0 else 0,
+        shield_duration=s_dur,
+        gcd_ticks=3, cooldown_ticks=cd,
+        is_hot=is_hot, hot_heal=hot_per_tick * n_hot_ticks, hot_per_tick=hot_per_tick,
+        hot_ticks=hot_dur_ticks, hot_interval=hot_interval,
+        is_buff=is_buff, buff_duration=buff_dur, buff_value=buff_val,
+    )
+
 SPELLS = {
-    585: SpellDef(
-        id=585, name="Smite",
-        cast_ticks=3, mana_cost=6,  # fallback; DBC: 1.5s cast
-        level_req=SPELL_LEVEL_REQ[585], mana_pct=SPELL_MANA_PCT[585],
-        min_damage=13, max_damage=17,  # DBC: BasePoints=12, DieSides=5
-        spell_range=30.0,
-    ),
-    2050: SpellDef(
-        id=2050, name="Lesser Heal",
-        cast_ticks=3, mana_cost=11,  # fallback; DBC: 1.5s cast
-        level_req=SPELL_LEVEL_REQ[2050], mana_pct=SPELL_MANA_PCT[2050],
-        min_heal=46, max_heal=56,  # DBC: BasePoints=45, DieSides=11
-        spell_range=0.0,  # self-cast
-    ),
-    589: SpellDef(
-        id=589, name="Shadow Word: Pain",
-        cast_ticks=0, mana_cost=25,  # fallback; instant
-        level_req=SPELL_LEVEL_REQ[589], mana_pct=SPELL_MANA_PCT[589],
-        spell_range=30.0,
-        is_dot=True,
-        dot_damage=30,     # DBC: 5/tick x6 ticks = 30 total over 18s
-        dot_ticks=36,      # 18s = 36 ticks
-        dot_interval=6,    # tick every 3s
-    ),
-    17: SpellDef(
-        id=17, name="Power Word: Shield",
-        cast_ticks=0, mana_cost=25,  # fallback; instant
-        level_req=SPELL_LEVEL_REQ[17], mana_pct=SPELL_MANA_PCT[17],
-        is_shield=True,
-        shield_absorb=44,  # DBC: BasePoints=43, DieSides=1 (+0.8/lvl scaling)
-        shield_duration=60,  # 30s = 60 ticks
-    ),
-    8092: SpellDef(
-        id=8092, name="Mind Blast",
-        cast_ticks=3, mana_cost=50,  # fallback; DBC: 1.5s cast
-        level_req=SPELL_LEVEL_REQ[8092], mana_pct=SPELL_MANA_PCT[8092],
-        min_damage=39, max_damage=43,  # DBC: BasePoints=38, DieSides=5
-        spell_range=30.0,
-        cooldown_ticks=16,  # 8s = 16 ticks
-    ),
-    139: SpellDef(
-        id=139, name="Renew",
-        cast_ticks=0, mana_cost=30,  # fallback; instant
-        level_req=SPELL_LEVEL_REQ[139], mana_pct=SPELL_MANA_PCT[139],
-        is_hot=True,
-        hot_heal=45,       # DBC: 9/tick x5 ticks = 45 total over 15s
-        hot_ticks=30,      # 15s = 30 ticks
-        hot_interval=6,    # tick every 3s = 5 HoT ticks
-    ),
-    14914: SpellDef(
-        id=14914, name="Holy Fire",
-        cast_ticks=4, mana_cost=40,  # fallback; DBC: 2.0s cast
-        level_req=SPELL_LEVEL_REQ[14914], mana_pct=SPELL_MANA_PCT[14914],
-        min_damage=102, max_damage=128,  # DBC: BasePoints=101, DieSides=27
-        spell_range=30.0,
-        is_dot=True,
-        dot_damage=21,     # DBC: 3/tick x7 ticks = 21 total over 7s
-        dot_ticks=14,      # 7s = 14 ticks
-        dot_interval=2,    # tick every 1s = 2 ticks
-        cooldown_ticks=20,  # 10s = 20 ticks
-    ),
-    588: SpellDef(
-        id=588, name="Inner Fire",
-        cast_ticks=0, mana_cost=20,  # fallback; instant
-        level_req=SPELL_LEVEL_REQ[588], mana_pct=SPELL_MANA_PCT[588],
-        is_buff=True,
-        buff_duration=3600,  # DBC: 30min = 1800s = 3600 ticks
-    ),
-    1243: SpellDef(
-        id=1243, name="Power Word: Fortitude",
-        cast_ticks=0, mana_cost=30,  # fallback; instant
-        level_req=SPELL_LEVEL_REQ[1243], mana_pct=SPELL_MANA_PCT[1243],
-        is_buff=True,
-        buff_duration=3600,  # DBC: 30min = 1800s = 3600 ticks
-    ),
+    # ── Smite (R1-R8) ── cast 1.5s/2.0s/2.5s, range 30
+    585:   _sd(585, "Smite", FAMILY_SMITE, 3, spell_range=30.0, bp=12, ds=5, rpl=0.5, ml=101),
+    591:   _sd(591, "Smite", FAMILY_SMITE, 4, spell_range=30.0, bp=24, ds=7, rpl=0.6, ml=101),
+    598:   _sd(598, "Smite", FAMILY_SMITE, 5, spell_range=30.0, bp=53, ds=9, rpl=0.9, ml=101),
+    984:   _sd(984, "Smite", FAMILY_SMITE, 5, spell_range=30.0, bp=90, ds=15, rpl=1.3, ml=101),
+    1004:  _sd(1004, "Smite", FAMILY_SMITE, 5, spell_range=30.0, bp=149, ds=21, rpl=1.6, ml=101),
+    6060:  _sd(6060, "Smite", FAMILY_SMITE, 5, spell_range=30.0, bp=211, ds=29, rpl=2.0, ml=101),
+    10933: _sd(10933, "Smite", FAMILY_SMITE, 5, spell_range=30.0, bp=286, ds=37, rpl=2.3, ml=101),
+    10934: _sd(10934, "Smite", FAMILY_SMITE, 5, spell_range=30.0, bp=370, ds=45, rpl=2.7, ml=101),
+
+    # ── Lesser Heal (R1-R3) ── cast 1.5s/2.0s/2.5s, self-cast
+    2050:  _sd(2050, "Lesser Heal", FAMILY_HEAL, 3, bp=45, ds=11, rpl=0.9, ml=101),
+    2052:  _sd(2052, "Lesser Heal", FAMILY_HEAL, 4, bp=70, ds=15, rpl=1.1, ml=101),
+    2053:  _sd(2053, "Lesser Heal", FAMILY_HEAL, 5, bp=134, ds=23, rpl=1.6, ml=101),
+
+    # ── Heal (R1-R4) ── cast 3.0s, self-cast
+    2054:  _sd(2054, "Heal", FAMILY_HEAL, 6, bp=294, ds=47, rpl=2.4, ml=101),
+    2055:  _sd(2055, "Heal", FAMILY_HEAL, 6, bp=428, ds=63, rpl=3.2, ml=101),
+    6063:  _sd(6063, "Heal", FAMILY_HEAL, 6, bp=565, ds=77, rpl=4.0, ml=101),
+    6064:  _sd(6064, "Heal", FAMILY_HEAL, 6, bp=711, ds=93, rpl=4.5, ml=101),
+
+    # ── Greater Heal (R1-R5) ── cast 3.0s, self-cast
+    2060:  _sd(2060, "Greater Heal", FAMILY_HEAL, 6, bp=898, ds=115, rpl=5.1, ml=101),
+    10963: _sd(10963, "Greater Heal", FAMILY_HEAL, 6, bp=1148, ds=141, rpl=5.8, ml=101),
+    10964: _sd(10964, "Greater Heal", FAMILY_HEAL, 6, bp=1436, ds=173, rpl=6.6, ml=101),
+    10965: _sd(10965, "Greater Heal", FAMILY_HEAL, 6, bp=1797, ds=209, rpl=7.5, ml=101),
+    25314: _sd(25314, "Greater Heal", FAMILY_HEAL, 6, bp=1965, ds=229, rpl=8.1, ml=101),
+
+    # ── Flash Heal (R1-R7) ── cast 1.5s, self-cast
+    2061:  _sd(2061, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=192, ds=45, rpl=1.9, ml=101),
+    9472:  _sd(9472, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=257, ds=57, rpl=2.2, ml=101),
+    9473:  _sd(9473, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=326, ds=67, rpl=2.5, ml=101),
+    9474:  _sd(9474, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=399, ds=79, rpl=2.8, ml=101),
+    10915: _sd(10915, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=517, ds=99, rpl=3.3, ml=101),
+    10916: _sd(10916, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=643, ds=121, rpl=3.7, ml=101),
+    10917: _sd(10917, "Flash Heal", FAMILY_FLASH_HEAL, 3, bp=811, ds=147, rpl=4.2, ml=101),
+
+    # ── Shadow Word: Pain (R1-R8) ── instant, range 30, 18s duration, 3s ticks
+    589:   _sd(589, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=5, dot_dur_ticks=36, dot_interval=6),
+    594:   _sd(594, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=10, dot_dur_ticks=36, dot_interval=6),
+    970:   _sd(970, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=20, dot_dur_ticks=36, dot_interval=6),
+    992:   _sd(992, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=35, dot_dur_ticks=36, dot_interval=6),
+    2767:  _sd(2767, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=55, dot_dur_ticks=36, dot_interval=6),
+    10892: _sd(10892, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=77, dot_dur_ticks=36, dot_interval=6),
+    10893: _sd(10893, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=101, dot_dur_ticks=36, dot_interval=6),
+    10894: _sd(10894, "Shadow Word: Pain", FAMILY_SW_PAIN, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=128, dot_dur_ticks=36, dot_interval=6),
+
+    # ── Power Word: Shield (R1-R10) ── instant, 30s duration
+    17:    _sd(17, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=43, s_ds=1, s_rpl=0.8, s_ml=101, s_dur=60),
+    592:   _sd(592, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=87, s_ds=1, s_rpl=1.2, s_ml=101, s_dur=60),
+    600:   _sd(600, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=157, s_ds=1, s_rpl=1.6, s_ml=101, s_dur=60),
+    3747:  _sd(3747, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=233, s_ds=1, s_rpl=2.0, s_ml=101, s_dur=60),
+    6065:  _sd(6065, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=300, s_ds=1, s_rpl=2.3, s_ml=101, s_dur=60),
+    6066:  _sd(6066, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=380, s_ds=1, s_rpl=2.6, s_ml=101, s_dur=60),
+    10898: _sd(10898, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=483, s_ds=1, s_rpl=3.0, s_ml=101, s_dur=60),
+    10899: _sd(10899, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=604, s_ds=1, s_rpl=3.4, s_ml=101, s_dur=60),
+    10900: _sd(10900, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=762, s_ds=1, s_rpl=3.9, s_ml=101, s_dur=60),
+    10901: _sd(10901, "Power Word: Shield", FAMILY_PW_SHIELD, 0,
+              is_shield=True, s_bp=941, s_ds=1, s_rpl=4.3, s_ml=101, s_dur=60),
+
+    # ── Mind Blast (R1-R9) ── cast 1.5s, range 30, 8s CD
+    8092:  _sd(8092, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=38, ds=5, rpl=0.6, ml=101, cd=16),
+    8102:  _sd(8102, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=71, ds=7, rpl=0.9, ml=101, cd=16),
+    8103:  _sd(8103, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=111, ds=9, rpl=1.1, ml=101, cd=16),
+    8104:  _sd(8104, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=166, ds=11, rpl=1.4, ml=101, cd=16),
+    8105:  _sd(8105, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=216, ds=15, rpl=1.6, ml=101, cd=16),
+    8106:  _sd(8106, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=278, ds=19, rpl=1.9, ml=101, cd=16),
+    10945: _sd(10945, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=345, ds=21, rpl=2.1, ml=101, cd=16),
+    10946: _sd(10946, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=424, ds=25, rpl=2.4, ml=101, cd=16),
+    10947: _sd(10947, "Mind Blast", FAMILY_MIND_BLAST, 3, spell_range=30.0, bp=502, ds=29, rpl=2.6, ml=101, cd=16),
+
+    # ── Renew (R1-R10) ── instant, 15s duration, 3s ticks (5 ticks)
+    139:   _sd(139, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=9, hot_dur_ticks=30, hot_interval=6),
+    6074:  _sd(6074, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=20, hot_dur_ticks=30, hot_interval=6),
+    6075:  _sd(6075, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=35, hot_dur_ticks=30, hot_interval=6),
+    6076:  _sd(6076, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=49, hot_dur_ticks=30, hot_interval=6),
+    6077:  _sd(6077, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=63, hot_dur_ticks=30, hot_interval=6),
+    6078:  _sd(6078, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=80, hot_dur_ticks=30, hot_interval=6),
+    10927: _sd(10927, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=102, hot_dur_ticks=30, hot_interval=6),
+    10928: _sd(10928, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=130, hot_dur_ticks=30, hot_interval=6),
+    10929: _sd(10929, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=162, hot_dur_ticks=30, hot_interval=6),
+    25315: _sd(25315, "Renew", FAMILY_RENEW, 0,
+              is_hot=True, hot_per_tick=194, hot_dur_ticks=30, hot_interval=6),
+
+    # ── Holy Fire (R1-R8) ── cast 2.0s, range 30, 10s CD, 7s DoT (1s ticks)
+    14914: _sd(14914, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=101, ds=27, rpl=1.5, ml=101,
+              is_dot=True, dot_per_tick=3, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15262: _sd(15262, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=136, ds=37, rpl=1.7, ml=101,
+              is_dot=True, dot_per_tick=4, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15263: _sd(15263, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=199, ds=53, rpl=2.0, ml=101,
+              is_dot=True, dot_per_tick=6, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15264: _sd(15264, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=266, ds=73, rpl=2.2, ml=101,
+              is_dot=True, dot_per_tick=8, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15265: _sd(15265, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=347, ds=93, rpl=2.5, ml=101,
+              is_dot=True, dot_per_tick=10, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15266: _sd(15266, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=429, ds=117, rpl=2.9, ml=101,
+              is_dot=True, dot_per_tick=13, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15267: _sd(15267, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=528, ds=143, rpl=3.2, ml=101,
+              is_dot=True, dot_per_tick=16, dot_dur_ticks=14, dot_interval=2, cd=20),
+    15261: _sd(15261, "Holy Fire", FAMILY_HOLY_FIRE, 4, spell_range=30.0,
+              bp=638, ds=173, rpl=3.4, ml=101,
+              is_dot=True, dot_per_tick=18, dot_dur_ticks=14, dot_interval=2, cd=20),
+
+    # ── Inner Fire (R1-R6) ── instant, 30min buff, armor bonus
+    588:   _sd(588, "Inner Fire", FAMILY_INNER_FIRE, 0,
+              is_buff=True, buff_dur=3600, buff_val=315),
+    7128:  _sd(7128, "Inner Fire", FAMILY_INNER_FIRE, 0,
+              is_buff=True, buff_dur=3600, buff_val=495),
+    602:   _sd(602, "Inner Fire", FAMILY_INNER_FIRE, 0,
+              is_buff=True, buff_dur=3600, buff_val=720),
+    1006:  _sd(1006, "Inner Fire", FAMILY_INNER_FIRE, 0,
+              is_buff=True, buff_dur=3600, buff_val=945),
+    10951: _sd(10951, "Inner Fire", FAMILY_INNER_FIRE, 0,
+              is_buff=True, buff_dur=3600, buff_val=1170),
+    10952: _sd(10952, "Inner Fire", FAMILY_INNER_FIRE, 0,
+              is_buff=True, buff_dur=3600, buff_val=1395),
+
+    # ── Power Word: Fortitude (R1-R6) ── instant, 30min buff, stamina bonus
+    1243:  _sd(1243, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
+              is_buff=True, buff_dur=3600, buff_val=3),
+    1244:  _sd(1244, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
+              is_buff=True, buff_dur=3600, buff_val=8),
+    1245:  _sd(1245, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
+              is_buff=True, buff_dur=3600, buff_val=20),
+    2791:  _sd(2791, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
+              is_buff=True, buff_dur=3600, buff_val=32),
+    10937: _sd(10937, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
+              is_buff=True, buff_dur=3600, buff_val=43),
+    10938: _sd(10938, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
+              is_buff=True, buff_dur=3600, buff_val=54),
 }
 
 

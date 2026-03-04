@@ -60,6 +60,10 @@ from sim.constants import (
     SP_COEFF_SW_PAIN_TICK, SP_COEFF_PW_SHIELD, SP_COEFF_RENEW_TICK,
     SP_COEFF_HOLY_FIRE, SP_COEFF_HOLY_FIRE_DOT_TICK,
     SPELL_LEVEL_REQ, SPELL_MANA_PCT,
+    get_best_rank, FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL,
+    FAMILY_SW_PAIN, FAMILY_PW_SHIELD, FAMILY_MIND_BLAST,
+    FAMILY_RENEW, FAMILY_HOLY_FIRE, FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
+    ALL_RANKED_SPELL_IDS,
 )
 
 from sim.formulas import (
@@ -70,6 +74,8 @@ from sim.formulas import (
     renew_total_heal, holy_fire_damage, holy_fire_dot_total,
     sw_pain_total, pw_shield_absorb, inner_fire_values,
     fortitude_hp_bonus, fortitude_stamina_bonus,
+    spell_direct_value, spell_dot_per_tick, spell_hot_per_tick,
+    spell_shield_absorb, spell_buff_value,
     spell_crit_chance, melee_crit_chance, ranged_crit_chance,
     melee_haste_pct, ranged_haste_pct, spell_haste_pct,
     dodge_chance, parry_chance, block_chance,
@@ -1194,40 +1200,54 @@ class CombatSimulation:
         self.target = best
 
     def do_cast_smite(self) -> bool:
-        """Start casting Smite. Returns True if cast started."""
-        return self._start_cast(585)
+        """Start casting Smite (best rank for level)."""
+        sid = get_best_rank(FAMILY_SMITE, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_heal(self) -> bool:
-        """Start casting Lesser Heal."""
-        return self._start_cast(2050)
+        """Start casting heal (Lesser Heal → Heal → Greater Heal, best rank)."""
+        sid = get_best_rank(FAMILY_HEAL, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_flash_heal(self) -> bool:
+        """Start casting Flash Heal (best rank for level)."""
+        sid = get_best_rank(FAMILY_FLASH_HEAL, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_sw_pain(self) -> bool:
-        """Cast Shadow Word: Pain (instant)."""
-        return self._start_cast(589)
+        """Cast Shadow Word: Pain (best rank for level)."""
+        sid = get_best_rank(FAMILY_SW_PAIN, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_pw_shield(self) -> bool:
-        """Cast Power Word: Shield (instant)."""
-        return self._start_cast(17)
+        """Cast Power Word: Shield (best rank for level)."""
+        sid = get_best_rank(FAMILY_PW_SHIELD, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_mind_blast(self) -> bool:
-        """Start casting Mind Blast. Returns True if cast started."""
-        return self._start_cast(8092)
+        """Start casting Mind Blast (best rank for level)."""
+        sid = get_best_rank(FAMILY_MIND_BLAST, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_renew(self) -> bool:
-        """Cast Renew (instant HoT)."""
-        return self._start_cast(139)
+        """Cast Renew (best rank for level)."""
+        sid = get_best_rank(FAMILY_RENEW, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_holy_fire(self) -> bool:
-        """Start casting Holy Fire. Returns True if cast started."""
-        return self._start_cast(14914)
+        """Start casting Holy Fire (best rank for level)."""
+        sid = get_best_rank(FAMILY_HOLY_FIRE, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_inner_fire(self) -> bool:
-        """Cast Inner Fire (instant self-buff)."""
-        return self._start_cast(588)
+        """Cast Inner Fire (best rank for level)."""
+        sid = get_best_rank(FAMILY_INNER_FIRE, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_cast_fortitude(self) -> bool:
-        """Cast Power Word: Fortitude (instant self-buff)."""
-        return self._start_cast(1243)
+        """Cast Power Word: Fortitude (best rank for level)."""
+        sid = get_best_rank(FAMILY_FORTITUDE, self.player.level)
+        return self._start_cast(sid) if sid else False
 
     def do_eat_drink(self) -> bool:
         """Start eating/drinking. Regenerates 5% HP and Mana per second.
@@ -1361,6 +1381,9 @@ class CombatSimulation:
         p.recalculate_free_slots()
         return True
 
+    # Offensive spell families (need alive target + range)
+    _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE}
+
     def _start_cast(self, spell_id: int) -> bool:
         """Attempt to start casting a spell."""
         if self.player.is_casting:
@@ -1382,12 +1405,15 @@ class CombatSimulation:
         if self.player.mana < mana_cost:
             return False
 
-        # Spell-specific cooldown check
-        if self.player.spell_cooldowns.get(spell_id, 0) > 0:
-            return False
+        # Spell-specific cooldown check (use family for shared CDs like Mind Blast)
+        family = spell.spell_family
+        if spell.cooldown_ticks > 0:
+            # Check CD on family (all ranks share cooldown)
+            if self.player.spell_cooldowns.get(family, 0) > 0:
+                return False
 
         # Range check for offensive spells (with target requirement)
-        if spell_id in (585, 589, 8092, 14914):
+        if family in self._OFFENSIVE_FAMILIES:
             if self.target is None or not self.target.alive:
                 return False
             if self._dist_to_mob(self.target) > spell.spell_range:
@@ -1401,20 +1427,20 @@ class CombatSimulation:
                     return False
 
         # Shield: check if already shielded or Weakened Soul active
-        if spell_id == 17 and (self.player.shield_remaining > 0
-                               or self.player.shield_cooldown > 0):
+        if family == FAMILY_PW_SHIELD and (self.player.shield_remaining > 0
+                                           or self.player.shield_cooldown > 0):
             return False
 
         # Renew: block if HoT already active
-        if spell_id == 139 and self.player.hot_remaining > 0:
+        if family == FAMILY_RENEW and self.player.hot_remaining > 0:
             return False
 
         # Inner Fire: block if already active
-        if spell_id == 588 and self.player.inner_fire_remaining > 0:
+        if family == FAMILY_INNER_FIRE and self.player.inner_fire_remaining > 0:
             return False
 
         # Fortitude: block if already active
-        if spell_id == 1243 and self.player.fortitude_remaining > 0:
+        if family == FAMILY_FORTITUDE and self.player.fortitude_remaining > 0:
             return False
 
         # Spend mana (% of BaseMana)
@@ -1423,9 +1449,9 @@ class CombatSimulation:
         # GCD
         self.player.gcd_remaining = spell.gcd_ticks
 
-        # Spell-specific cooldown
+        # Spell-specific cooldown (keyed by family so all ranks share)
         if spell.cooldown_ticks > 0:
-            self.player.spell_cooldowns[spell_id] = spell.cooldown_ticks
+            self.player.spell_cooldowns[family] = spell.cooldown_ticks
 
         if spell.cast_ticks > 0:
             # Channeled/Cast time spell
@@ -1460,103 +1486,105 @@ class CombatSimulation:
         return outcome
 
     def _apply_spell(self, spell_id: int):
-        """Apply spell effect when cast completes. Uses total_spell_power for scaling.
+        """Apply spell effect when cast completes. Generic for any rank.
 
-        Offensive spells now use the WotLK two-roll system:
-        1. Miss check (based on level diff, reduced by hit rating)
-        2. Crit check (from Intellect + crit rating)
+        Uses spell_family to determine spell type, then applies effects
+        using the rank-specific SpellDef values + SP coefficients.
         """
         spell = SPELLS[spell_id]
         sp = self.player.total_spell_power
+        family = spell.spell_family
 
-        if spell_id == 585:  # Smite — level-scaled + SP
-            if self.target and self.target.alive:
-                outcome = self._resolve_offensive_spell(self.target.level)
-                if outcome == SPELL_MISS:
-                    return  # spell missed, no damage
-                min_dmg, max_dmg = smite_damage(self.player.level, sp)
-                dmg = self.rng.randint(min_dmg, max_dmg)
-                if outcome == SPELL_CRIT:
-                    dmg = int(dmg * 1.5)  # spell crit = 150%
-                self._damage_mob(self.target, dmg)
-
-        elif spell_id == 2050:  # Lesser Heal — level-scaled + SP (no miss on friendly)
-            min_h, max_h = heal_amount(self.player.level, sp)
-            heal = self.rng.randint(min_h, max_h)
-            if self.rng.random() * 100 < self.player.total_spell_crit:
-                heal = int(heal * 1.5)  # healing crit = 150%
-                self.player.spell_crits += 1
-            self.player.hp = min(self.player.max_hp, self.player.hp + heal)
-
-        elif spell_id == 589:  # SW:Pain — SP-scaled DoT (miss check on application)
-            if self.target and self.target.alive:
-                outcome = self._resolve_offensive_spell(self.target.level)
-                if outcome == SPELL_MISS:
-                    return  # DoT not applied
-                total_dmg = sw_pain_total(self.player.level, sp)
-                total_ticks = spell.dot_ticks // spell.dot_interval
-                dmg_per_tick = total_dmg // max(1, total_ticks)
-                self.target.dot_remaining = spell.dot_ticks
-                self.target.dot_timer = spell.dot_interval
-                self.target.dot_damage_per_tick = dmg_per_tick
-
-        elif spell_id == 17:  # PW:Shield — SP-scaled absorb (no miss on friendly)
-            absorb = pw_shield_absorb(self.player.level, sp)
-            self.player.shield_absorb = absorb
-            self.player.shield_remaining = spell.shield_duration
-            self.player.shield_cooldown = 30  # Weakened Soul: 15s = 30 ticks
-
-        elif spell_id == 8092:  # Mind Blast — level-scaled + SP
+        if family == FAMILY_SMITE:
+            # Direct damage offensive spell
             if self.target and self.target.alive:
                 outcome = self._resolve_offensive_spell(self.target.level)
                 if outcome == SPELL_MISS:
                     return
-                min_dmg, max_dmg = mind_blast_damage(self.player.level, sp)
+                min_dmg, max_dmg = spell_direct_value(spell_id, sp)
                 dmg = self.rng.randint(min_dmg, max_dmg)
                 if outcome == SPELL_CRIT:
                     dmg = int(dmg * 1.5)
                 self._damage_mob(self.target, dmg)
 
-        elif spell_id == 139:  # Renew — SP-scaled HoT (no miss on friendly)
-            total = renew_total_heal(self.player.level, sp)
-            total_ticks = spell.hot_ticks // spell.hot_interval  # 5
-            heal_per = total // max(1, total_ticks)
+        elif family == FAMILY_HEAL or family == FAMILY_FLASH_HEAL:
+            # Direct heal (self-cast, no miss)
+            min_h, max_h = spell_direct_value(spell_id, sp)
+            heal = self.rng.randint(min_h, max_h)
+            if self.rng.random() * 100 < self.player.total_spell_crit:
+                heal = int(heal * 1.5)
+                self.player.spell_crits += 1
+            self.player.hp = min(self.player.max_hp, self.player.hp + heal)
+
+        elif family == FAMILY_SW_PAIN:
+            # DoT (miss check on application)
+            if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return
+                dmg_per_tick = spell_dot_per_tick(spell_id, sp)
+                self.target.dot_remaining = spell.dot_ticks
+                self.target.dot_timer = spell.dot_interval
+                self.target.dot_damage_per_tick = dmg_per_tick
+
+        elif family == FAMILY_PW_SHIELD:
+            # Absorb shield (no miss on friendly)
+            absorb = spell_shield_absorb(spell_id, sp)
+            self.player.shield_absorb = absorb
+            self.player.shield_remaining = spell.shield_duration
+            self.player.shield_cooldown = 30  # Weakened Soul: 15s = 30 ticks
+
+        elif family == FAMILY_MIND_BLAST:
+            # Direct damage with cooldown
+            if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return
+                min_dmg, max_dmg = spell_direct_value(spell_id, sp)
+                dmg = self.rng.randint(min_dmg, max_dmg)
+                if outcome == SPELL_CRIT:
+                    dmg = int(dmg * 1.5)
+                self._damage_mob(self.target, dmg)
+
+        elif family == FAMILY_RENEW:
+            # HoT (no miss on friendly)
+            heal_per = spell_hot_per_tick(spell_id, sp)
             self.player.hot_remaining = spell.hot_ticks
             self.player.hot_timer = spell.hot_interval
             self.player.hot_heal_per_tick = heal_per
 
-        elif spell_id == 14914:  # Holy Fire — direct + SP-scaled DoT (slot 2)
+        elif family == FAMILY_HOLY_FIRE:
+            # Direct damage + DoT (slot 2)
             if self.target and self.target.alive:
                 outcome = self._resolve_offensive_spell(self.target.level)
                 if outcome == SPELL_MISS:
-                    return  # both direct and DoT miss
-                min_dmg, max_dmg = holy_fire_damage(self.player.level, sp)
+                    return
+                min_dmg, max_dmg = spell_direct_value(spell_id, sp)
                 dmg = self.rng.randint(min_dmg, max_dmg)
                 if outcome == SPELL_CRIT:
                     dmg = int(dmg * 1.5)
                 self._damage_mob(self.target, dmg)
-                # DoT component on slot 2 (always applied if spell hits)
-                dot_total = holy_fire_dot_total(self.player.level, sp)
-                dot_ticks_count = spell.dot_ticks // spell.dot_interval  # 2
-                dot_per = dot_total // max(1, dot_ticks_count)
+                # DoT component on slot 2
+                dot_per = spell_dot_per_tick(spell_id, sp)
                 self.target.dot2_remaining = spell.dot_ticks
                 self.target.dot2_timer = spell.dot_interval
                 self.target.dot2_damage_per_tick = dot_per
 
-        elif spell_id == 588:  # Inner Fire — armor + spellpower buff (no miss)
-            armor, sp_buff = inner_fire_values(self.player.level)
+        elif family == FAMILY_INNER_FIRE:
+            # Armor buff (rank determines armor amount)
+            armor = spell_buff_value(spell_id)
             self.player.inner_fire_remaining = spell.buff_duration
             self.player.inner_fire_armor = armor
-            self.player.inner_fire_spellpower = sp_buff
-            self.recalculate_stats()  # SP changed
+            self.player.inner_fire_spellpower = 0  # SP bonus starts at rank 7 (level 70+)
+            self.recalculate_stats()
 
-        elif spell_id == 1243:  # PW:Fortitude — Stamina buff (DBC: MOD_STAT)
-            sta_bonus = fortitude_stamina_bonus(self.player.level)
+        elif family == FAMILY_FORTITUDE:
+            # Stamina buff (rank determines stamina amount)
+            sta_bonus = spell_buff_value(spell_id)
             self.player.fortitude_remaining = spell.buff_duration
             self.player.fortitude_stamina_bonus = sta_bonus
             old_hp = self.player.hp
-            self.recalculate_stats()  # Stamina -> HP changes
-            # Heal for the HP increase (like WoW does on buff apply)
+            self.recalculate_stats()
             hp_gain = self.player.max_hp - old_hp
             if hp_gain > 0:
                 self.player.hp = min(self.player.hp + hp_gain, self.player.max_hp)
@@ -2045,8 +2073,8 @@ class CombatSimulation:
             "has_renew": "true" if p.hot_remaining > 0 else "false",
             "has_inner_fire": "true" if p.inner_fire_remaining > 0 else "false",
             "has_fortitude": "true" if p.fortitude_remaining > 0 else "false",
-            "mind_blast_ready": "true" if p.spell_cooldowns.get(8092, 0) <= 0 else "false",
-            "holy_fire_ready": "true" if p.spell_cooldowns.get(14914, 0) <= 0 else "false",
+            "mind_blast_ready": "true" if p.spell_cooldowns.get(FAMILY_MIND_BLAST, 0) <= 0 else "false",
+            "holy_fire_ready": "true" if p.spell_cooldowns.get(FAMILY_HOLY_FIRE, 0) <= 0 else "false",
             "target_has_sw_pain": "true" if t_info.get("has_sw_pain") else "false",
             "target_has_holy_fire": "true" if t_info.get("has_holy_fire") else "false",
             "is_eating": "true" if p.is_eating else "false",

@@ -131,7 +131,7 @@ def test_gym_env():
 
     # Check spaces
     assert env.observation_space.shape == (39,), f"Obs shape: {env.observation_space.shape}"
-    assert env.action_space.n == 18, f"Action space: {env.action_space.n}"
+    assert env.action_space.n == 19, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
@@ -143,19 +143,19 @@ def test_gym_env():
 
     # Check action_masks
     mask = env.action_masks()
-    assert mask.shape == (18,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (19,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
-    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/18")
+    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/19")
 
     # Step with each action
-    for action in range(18):
+    for action in range(19):
         obs, reward, done, trunc, info = env.step(action)
         assert obs.shape == (39,)
         if done:
             obs, info = env.reset()
 
-    print(f"  All 18 actions executed successfully")
+    print(f"  All 19 actions executed successfully")
     print("  PASSED\n")
 
 
@@ -302,28 +302,30 @@ def test_level_system():
     assert player_max_mana(2) == 141, f"Mana(2) expected 141, got {player_max_mana(2)}"
     # Smite/Heal base damage from DBC (Rank 1 with RealPointsPerLevel scaling)
     # Smite: BasePoints=12, DieSides=5, RPL=0.5, MaxLevel=6
+    # Smite R1 (585): BasePoints=12, DieSides=5 → 13-17
     min_d, max_d = smite_damage(1)
-    assert (min_d, max_d) == (13, 17), f"Smite(1) expected (13,17), got ({min_d},{max_d})"
-    # L2: bonus = int(0.5 * (2-1)) = 0, so still 13-17
-    min_d, max_d = smite_damage(2)
-    assert (min_d, max_d) == (13, 17), f"Smite(2) expected (13,17), got ({min_d},{max_d})"
-    # L6 (MaxLevel): bonus = int(0.5 * 5) = 2
-    min_d, max_d = smite_damage(6)
-    assert (min_d, max_d) == (15, 19), f"Smite(6) expected (15,19), got ({min_d},{max_d})"
-    # L10 (above MaxLevel, capped): same as L6
-    min_d_10, max_d_10 = smite_damage(10)
-    assert (min_d_10, max_d_10) == (15, 19), f"Smite(10) should cap at MaxLevel=6"
-    # Lesser Heal: BasePoints=45, DieSides=11, RPL=0.9, MaxLevel=3
+    assert (min_d, max_d) == (13, 17), f"Smite R1 expected (13,17), got ({min_d},{max_d})"
+    # Rank system: at level 6, best rank is R2 (591, bp=24, ds=7 → 25-31)
+    from sim.constants import get_best_rank, FAMILY_SMITE
+    from sim.formulas import spell_direct_value
+    r2_id = get_best_rank(FAMILY_SMITE, 6)
+    assert r2_id == 591, f"Smite best rank at L6 should be 591, got {r2_id}"
+    min_d2, max_d2 = spell_direct_value(591)
+    assert (min_d2, max_d2) == (25, 31), f"Smite R2 expected (25,31), got ({min_d2},{max_d2})"
+    # At level 14, best rank is R3 (598, bp=53, ds=9 → 54-62)
+    r3_id = get_best_rank(FAMILY_SMITE, 14)
+    assert r3_id == 598, f"Smite best rank at L14 should be 598, got {r3_id}"
+    min_d3, max_d3 = spell_direct_value(598)
+    assert (min_d3, max_d3) == (54, 62), f"Smite R3 expected (54,62), got ({min_d3},{max_d3})"
+    # Lesser Heal R1 (2050): BasePoints=45, DieSides=11 → 46-56
     min_h, max_h = heal_amount(1)
-    assert (min_h, max_h) == (46, 56), f"Heal(1) expected (46,56), got ({min_h},{max_h})"
-    min_h, max_h = heal_amount(2)
-    assert (min_h, max_h) == (46, 56), f"Heal(2) expected (46,56), got ({min_h},{max_h})"
+    assert (min_h, max_h) == (46, 56), f"Heal R1 expected (46,56), got ({min_h},{max_h})"
     # Spell functions with SP scaling (using spell_bonus_data coefficients)
     min_d_sp, max_d_sp = smite_damage(1, spell_power=100)
     sp_bonus = int(100 * SP_COEFF_SMITE)  # 12
     assert (min_d_sp, max_d_sp) == (13 + sp_bonus, 17 + sp_bonus), \
         f"Smite+SP expected ({13+sp_bonus},{17+sp_bonus}), got ({min_d_sp},{max_d_sp})"
-    print(f"  Stat scaling: HP, Mana, Smite, Heal, SP scaling ✓")
+    print(f"  Stat scaling: HP, Mana, Smite ranks, Heal, SP scaling ✓")
 
     # --- Level-up in simulation ---
     sim = CombatSimulation(num_mobs=10, seed=42)
@@ -1113,7 +1115,7 @@ def test_quest_system():
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
     assert obs.shape == (39,), f"Expected obs(39,), got {obs.shape}"
-    assert env.action_space.n == 18, f"Expected 18 actions, got {env.action_space.n}"
+    assert env.action_space.n == 19, f"Expected 19 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
     assert obs[28] > 0 or obs[26] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
@@ -2384,7 +2386,7 @@ def test_action_masking():
 
     # --- 15a: Initial mask — basic validity ---
     mask = env.action_masks()
-    assert mask.shape == (18,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (19,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
     assert mask[1] == True, "Move forward should be valid when not casting"
@@ -2842,12 +2844,15 @@ def test_spell_learning():
     assert dot == 21, f"Holy Fire DoT total should be 21, got {dot}"
     print(f"  17i: Holy Fire R1: {d_min}-{d_max} direct, {dot} DoT ✓")
 
-    # --- 17j: Mind Blast damage from DBC (RPL=0.6, MaxLevel=15) ---
-    # At L10: bonus = int(0.6 * 9) = 5, so 38+5+1=44 to 38+5+5=48
-    mb_min, mb_max = mind_blast_damage(10)  # L10, no SP
-    assert mb_min == 44, f"Mind Blast min@L10 should be 44, got {mb_min}"
-    assert mb_max == 48, f"Mind Blast max@L10 should be 48, got {mb_max}"
-    print(f"  17j: Mind Blast R1@L10: {mb_min}-{mb_max} ✓")
+    # --- 17j: Mind Blast R1 damage from DBC (bp=38, ds=5 → 39-43) ---
+    mb_min, mb_max = mind_blast_damage(10)  # R1 base values (no level scaling)
+    assert mb_min == 39, f"Mind Blast R1 min should be 39, got {mb_min}"
+    assert mb_max == 43, f"Mind Blast R1 max should be 43, got {mb_max}"
+    # At L16 best rank is R2 (8102, bp=71, ds=7 → 72-78)
+    from sim.formulas import spell_direct_value
+    r2_min, r2_max = spell_direct_value(8102)
+    assert (r2_min, r2_max) == (72, 78), f"Mind Blast R2 expected (72,78), got ({r2_min},{r2_max})"
+    print(f"  17j: Mind Blast R1: {mb_min}-{mb_max}, R2: {r2_min}-{r2_max} ✓")
 
     # --- 17k: Renew heal from DBC (45 total, no level scaling) ---
     rn = renew_total_heal(8)  # L8, no SP
