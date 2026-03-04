@@ -38,7 +38,12 @@ from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSIT
                              SP_COEFF_SMITE, SP_COEFF_HEAL,
                              melee_attack_power, ranged_attack_power,
                              melee_crit_chance, dodge_chance, parry_chance,
-                             hit_chance_spell, expertise_pct, armor_penetration_pct)
+                             hit_chance_spell, expertise_pct, armor_penetration_pct,
+                             EQUIPMENT_SLOT_HEAD, EQUIPMENT_SLOT_CHEST,
+                             EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND,
+                             EQUIPMENT_SLOT_RANGED, EQUIPMENT_SLOT_FINGER1,
+                             EQUIPMENT_SLOT_FINGER2, EQUIPMENT_SLOT_TRINKET1,
+                             EQUIPMENT_SLOT_TRINKET2, INVTYPE_TO_SLOTS)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -519,8 +524,11 @@ def test_loot_tables():
     # --- Test 7e: Upgrade detection ---
     sim2 = CombatSimulation(num_mobs=5, seed=99, loot_db=loot_db)
     p = sim2.player
-    # Pre-equip a weak chest item
-    p.equipped_scores[20] = 10.0  # InventoryType 20 (robe slot)
+    # Pre-equip a weak chest item (InventoryType 20=Robe maps to EQUIPMENT_SLOT_CHEST)
+    chest_slot = EQUIPMENT_SLOT_CHEST
+    p.equipment[chest_slot] = EquippedItem(
+        entry=0, name="Weak Chest", inventory_type=20, score=10.0, stats={})
+    p.equipped_scores[chest_slot] = 10.0
 
     # Create a mock loot scenario: Dirty Leather Vest (score=35) should be upgrade
     vest = loot_db.get_item(2000)
@@ -529,15 +537,11 @@ def test_loot_tables():
     assert vest.score == 35.0, f"Vest score expected 35.0, got {vest.score}"
     assert vest.score > 10.0, "Vest should be better than equipped"
 
-    # Verify the upgrade logic works
-    if vest.inventory_type > 0:
-        current = p.equipped_scores.get(vest.inventory_type, 0.0)
-        if vest.score > current:
-            p.equipped_scores[vest.inventory_type] = vest.score
-            p.equipped_upgrade = True
-    assert p.equipped_upgrade, "Vest should be detected as upgrade"
-    assert p.equipped_scores[20] == 35.0, "Equipped score should update"
-    print(f"  7e: Upgrade detection: 10.0 → {p.equipped_scores[20]} ✓")
+    # Verify the upgrade logic works via try_equip_item (uses slot system)
+    result = sim2.try_equip_item(vest)
+    assert result, "Vest should be detected as upgrade"
+    assert p.equipped_scores[chest_slot] == 35.0, "Equipped score should update"
+    print(f"  7e: Upgrade detection: 10.0 → {p.equipped_scores[chest_slot]} ✓")
 
     # --- Test 7f: Fallback without loot_db ---
     sim_no_loot = CombatSimulation(num_mobs=10, seed=42)  # no loot_db
@@ -1379,8 +1383,8 @@ def test_attribute_system():
         stats={ITEM_MOD_STAMINA: 10, ITEM_MOD_INTELLECT: 8, ITEM_MOD_SPIRIT: 5},
         armor=30,
     )
-    p.equipment[20] = chest
-    p.equipped_scores[20] = 50.0
+    p.equipment[EQUIPMENT_SLOT_CHEST] = chest
+    p.equipped_scores[EQUIPMENT_SLOT_CHEST] = 50.0
     sim.recalculate_stats()
 
     assert p.gear_stamina == 10, f"Expected gear_stamina=10, got {p.gear_stamina}"
@@ -1398,8 +1402,8 @@ def test_attribute_system():
         entry=9002, name="SP Wand", inventory_type=26, score=40.0,
         stats={ITEM_MOD_SPELL_POWER: 50},
     )
-    p.equipment[26] = sp_wand
-    p.equipped_scores[26] = 40.0
+    p.equipment[EQUIPMENT_SLOT_RANGED] = sp_wand
+    p.equipped_scores[EQUIPMENT_SLOT_RANGED] = 40.0
     sim.recalculate_stats()
     assert p.total_spell_power == 50, f"Expected SP=50, got {p.total_spell_power}"
     assert p.gear_spell_power == 50, f"Expected gear_sp=50, got {p.gear_spell_power}"
@@ -1419,7 +1423,7 @@ def test_attribute_system():
     old_hp2 = p2.max_hp
     result = sim2.try_equip_item(item)
     assert result is True, "Should equip upgrade"
-    assert p2.equipment[1].entry == 5001, "Item should be in head slot"
+    assert p2.equipment[EQUIPMENT_SLOT_HEAD].entry == 5001, "Item should be in head slot"
     assert p2.max_hp > old_hp2, "HP should increase after equip"
     assert p2.gear_stamina == 8, f"gear_stamina should be 8, got {p2.gear_stamina}"
 
@@ -1431,14 +1435,14 @@ def test_attribute_system():
     )
     result2 = sim2.try_equip_item(worse)
     assert result2 is False, "Should not equip worse item"
-    assert p2.equipment[1].entry == 5001, "Original item should still be equipped"
+    assert p2.equipment[EQUIPMENT_SLOT_HEAD].entry == 5001, "Original item should still be equipped"
     print(f"  11j: try_equip_item: upgrade=True, downgrade=False ✓")
 
     # --- Test 11k: Armor mitigation (WotLK formula) ---
     sim3 = CombatSimulation(num_mobs=5, seed=42)
     p3 = sim3.player
     # Give player some armor gear
-    p3.equipment[5] = EquippedItem(
+    p3.equipment[EQUIPMENT_SLOT_CHEST] = EquippedItem(
         entry=9003, name="Armor Chest", inventory_type=5, score=40.0,
         stats={}, armor=100,
     )
@@ -1484,7 +1488,7 @@ def test_attribute_system():
 
     # --- Test 11n: Equipment persists across ticks ---
     sim4 = CombatSimulation(num_mobs=5, seed=42)
-    sim4.player.equipment[5] = EquippedItem(
+    sim4.player.equipment[EQUIPMENT_SLOT_CHEST] = EquippedItem(
         entry=9004, name="Persist Chest", inventory_type=5, score=45.0,
         stats={ITEM_MOD_STAMINA: 5, ITEM_MOD_SPELL_POWER: 20}, armor=25,
     )
@@ -1577,8 +1581,8 @@ def test_attribute_system():
                ITEM_MOD_EXPERTISE_RATING: 15},
         armor=0,
     )
-    p5.equipment[21] = melee_gear
-    p5.equipped_scores[21] = 80.0
+    p5.equipment[EQUIPMENT_SLOT_MAINHAND] = melee_gear
+    p5.equipped_scores[EQUIPMENT_SLOT_MAINHAND] = 80.0
     sim5.recalculate_stats()
     assert p5.gear_strength == 15, f"gear_strength should be 15, got {p5.gear_strength}"
     assert p5.gear_agility == 10, f"gear_agility should be 10, got {p5.gear_agility}"
@@ -1589,6 +1593,159 @@ def test_attribute_system():
     assert p5.total_expertise > 0, f"Total expertise should be > 0, got {p5.total_expertise}"
     print(f"  11u: Melee gear: AP={p5.total_attack_power}, dodge={p5.total_dodge:.2f}%, "
           f"expertise={p5.total_expertise:.2f}% ✓")
+
+    # --- Test 11v: Unequip item removes stats ---
+    sim6 = CombatSimulation(num_mobs=5, seed=42)
+    p6 = sim6.player
+    from sim.loot_db import ItemData
+    helm = ItemData(
+        entry=9020, name="Unequip Helm", quality=2, sell_price=100,
+        inventory_type=1, item_level=10, item_class=4, item_subclass=1,
+        score=50.0,
+        stats={ITEM_MOD_STAMINA: 12, ITEM_MOD_INTELLECT: 10, ITEM_MOD_SPELL_POWER: 25},
+        armor=15, weapon_dps=0.0,
+    )
+    sim6.equip_item(helm)
+    assert p6.gear_stamina == 12, f"After equip: gear_stamina={p6.gear_stamina}"
+    assert p6.gear_intellect == 10, f"After equip: gear_intellect={p6.gear_intellect}"
+    assert p6.total_spell_power == 25, f"After equip: SP={p6.total_spell_power}"
+    hp_equipped = p6.max_hp
+    mana_equipped = p6.max_mana
+
+    removed = sim6.unequip_item(EQUIPMENT_SLOT_HEAD)
+    assert removed is not None, "Should return the removed item"
+    assert removed.entry == 9020, "Should return the correct item"
+    assert p6.gear_stamina == 0, f"After unequip: gear_stamina should be 0, got {p6.gear_stamina}"
+    assert p6.gear_intellect == 0, f"After unequip: gear_intellect should be 0, got {p6.gear_intellect}"
+    assert p6.total_spell_power == 0, f"After unequip: SP should be 0, got {p6.total_spell_power}"
+    assert p6.max_hp < hp_equipped, f"HP should decrease: {hp_equipped} -> {p6.max_hp}"
+    assert p6.max_mana < mana_equipped, f"Mana should decrease: {mana_equipped} -> {p6.max_mana}"
+    assert EQUIPMENT_SLOT_HEAD not in p6.equipment, "Slot should be empty"
+    # Unequipped item should be in inventory
+    assert len(p6.inventory) == 1, f"Inventory should have 1 item, got {len(p6.inventory)}"
+    assert p6.inventory[0].entry == 9020
+    print(f"  11v: Unequip: HP {hp_equipped}→{p6.max_hp}, SP 25→{p6.total_spell_power}, "
+          f"inv={len(p6.inventory)} ✓")
+
+    # Unequip empty slot returns None
+    empty = sim6.unequip_item(EQUIPMENT_SLOT_HEAD)
+    assert empty is None, "Unequip empty slot should return None"
+
+    # --- Test 11w: Dual-slot items (rings) ---
+    sim7 = CombatSimulation(num_mobs=5, seed=42)
+    p7 = sim7.player
+    ring1 = ItemData(
+        entry=9030, name="Ring of Power", quality=2, sell_price=50,
+        inventory_type=11, item_level=10, item_class=4, item_subclass=0,
+        score=40.0,
+        stats={ITEM_MOD_SPELL_POWER: 15}, armor=0, weapon_dps=0.0,
+    )
+    ring2 = ItemData(
+        entry=9031, name="Ring of Wisdom", quality=2, sell_price=60,
+        inventory_type=11, item_level=12, item_class=4, item_subclass=0,
+        score=45.0,
+        stats={ITEM_MOD_INTELLECT: 8}, armor=0, weapon_dps=0.0,
+    )
+    # First ring goes to Finger 1 (empty)
+    sim7.equip_item(ring1)
+    assert EQUIPMENT_SLOT_FINGER1 in p7.equipment, "First ring in Finger 1"
+    assert p7.equipment[EQUIPMENT_SLOT_FINGER1].entry == 9030
+
+    # Second ring goes to Finger 2 (also empty)
+    sim7.equip_item(ring2)
+    assert EQUIPMENT_SLOT_FINGER2 in p7.equipment, "Second ring in Finger 2"
+    assert p7.equipment[EQUIPMENT_SLOT_FINGER2].entry == 9031
+
+    # Both ring stats should be applied
+    assert p7.gear_spell_power == 15, f"SP from ring1: {p7.gear_spell_power}"
+    assert p7.gear_intellect == 8, f"Int from ring2: {p7.gear_intellect}"
+
+    # Third ring (better) should replace the weaker one (ring1, score=40)
+    ring3 = ItemData(
+        entry=9032, name="Ring of Glory", quality=3, sell_price=100,
+        inventory_type=11, item_level=15, item_class=4, item_subclass=0,
+        score=60.0,
+        stats={ITEM_MOD_SPELL_POWER: 30}, armor=0, weapon_dps=0.0,
+    )
+    sim7.equip_item(ring3)
+    assert p7.equipment[EQUIPMENT_SLOT_FINGER1].entry == 9032, "Ring3 should replace weaker ring1"
+    assert p7.equipment[EQUIPMENT_SLOT_FINGER2].entry == 9031, "Ring2 should remain"
+    assert p7.gear_spell_power == 30, f"SP should be 30 (ring3 only), got {p7.gear_spell_power}"
+    print(f"  11w: Dual slots (rings): 2 rings + replacement ✓")
+
+    # --- Test 11x: Two-hand weapon clears offhand ---
+    sim8 = CombatSimulation(num_mobs=5, seed=42)
+    p8 = sim8.player
+    # Equip a one-hand weapon + shield
+    sword = ItemData(
+        entry=9040, name="Short Sword", quality=1, sell_price=30,
+        inventory_type=13, item_level=5, item_class=2, item_subclass=7,
+        score=20.0,
+        stats={ITEM_MOD_STRENGTH: 5}, armor=0, weapon_dps=5.0,
+    )
+    shield = ItemData(
+        entry=9041, name="Buckler", quality=1, sell_price=25,
+        inventory_type=14, item_level=5, item_class=4, item_subclass=6,
+        score=15.0,
+        stats={ITEM_MOD_STAMINA: 3}, armor=50, weapon_dps=0.0,
+    )
+    sim8.equip_item(sword)
+    sim8.equip_item(shield)
+    assert EQUIPMENT_SLOT_MAINHAND in p8.equipment, "Sword in main hand"
+    assert EQUIPMENT_SLOT_OFFHAND in p8.equipment, "Shield in offhand"
+    assert p8.gear_armor == 50, f"Shield armor: {p8.gear_armor}"
+
+    # Equip two-hander: should clear offhand
+    staff = ItemData(
+        entry=9042, name="Mighty Staff", quality=2, sell_price=80,
+        inventory_type=17, item_level=12, item_class=2, item_subclass=10,
+        score=55.0,
+        stats={ITEM_MOD_INTELLECT: 10, ITEM_MOD_SPELL_POWER: 20},
+        armor=0, weapon_dps=8.0,
+    )
+    sim8.equip_item(staff)
+    assert p8.equipment[EQUIPMENT_SLOT_MAINHAND].entry == 9042, "Staff in main hand"
+    assert EQUIPMENT_SLOT_OFFHAND not in p8.equipment, "Offhand should be cleared"
+    assert p8.gear_armor == 0, f"Shield armor should be gone, got {p8.gear_armor}"
+    assert p8.gear_spell_power == 20, f"Staff SP: {p8.gear_spell_power}"
+    # Old items should be in inventory
+    inv_entries = [i.entry for i in p8.inventory]
+    assert 9040 in inv_entries, "Old sword should be in inventory"
+    assert 9041 in inv_entries, "Old shield should be in inventory"
+    print(f"  11x: Two-hand clears offhand: inv={len(p8.inventory)} items ✓")
+
+    # --- Test 11y: equip_item returns old item ---
+    sim9 = CombatSimulation(num_mobs=5, seed=42)
+    helm_a = ItemData(
+        entry=9050, name="Helm A", quality=1, sell_price=20,
+        inventory_type=1, item_level=5, item_class=4, item_subclass=1,
+        score=25.0,
+        stats={ITEM_MOD_STAMINA: 4}, armor=10, weapon_dps=0.0,
+    )
+    helm_b = ItemData(
+        entry=9051, name="Helm B", quality=2, sell_price=50,
+        inventory_type=1, item_level=10, item_class=4, item_subclass=1,
+        score=50.0,
+        stats={ITEM_MOD_STAMINA: 8}, armor=20, weapon_dps=0.0,
+    )
+    success_a, old_a = sim9.equip_item(helm_a)
+    assert success_a is True
+    assert old_a is None, "No old item when equipping to empty slot"
+    success_b, old_b = sim9.equip_item(helm_b)
+    assert success_b is True
+    assert old_b is not None, "Should return displaced item"
+    assert old_b.entry == 9050, "Displaced item should be Helm A"
+    assert sim9.player.gear_stamina == 8, "Should have Helm B stats"
+    print(f"  11y: equip_item returns old item: {old_b.name} ✓")
+
+    # --- Test 11z: Slot mapping (INVTYPE_TO_SLOTS) ---
+    assert INVTYPE_TO_SLOTS[1] == [EQUIPMENT_SLOT_HEAD], "inv_type 1 = Head"
+    assert INVTYPE_TO_SLOTS[20] == [EQUIPMENT_SLOT_CHEST], "inv_type 20 (Robe) = Chest"
+    assert INVTYPE_TO_SLOTS[14] == [EQUIPMENT_SLOT_OFFHAND], "inv_type 14 (Shield) = Offhand"
+    assert INVTYPE_TO_SLOTS[11] == [EQUIPMENT_SLOT_FINGER1, EQUIPMENT_SLOT_FINGER2], "Rings = 2 slots"
+    assert INVTYPE_TO_SLOTS[12] == [EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2], "Trinkets = 2 slots"
+    assert INVTYPE_TO_SLOTS[17] == [EQUIPMENT_SLOT_MAINHAND], "Two-Hand = Main Hand"
+    print(f"  11z: INVTYPE_TO_SLOTS mapping correct ✓")
 
     print("  PASSED\n")
 

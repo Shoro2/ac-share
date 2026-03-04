@@ -247,6 +247,83 @@ ITEM_MOD_SPELL_PENETRATION = 47
 ITEM_MOD_BLOCK_VALUE = 48
 
 
+# ─── WoW Equipment Slots (Player.h EQUIPMENT_SLOT_*) ────────────────
+EQUIPMENT_SLOT_HEAD = 0
+EQUIPMENT_SLOT_NECK = 1
+EQUIPMENT_SLOT_SHOULDERS = 2
+EQUIPMENT_SLOT_BODY = 3        # Shirt
+EQUIPMENT_SLOT_CHEST = 4
+EQUIPMENT_SLOT_WAIST = 5
+EQUIPMENT_SLOT_LEGS = 6
+EQUIPMENT_SLOT_FEET = 7
+EQUIPMENT_SLOT_WRISTS = 8
+EQUIPMENT_SLOT_HANDS = 9
+EQUIPMENT_SLOT_FINGER1 = 10
+EQUIPMENT_SLOT_FINGER2 = 11
+EQUIPMENT_SLOT_TRINKET1 = 12
+EQUIPMENT_SLOT_TRINKET2 = 13
+EQUIPMENT_SLOT_BACK = 14
+EQUIPMENT_SLOT_MAINHAND = 15
+EQUIPMENT_SLOT_OFFHAND = 16
+EQUIPMENT_SLOT_RANGED = 17
+EQUIPMENT_SLOT_TABARD = 18
+EQUIPMENT_SLOT_END = 19
+
+EQUIPMENT_SLOT_NAMES = {
+    EQUIPMENT_SLOT_HEAD: "Head",
+    EQUIPMENT_SLOT_NECK: "Neck",
+    EQUIPMENT_SLOT_SHOULDERS: "Shoulders",
+    EQUIPMENT_SLOT_BODY: "Shirt",
+    EQUIPMENT_SLOT_CHEST: "Chest",
+    EQUIPMENT_SLOT_WAIST: "Waist",
+    EQUIPMENT_SLOT_LEGS: "Legs",
+    EQUIPMENT_SLOT_FEET: "Feet",
+    EQUIPMENT_SLOT_WRISTS: "Wrists",
+    EQUIPMENT_SLOT_HANDS: "Hands",
+    EQUIPMENT_SLOT_FINGER1: "Finger 1",
+    EQUIPMENT_SLOT_FINGER2: "Finger 2",
+    EQUIPMENT_SLOT_TRINKET1: "Trinket 1",
+    EQUIPMENT_SLOT_TRINKET2: "Trinket 2",
+    EQUIPMENT_SLOT_BACK: "Back",
+    EQUIPMENT_SLOT_MAINHAND: "Main Hand",
+    EQUIPMENT_SLOT_OFFHAND: "Off Hand",
+    EQUIPMENT_SLOT_RANGED: "Ranged",
+    EQUIPMENT_SLOT_TABARD: "Tabard",
+}
+
+# Mapping: WoW InventoryType -> valid equipment slot(s)
+# Dual entries (rings, trinkets) allow filling either slot.
+INVTYPE_TO_SLOTS = {
+    1:  [EQUIPMENT_SLOT_HEAD],
+    2:  [EQUIPMENT_SLOT_NECK],
+    3:  [EQUIPMENT_SLOT_SHOULDERS],
+    4:  [EQUIPMENT_SLOT_BODY],
+    5:  [EQUIPMENT_SLOT_CHEST],
+    6:  [EQUIPMENT_SLOT_WAIST],
+    7:  [EQUIPMENT_SLOT_LEGS],
+    8:  [EQUIPMENT_SLOT_FEET],
+    9:  [EQUIPMENT_SLOT_WRISTS],
+    10: [EQUIPMENT_SLOT_HANDS],
+    11: [EQUIPMENT_SLOT_FINGER1, EQUIPMENT_SLOT_FINGER2],   # Ring
+    12: [EQUIPMENT_SLOT_TRINKET1, EQUIPMENT_SLOT_TRINKET2], # Trinket
+    13: [EQUIPMENT_SLOT_MAINHAND],   # One-Hand
+    14: [EQUIPMENT_SLOT_OFFHAND],    # Shield
+    15: [EQUIPMENT_SLOT_RANGED],     # Ranged (Bow/Gun)
+    16: [EQUIPMENT_SLOT_BACK],       # Cloak
+    17: [EQUIPMENT_SLOT_MAINHAND],   # Two-Hand (clears offhand)
+    19: [EQUIPMENT_SLOT_TABARD],
+    20: [EQUIPMENT_SLOT_CHEST],      # Robe = Chest
+    21: [EQUIPMENT_SLOT_MAINHAND],   # Main Hand only
+    22: [EQUIPMENT_SLOT_OFFHAND],    # Off Hand (misc)
+    23: [EQUIPMENT_SLOT_OFFHAND],    # Holdable (off-hand frill)
+    25: [EQUIPMENT_SLOT_RANGED],     # Thrown
+    26: [EQUIPMENT_SLOT_RANGED],     # Ranged Right (Wand)
+    28: [EQUIPMENT_SLOT_RANGED],     # Relic
+}
+
+INVTYPE_TWO_HAND = 17  # Two-hand weapons clear offhand on equip
+
+
 # ─── WotLK Base Stats per Class (from PlayerClassLevelInfo at L1) ────
 # {class_id: (strength, agility, stamina, intellect, spirit)}
 # Values from Human race, level 1. Other races differ by ~1-3.
@@ -1081,9 +1158,9 @@ class Player:
     loot_items: list = field(default_factory=list)
     # Quality of items that couldn't be picked up — inventory full (consume-on-read)
     loot_failed: list = field(default_factory=list)
-    # Equipment system: slot -> EquippedItem (WotLK slots)
-    equipment: dict = field(default_factory=dict)  # inventory_type -> EquippedItem
-    equipped_scores: dict = field(default_factory=dict)  # inventory_type -> best score (compat)
+    # Equipment system: EQUIPMENT_SLOT_* -> EquippedItem
+    equipment: dict = field(default_factory=dict)  # slot -> EquippedItem
+    equipped_scores: dict = field(default_factory=dict)  # slot -> best score (compat)
     # ─── Gear stats (accumulated from equipped items) ────────────────
     gear_strength: int = 0
     gear_agility: int = 0
@@ -1732,7 +1809,8 @@ class CombatSimulation:
 
         # ─── Block ───────────────────────────────────────────────────
         # Only classes with shields can block
-        has_shield = 14 in p.equipment  # inventory_type 14 = Shield
+        offhand = p.equipment.get(EQUIPMENT_SLOT_OFFHAND)
+        has_shield = offhand is not None and offhand.inventory_type == 14
         if has_shield:
             p.total_block = block_chance(
                 p.level, p.gear_block_rating, p.gear_defense_rating)
@@ -1759,40 +1837,149 @@ class CombatSimulation:
         # (old code uses total_haste_pct — keep it as spell haste)
         p.total_haste_pct = p.total_spell_haste
 
+    def _find_equip_slot(self, inv_type: int) -> int | None:
+        """Find the best equipment slot for an item by inventory_type.
+
+        For dual-slot items (rings, trinkets): fills empty slot first,
+        then targets the slot with the lower-score item.
+        Returns None if the item can't be equipped.
+        """
+        slots = INVTYPE_TO_SLOTS.get(inv_type)
+        if not slots:
+            return None
+        if len(slots) == 1:
+            return slots[0]
+        # Dual-slot: prefer empty slot
+        for slot in slots:
+            if slot not in self.player.equipment:
+                return slot
+        # Both occupied: return slot with lower score
+        return min(slots, key=lambda s: self.player.equipment[s].score)
+
+    @staticmethod
+    def _make_equipped_item(item_data) -> 'EquippedItem':
+        """Create an EquippedItem from any item data object (ItemData, InventoryItem)."""
+        stats = getattr(item_data, 'stats', None) or {}
+        armor = getattr(item_data, 'armor', 0)
+        weapon_dps = getattr(item_data, 'weapon_dps', 0.0)
+        return EquippedItem(
+            entry=item_data.entry,
+            name=item_data.name,
+            inventory_type=item_data.inventory_type,
+            score=item_data.score,
+            stats=stats,
+            armor=armor,
+            weapon_dps=weapon_dps,
+        )
+
+    def _equipped_to_inventory_item(self, item: 'EquippedItem') -> 'InventoryItem':
+        """Convert an EquippedItem to an InventoryItem for inventory storage."""
+        return InventoryItem(
+            entry=item.entry,
+            name=item.name,
+            quality=0,  # quality not stored on EquippedItem
+            sell_price=0,
+            score=item.score,
+            inventory_type=item.inventory_type,
+            stats=item.stats,
+            armor=item.armor,
+            weapon_dps=item.weapon_dps,
+        )
+
+    def equip_item(self, item_data, slot: int = None) -> tuple:
+        """Equip an item in the given slot (or auto-select slot).
+
+        Unlike try_equip_item(), this always equips regardless of score.
+        The displaced item (if any) is returned to inventory.
+
+        Args:
+            item_data: ItemData, InventoryItem, or any object with entry/name/
+                       inventory_type/score/stats/armor/weapon_dps attributes.
+            slot: Target EQUIPMENT_SLOT_* constant, or None for auto-select.
+
+        Returns:
+            (success: bool, old_item: EquippedItem | None)
+        """
+        inv_type = item_data.inventory_type
+        if inv_type <= 0:
+            return (False, None)
+
+        if slot is None:
+            slot = self._find_equip_slot(inv_type)
+        if slot is None:
+            return (False, None)
+
+        p = self.player
+        old_item = p.equipment.pop(slot, None)
+
+        # Two-hand weapon: clear offhand
+        displaced_offhand = None
+        if inv_type == INVTYPE_TWO_HAND:
+            displaced_offhand = p.equipment.pop(EQUIPMENT_SLOT_OFFHAND, None)
+
+        # Return old items to inventory
+        for displaced in (old_item, displaced_offhand):
+            if displaced is not None and p.free_slots > 0:
+                p.free_slots -= 1
+                p.inventory.append(self._equipped_to_inventory_item(displaced))
+
+        # Equip new item
+        p.equipment[slot] = self._make_equipped_item(item_data)
+        p.equipped_scores[slot] = item_data.score
+        self.recalculate_stats()
+        return (True, old_item)
+
+    def unequip_item(self, slot: int) -> 'EquippedItem | None':
+        """Remove item from equipment slot, recalculate stats.
+
+        The removed item is added to the player's inventory (if space).
+
+        Args:
+            slot: EQUIPMENT_SLOT_* constant.
+
+        Returns:
+            The removed EquippedItem, or None if slot was empty.
+        """
+        p = self.player
+        item = p.equipment.pop(slot, None)
+        if item is None:
+            return None
+
+        p.equipped_scores.pop(slot, None)
+
+        # Return to inventory
+        if p.free_slots > 0:
+            p.free_slots -= 1
+            p.inventory.append(self._equipped_to_inventory_item(item))
+
+        self.recalculate_stats()
+        return item
+
     def try_equip_item(self, item_data) -> bool:
         """Try to equip an item if it's better than current (score-based).
 
         item_data can be a LootDB ItemData or an InventoryItem with stats.
+        Uses proper WoW equipment slots via INVTYPE_TO_SLOTS mapping.
         Returns True if equipped (upgrade detected).
         """
         inv_type = item_data.inventory_type
         if inv_type <= 0:
             return False
 
-        current = self.player.equipment.get(inv_type)
+        slot = self._find_equip_slot(inv_type)
+        if slot is None:
+            return False
+
+        current = self.player.equipment.get(slot)
         current_score = current.score if current else 0.0
         new_score = item_data.score
 
         if new_score <= current_score:
             return False
 
-        # Equip the new item
-        stats = getattr(item_data, 'stats', None) or {}
-        armor = getattr(item_data, 'armor', 0)
-        weapon_dps = getattr(item_data, 'weapon_dps', 0.0)
-
-        self.player.equipment[inv_type] = EquippedItem(
-            entry=item_data.entry,
-            name=item_data.name,
-            inventory_type=inv_type,
-            score=new_score,
-            stats=stats,
-            armor=armor,
-            weapon_dps=weapon_dps,
-        )
-        self.player.equipped_scores[inv_type] = new_score
-        self.recalculate_stats()
-        return True
+        # Equip via equip_item (handles offhand clearing, inventory return, stat recalc)
+        success, _ = self.equip_item(item_data, slot)
+        return success
 
     def _update_exploration(self):
         """Track area/zone/map discovery based on player position.
@@ -2831,6 +3018,16 @@ class CombatSimulation:
             "gear_stamina": p.gear_stamina,
             "gear_intellect": p.gear_intellect,
             "gear_spirit": p.gear_spirit,
+            # Equipment (sim-only): slot -> item summary
+            "equipment": {
+                EQUIPMENT_SLOT_NAMES.get(slot, str(slot)): {
+                    "entry": item.entry,
+                    "name": item.name,
+                    "score": item.score,
+                }
+                for slot, item in p.equipment.items()
+            },
+            "equipment_slots_used": len(p.equipment),
             # Quest state (sim-only, not present in live TCP stream)
             "quest_active": len(self.active_quests) > 0,
             "quest_progress": self._get_quest_progress_ratio(),
