@@ -96,25 +96,25 @@ def test_gym_env():
     env = WoWSimEnv(num_mobs=10, seed=42)
 
     # Check spaces
-    assert env.observation_space.shape == (23,), f"Obs shape: {env.observation_space.shape}"
-    assert env.action_space.n == 12, f"Action space: {env.action_space.n}"
+    assert env.observation_space.shape == (28,), f"Obs shape: {env.observation_space.shape}"
+    assert env.action_space.n == 17, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
     # Reset
     obs, info = env.reset()
-    assert obs.shape == (23,), f"Obs shape after reset: {obs.shape}"
+    assert obs.shape == (28,), f"Obs shape after reset: {obs.shape}"
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
     # Step with each action
-    for action in range(12):
+    for action in range(17):
         obs, reward, done, trunc, info = env.step(action)
-        assert obs.shape == (23,)
+        assert obs.shape == (28,)
         if done:
             obs, info = env.reset()
 
-    print(f"  All 12 actions executed successfully")
+    print(f"  All 17 actions executed successfully")
     print("  PASSED\n")
 
 
@@ -1048,12 +1048,12 @@ def test_quest_system():
     # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
-    assert obs.shape == (23,), f"Expected obs(23,), got {obs.shape}"
-    assert env.action_space.n == 12, f"Expected 12 actions, got {env.action_space.n}"
+    assert obs.shape == (28,), f"Expected obs(28,), got {obs.shape}"
+    assert env.action_space.n == 17, f"Expected 17 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
-    assert obs[19] > 0 or obs[17] == 0.0, "Quest NPC obs should reflect nearby NPCs"
+    assert obs[24] > 0 or obs[22] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
-          f"quest_dims={obs[17:23]} ✓")
+          f"quest_dims={obs[22:28]} ✓")
 
     # --- Test 9l: Quest reward in env ---
     # Set up: accept quest, complete it, turn in, check reward

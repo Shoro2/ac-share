@@ -194,6 +194,38 @@ def heal_amount(level: int) -> tuple[int, int]:
     return (46 + bonus, 56 + bonus)
 
 
+def mind_blast_damage(level: int) -> tuple[int, int]:
+    """Mind Blast damage range: base (39-43) + 12 per level gained."""
+    bonus = (level - 1) * 12
+    return (39 + bonus, 43 + bonus)
+
+
+def renew_total_heal(level: int) -> int:
+    """Renew total HoT: base 45 + 8 per level gained."""
+    return 45 + (level - 1) * 8
+
+
+def holy_fire_damage(level: int) -> tuple[int, int]:
+    """Holy Fire direct damage: base (15-20) + 10 per level gained."""
+    bonus = (level - 1) * 10
+    return (15 + bonus, 20 + bonus)
+
+
+def holy_fire_dot_total(level: int) -> int:
+    """Holy Fire DoT total: base 12 + 5 per level gained."""
+    return 12 + (level - 1) * 5
+
+
+def inner_fire_values(level: int) -> tuple[int, int]:
+    """Inner Fire: (armor, spell_power_bonus). Scales with level."""
+    return (10 + (level - 1) * 3, 2 + (level - 1) * 1)
+
+
+def fortitude_hp_bonus(level: int) -> int:
+    """PW:Fortitude HP bonus: base 20 + 8 per level gained."""
+    return 20 + (level - 1) * 8
+
+
 # ─── Spell Definitions ───────────────────────────────────────────────
 
 @dataclass
@@ -215,6 +247,13 @@ class SpellDef:
     shield_absorb: int = 0
     shield_duration: int = 0  # ticks
     gcd_ticks: int = 3    # 1.5s = 3 ticks
+    cooldown_ticks: int = 0   # spell-specific cooldown (ticks), 0 = none
+    is_hot: bool = False
+    hot_heal: int = 0      # total HoT healing
+    hot_ticks: int = 0     # total duration in ticks
+    hot_interval: int = 6  # ticks between hot ticks (3s = 6 ticks)
+    is_buff: bool = False
+    buff_duration: int = 0  # ticks
 
 
 SPELLS = {
@@ -245,6 +284,44 @@ SPELLS = {
         is_shield=True,
         shield_absorb=44,
         shield_duration=60,  # 30s = 60 ticks
+    ),
+    8092: SpellDef(
+        id=8092, name="Mind Blast",
+        cast_ticks=3, mana_cost=50,  # 1.5s cast
+        min_damage=39, max_damage=43,
+        spell_range=30.0,
+        cooldown_ticks=16,  # 8s = 16 ticks
+    ),
+    139: SpellDef(
+        id=139, name="Renew",
+        cast_ticks=0, mana_cost=30,  # instant
+        is_hot=True,
+        hot_heal=45,       # total heal over 15s
+        hot_ticks=30,      # 15s = 30 ticks
+        hot_interval=6,    # tick every 3s = 5 HoT ticks
+    ),
+    14914: SpellDef(
+        id=14914, name="Holy Fire",
+        cast_ticks=4, mana_cost=40,  # 2.0s cast
+        min_damage=15, max_damage=20,
+        spell_range=30.0,
+        is_dot=True,
+        dot_damage=12,     # total 12 over 6s
+        dot_ticks=12,      # 6s = 12 ticks
+        dot_interval=6,    # tick every 3s = 2 DoT ticks
+        cooldown_ticks=20,  # 10s = 20 ticks
+    ),
+    588: SpellDef(
+        id=588, name="Inner Fire",
+        cast_ticks=0, mana_cost=20,  # instant
+        is_buff=True,
+        buff_duration=400,  # 200s ≈ 3.3 min = 400 ticks
+    ),
+    1243: SpellDef(
+        id=1243, name="Power Word: Fortitude",
+        cast_ticks=0, mana_cost=30,  # instant
+        is_buff=True,
+        buff_duration=1200,  # 600s = 10 min = 1200 ticks
     ),
 }
 
@@ -415,6 +492,20 @@ class Player:
     # Shield state
     shield_absorb: int = 0
     shield_remaining: int = 0   # ticks
+    shield_cooldown: int = 0    # Weakened Soul debuff (ticks)
+    # Spell cooldowns: {spell_id: ticks_remaining}
+    spell_cooldowns: dict = field(default_factory=dict)
+    # HoT (Renew) state
+    hot_remaining: int = 0       # ticks until HoT expires
+    hot_timer: int = 0           # ticks until next HoT tick
+    hot_heal_per_tick: int = 0
+    # Buff: Inner Fire
+    inner_fire_remaining: int = 0  # ticks
+    inner_fire_armor: int = 0
+    inner_fire_spellpower: int = 0
+    # Buff: PW:Fortitude
+    fortitude_remaining: int = 0   # ticks
+    fortitude_hp_bonus: int = 0
     # Accumulated rewards (consumed on read like real server)
     xp_gained: int = 0
     loot_copper: int = 0
@@ -460,10 +551,14 @@ class Mob:
     target_player: bool = False
     attack_timer: int = 0       # ticks until next attack
     respawn_timer: int = 0      # ticks until respawn (0 = alive)
-    # DoT tracking
+    # DoT tracking (slot 1: SW:Pain)
     dot_remaining: int = 0
     dot_timer: int = 0          # ticks until next dot tick
     dot_damage_per_tick: int = 0
+    # DoT tracking (slot 2: Holy Fire)
+    dot2_remaining: int = 0
+    dot2_timer: int = 0
+    dot2_damage_per_tick: int = 0
     looted: bool = False
     spawn_x: float = 0.0
     spawn_y: float = 0.0
@@ -1100,6 +1195,26 @@ class CombatSimulation:
         """Cast Power Word: Shield (instant)."""
         return self._start_cast(17)
 
+    def do_cast_mind_blast(self) -> bool:
+        """Start casting Mind Blast. Returns True if cast started."""
+        return self._start_cast(8092)
+
+    def do_cast_renew(self) -> bool:
+        """Cast Renew (instant HoT)."""
+        return self._start_cast(139)
+
+    def do_cast_holy_fire(self) -> bool:
+        """Start casting Holy Fire. Returns True if cast started."""
+        return self._start_cast(14914)
+
+    def do_cast_inner_fire(self) -> bool:
+        """Cast Inner Fire (instant self-buff)."""
+        return self._start_cast(588)
+
+    def do_cast_fortitude(self) -> bool:
+        """Cast Power Word: Fortitude (instant self-buff)."""
+        return self._start_cast(1243)
+
     def do_loot(self) -> bool:
         """Loot nearest dead mob within range.
 
@@ -1219,8 +1334,12 @@ class CombatSimulation:
         if self.player.mana < spell.mana_cost:
             return False
 
-        # Range check for offensive spells
-        if spell_id in (585, 589):
+        # Spell-specific cooldown check
+        if self.player.spell_cooldowns.get(spell_id, 0) > 0:
+            return False
+
+        # Range check for offensive spells (with target requirement)
+        if spell_id in (585, 589, 8092, 14914):
             if self.target is None or not self.target.alive:
                 return False
             if self._dist_to_mob(self.target) > spell.spell_range:
@@ -1233,8 +1352,21 @@ class CombatSimulation:
                 ):
                     return False
 
-        # Shield: check if already shielded
-        if spell_id == 17 and self.player.shield_remaining > 0:
+        # Shield: check if already shielded or Weakened Soul active
+        if spell_id == 17 and (self.player.shield_remaining > 0
+                               or self.player.shield_cooldown > 0):
+            return False
+
+        # Renew: block if HoT already active
+        if spell_id == 139 and self.player.hot_remaining > 0:
+            return False
+
+        # Inner Fire: block if already active
+        if spell_id == 588 and self.player.inner_fire_remaining > 0:
+            return False
+
+        # Fortitude: block if already active
+        if spell_id == 1243 and self.player.fortitude_remaining > 0:
             return False
 
         # Spend mana
@@ -1242,6 +1374,10 @@ class CombatSimulation:
 
         # GCD
         self.player.gcd_remaining = spell.gcd_ticks
+
+        # Spell-specific cooldown
+        if spell.cooldown_ticks > 0:
+            self.player.spell_cooldowns[spell_id] = spell.cooldown_ticks
 
         if spell.cast_ticks > 0:
             # Channeled/Cast time spell
@@ -1261,7 +1397,8 @@ class CombatSimulation:
         if spell_id == 585:  # Smite — level-scaled damage
             if self.target and self.target.alive:
                 min_dmg, max_dmg = smite_damage(self.player.level)
-                dmg = self.rng.randint(min_dmg, max_dmg)
+                sp_bonus = self.player.inner_fire_spellpower
+                dmg = self.rng.randint(min_dmg, max_dmg) + sp_bonus
                 self._damage_mob(self.target, dmg)
 
         elif spell_id == 2050:  # Lesser Heal — level-scaled
@@ -1280,6 +1417,49 @@ class CombatSimulation:
         elif spell_id == 17:  # PW:Shield
             self.player.shield_absorb = spell.shield_absorb
             self.player.shield_remaining = spell.shield_duration
+            self.player.shield_cooldown = 30  # Weakened Soul: 15s = 30 ticks
+
+        elif spell_id == 8092:  # Mind Blast — level-scaled damage
+            if self.target and self.target.alive:
+                min_dmg, max_dmg = mind_blast_damage(self.player.level)
+                sp_bonus = self.player.inner_fire_spellpower
+                dmg = self.rng.randint(min_dmg, max_dmg) + sp_bonus
+                self._damage_mob(self.target, dmg)
+
+        elif spell_id == 139:  # Renew — level-scaled HoT
+            total = renew_total_heal(self.player.level)
+            total_ticks = spell.hot_ticks // spell.hot_interval  # 5
+            heal_per = total // max(1, total_ticks)
+            self.player.hot_remaining = spell.hot_ticks
+            self.player.hot_timer = spell.hot_interval
+            self.player.hot_heal_per_tick = heal_per
+
+        elif spell_id == 14914:  # Holy Fire — direct damage + DoT (slot 2)
+            if self.target and self.target.alive:
+                min_dmg, max_dmg = holy_fire_damage(self.player.level)
+                sp_bonus = self.player.inner_fire_spellpower
+                dmg = self.rng.randint(min_dmg, max_dmg) + sp_bonus
+                self._damage_mob(self.target, dmg)
+                # DoT component on slot 2
+                dot_total = holy_fire_dot_total(self.player.level)
+                dot_ticks_count = spell.dot_ticks // spell.dot_interval  # 2
+                dot_per = dot_total // max(1, dot_ticks_count)
+                self.target.dot2_remaining = spell.dot_ticks
+                self.target.dot2_timer = spell.dot_interval
+                self.target.dot2_damage_per_tick = dot_per
+
+        elif spell_id == 588:  # Inner Fire — armor + spellpower buff
+            armor, sp = inner_fire_values(self.player.level)
+            self.player.inner_fire_remaining = spell.buff_duration
+            self.player.inner_fire_armor = armor
+            self.player.inner_fire_spellpower = sp
+
+        elif spell_id == 1243:  # PW:Fortitude — max HP buff
+            bonus = fortitude_hp_bonus(self.player.level)
+            self.player.fortitude_remaining = spell.buff_duration
+            self.player.fortitude_hp_bonus = bonus
+            self.player.max_hp += bonus
+            self.player.hp += bonus  # also heal the bonus amount
 
     def _damage_mob(self, mob: Mob, damage: int):
         """Apply damage to a mob, handle death."""
@@ -1376,13 +1556,19 @@ class CombatSimulation:
                     mob.target_player = True
                     p.in_combat = True
                 else:
-                    # Far non-combat mob: only process DoT then skip
+                    # Far non-combat mob: only process DoTs then skip
                     if mob.dot_remaining > 0:
                         mob.dot_remaining -= 1
                         mob.dot_timer -= 1
                         if mob.dot_timer <= 0:
                             self._damage_mob(mob, mob.dot_damage_per_tick)
                             mob.dot_timer = 6
+                    if mob.dot2_remaining > 0:
+                        mob.dot2_remaining -= 1
+                        mob.dot2_timer -= 1
+                        if mob.dot2_timer <= 0:
+                            self._damage_mob(mob, mob.dot2_damage_per_tick)
+                            mob.dot2_timer = 6
                     continue
 
             if mob.target_player:
@@ -1421,19 +1607,60 @@ class CombatSimulation:
                         mob.attack_timer = mob.template.attack_speed
                         p.combat_timer = 0
 
-            # DoT processing
+            # DoT processing (slot 1: SW:Pain)
             if mob.dot_remaining > 0:
                 mob.dot_remaining -= 1
                 mob.dot_timer -= 1
                 if mob.dot_timer <= 0:
                     self._damage_mob(mob, mob.dot_damage_per_tick)
                     mob.dot_timer = 6
+            # DoT processing (slot 2: Holy Fire)
+            if mob.dot2_remaining > 0:
+                mob.dot2_remaining -= 1
+                mob.dot2_timer -= 1
+                if mob.dot2_timer <= 0:
+                    self._damage_mob(mob, mob.dot2_damage_per_tick)
+                    mob.dot2_timer = 6
 
         # --- Shield decay ---
         if p.shield_remaining > 0:
             p.shield_remaining -= 1
             if p.shield_remaining <= 0:
                 p.shield_absorb = 0
+        if p.shield_cooldown > 0:
+            p.shield_cooldown -= 1
+
+        # --- Spell cooldowns ---
+        for sid in list(p.spell_cooldowns):
+            p.spell_cooldowns[sid] -= 1
+            if p.spell_cooldowns[sid] <= 0:
+                del p.spell_cooldowns[sid]
+
+        # --- HoT (Renew) ---
+        if p.hot_remaining > 0:
+            p.hot_remaining -= 1
+            p.hot_timer -= 1
+            if p.hot_timer <= 0:
+                p.hp = min(p.max_hp, p.hp + p.hot_heal_per_tick)
+                p.hot_timer = 6
+            if p.hot_remaining <= 0:
+                p.hot_heal_per_tick = 0
+
+        # --- Buff: Inner Fire ---
+        if p.inner_fire_remaining > 0:
+            p.inner_fire_remaining -= 1
+            if p.inner_fire_remaining <= 0:
+                p.inner_fire_armor = 0
+                p.inner_fire_spellpower = 0
+
+        # --- Buff: PW:Fortitude ---
+        if p.fortitude_remaining > 0:
+            p.fortitude_remaining -= 1
+            if p.fortitude_remaining <= 0:
+                # Remove HP bonus
+                p.max_hp -= p.fortitude_hp_bonus
+                p.hp = min(p.hp, p.max_hp)
+                p.fortitude_hp_bonus = 0
 
         # --- Regen ---
         if p.in_combat:
@@ -1458,8 +1685,12 @@ class CombatSimulation:
                 p.mana_regen_accumulator -= regen
 
     def _damage_player(self, damage: int):
-        """Apply damage to player, considering shield."""
+        """Apply damage to player, considering Inner Fire armor and shield."""
         p = self.player
+        # Inner Fire armor reduces damage
+        if p.inner_fire_armor > 0:
+            reduction = min(p.inner_fire_armor, damage)
+            damage -= reduction
         if p.shield_absorb > 0:
             absorbed = min(p.shield_absorb, damage)
             p.shield_absorb -= absorbed
@@ -1595,6 +1826,7 @@ class CombatSimulation:
             "z": self.target.z,
             "level": self.target.level,
             "has_sw_pain": self.target.dot_remaining > 0,
+            "has_holy_fire": self.target.dot2_remaining > 0,
         }
 
     def get_state_dict(self) -> dict:
@@ -1628,7 +1860,13 @@ class CombatSimulation:
             "ty": t_info["y"],
             "tz": t_info["z"],
             "has_shield": "true" if p.shield_remaining > 0 else "false",
+            "has_renew": "true" if p.hot_remaining > 0 else "false",
+            "has_inner_fire": "true" if p.inner_fire_remaining > 0 else "false",
+            "has_fortitude": "true" if p.fortitude_remaining > 0 else "false",
+            "mind_blast_ready": "true" if p.spell_cooldowns.get(8092, 0) <= 0 else "false",
+            "holy_fire_ready": "true" if p.spell_cooldowns.get(14914, 0) <= 0 else "false",
             "target_has_sw_pain": "true" if t_info.get("has_sw_pain") else "false",
+            "target_has_holy_fire": "true" if t_info.get("has_holy_fire") else "false",
             "nearby_mobs": [
                 {
                     "guid": str(m["uid"]),
