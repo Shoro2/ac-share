@@ -178,6 +178,7 @@ class WoWSimEnv(gym.Env):
         self._ep_quest_xp = 0
         self._steps_since_kill_xp = 0
         self._idle_steps = 0
+        self._prev_sim_kills = 0            # track sim.kills for event logging
         self._prev_target_dist = None       # for approach shaping
         self._vendor_nav_active = False
         self._quest_nav_active = False
@@ -397,14 +398,18 @@ class WoWSimEnv(gym.Env):
         # 4. XP/Kill (primary reward signal — must dominate step penalty)
         xp = events["xp_gained"]
         kill_xp = xp - events.get("quest_xp", 0)  # separate kill XP from quest XP
+        new_kills = self.sim.kills - self._prev_sim_kills
+        if new_kills > 0:
+            self._ep_kills += new_kills
+            self._prev_sim_kills = self.sim.kills
+            if self._logger:
+                for _ in range(new_kills):
+                    self._logger.record_event(
+                        self._step_count, p.x, p.y, "kill")
         if xp > 0:
             reward += 10.0 + xp * 0.5
             if kill_xp > 0:
-                self._ep_kills += 1
                 self._steps_since_kill_xp = 0
-            if self._logger:
-                self._logger.record_event(
-                    self._step_count, p.x, p.y, "kill")
         else:
             self._steps_since_kill_xp += 1
 
@@ -525,7 +530,7 @@ class WoWSimEnv(gym.Env):
             ep_stats = {
                 "reward": self._ep_reward,
                 "length": self._step_count,
-                "kills": self.sim.kills,
+                "kills": self._ep_kills,
                 "xp": self._ep_xp,
                 "loot": self._ep_loot,
                 "damage_dealt": self.sim.damage_dealt,
