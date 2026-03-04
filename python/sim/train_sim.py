@@ -138,6 +138,7 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_sell_copper", stats.get("sell_copper", 0), step)
                 self._writer.add_scalar("gameplay/ep_quests_completed", stats.get("quests_completed", 0), step)
                 self._writer.add_scalar("gameplay/ep_quest_xp", stats.get("quest_xp", 0), step)
+                self._writer.add_scalar("gameplay/ep_equipment_upgrades", stats.get("equipment_upgrades", 0), step)
                 self._writer.add_scalar("gameplay/ep_equipped_items", stats.get("equipped_items", 0), step)
                 self._writer.add_scalar("gameplay/ep_equipped_bags", stats.get("equipped_bags", 0), step)
                 self._writer.add_scalar("gameplay/ep_total_bag_slots", stats.get("total_bag_slots", 16), step)
@@ -166,12 +167,13 @@ class GameplayMetricsCallback(BaseCallback):
                 idle = stats.get('idle_ratio', 0)
                 equip = stats.get('equipped_items', 0)
                 bags = stats.get('equipped_bags', 0)
+                upgrades = stats.get('equipment_upgrades', 0)
                 print(f"  [Episode {self._episode_count}] "
                       f"reward={stats['reward']:.1f} kills={stats['kills']} "
                       f"xp={stats['xp']} deaths={stats['death']} "
                       f"dmg={dmg} areas={areas} idle={idle:.0%} "
                       f"sold={sold} quests={quests} "
-                      f"equip={equip} bags={bags} "
+                      f"equip={equip} bags={bags} upgrades={upgrades} "
                       f"len={stats['length']}")
 
         return True
