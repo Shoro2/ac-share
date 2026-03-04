@@ -158,6 +158,7 @@ class WoWSimEnv(gym.Env):
         self._ep_levels_gained = 0
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
+        self._ep_equipment_upgrades = 0
         self._steps_since_kill_xp = 0      # stall detector: reset episode after 3k steps without kill XP
         self._idle_steps = 0              # noop-without-casting steps (idle time tracking)
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
@@ -330,6 +331,7 @@ class WoWSimEnv(gym.Env):
         self._ep_levels_gained = 0
         self._ep_quests_completed = 0
         self._ep_quest_xp = 0
+        self._ep_equipment_upgrades = 0
         self._steps_since_kill_xp = 0
         self._idle_steps = 0
         self._prev_sim_kills = 0            # track sim.kills for event logging
@@ -525,6 +527,7 @@ class WoWSimEnv(gym.Env):
         upgrade_score = events["equipped_upgrade"]
         if upgrade_score > 0:
             reward += min(1.0 + upgrade_score * 0.15, 5.0)
+            self._ep_equipment_upgrades += 1
 
         # 7. Loot — quality-based reward per item, penalty when inventory full
         copper = events["loot_copper"]
@@ -643,6 +646,7 @@ class WoWSimEnv(gym.Env):
                 "sell_copper": self._ep_sell_copper,
                 "quests_completed": self._ep_quests_completed,
                 "quest_xp": self._ep_quest_xp,
+                "equipment_upgrades": self._ep_equipment_upgrades,
                 "equipped_items": len(self.sim.player.equipment),
                 "equipped_bags": len(self.sim.player.bags),
                 "total_bag_slots": self.sim.player.total_bag_slots,
