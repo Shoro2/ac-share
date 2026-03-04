@@ -1,9 +1,12 @@
 """
 WoW Combat Simulation Engine — Pure Python, no server needed.
 
-Simulates a Human Priest in Northshire Valley fighting mobs.
-All values derived from AzerothCore DB exports and game mechanics.
-Supports leveling from 1–79 with AzerothCore XP formulas.
+Simulates WoW 3.3.5 WotLK characters with full stat system.
+All formulas derived from AzerothCore C++ source (StatSystem.cpp,
+Player.cpp, Unit.cpp, DBC game tables).
+
+Supports all 10 classes (stat framework), leveling 1–80.
+Currently only Priest has spell implementations.
 
 Tick-based: 1 tick = 0.5 seconds (matches WoWEnv decision interval).
 """
@@ -170,6 +173,41 @@ def base_xp_gain(pl_level: int, mob_level: int) -> int:
             return 0
 
 
+# ─── WotLK 3.3.5 Class Constants (from SharedDefines.h) ──────────────
+
+CLASS_WARRIOR = 1
+CLASS_PALADIN = 2
+CLASS_HUNTER = 3
+CLASS_ROGUE = 4
+CLASS_PRIEST = 5
+CLASS_DEATH_KNIGHT = 6
+CLASS_SHAMAN = 7
+CLASS_MAGE = 8
+CLASS_WARLOCK = 9
+CLASS_DRUID = 11
+MAX_CLASSES = 12
+
+CLASS_NAMES = {
+    CLASS_WARRIOR: "Warrior", CLASS_PALADIN: "Paladin", CLASS_HUNTER: "Hunter",
+    CLASS_ROGUE: "Rogue", CLASS_PRIEST: "Priest", CLASS_DEATH_KNIGHT: "Death Knight",
+    CLASS_SHAMAN: "Shaman", CLASS_MAGE: "Mage", CLASS_WARLOCK: "Warlock",
+    CLASS_DRUID: "Druid",
+}
+
+# Power types per class
+POWER_MANA = 0
+POWER_RAGE = 1
+POWER_ENERGY = 3
+POWER_RUNIC = 6
+
+CLASS_POWER_TYPE = {
+    CLASS_WARRIOR: POWER_RAGE, CLASS_PALADIN: POWER_MANA,
+    CLASS_HUNTER: POWER_MANA, CLASS_ROGUE: POWER_ENERGY,
+    CLASS_PRIEST: POWER_MANA, CLASS_DEATH_KNIGHT: POWER_RUNIC,
+    CLASS_SHAMAN: POWER_MANA, CLASS_MAGE: POWER_MANA,
+    CLASS_WARLOCK: POWER_MANA, CLASS_DRUID: POWER_MANA,
+}
+
 # ─── WotLK 3.3.5 Item Stat Type Constants (from ItemTemplate.h) ──────
 
 ITEM_MOD_MANA = 0
@@ -179,53 +217,207 @@ ITEM_MOD_STRENGTH = 4
 ITEM_MOD_INTELLECT = 5
 ITEM_MOD_SPIRIT = 6
 ITEM_MOD_STAMINA = 7
-ITEM_MOD_HIT_RATING = 31
-ITEM_MOD_CRIT_RATING = 32
-ITEM_MOD_HASTE_RATING = 36
+ITEM_MOD_DEFENSE_SKILL_RATING = 12
+ITEM_MOD_DODGE_RATING = 13
+ITEM_MOD_PARRY_RATING = 14
+ITEM_MOD_BLOCK_RATING = 15
+ITEM_MOD_HIT_MELEE_RATING = 16
+ITEM_MOD_HIT_RANGED_RATING = 17
+ITEM_MOD_HIT_SPELL_RATING = 18
+ITEM_MOD_CRIT_MELEE_RATING = 19
+ITEM_MOD_CRIT_RANGED_RATING = 20
+ITEM_MOD_CRIT_SPELL_RATING = 21
+ITEM_MOD_HASTE_MELEE_RATING = 28
+ITEM_MOD_HASTE_RANGED_RATING = 29
+ITEM_MOD_HASTE_SPELL_RATING = 30
+ITEM_MOD_HIT_RATING = 31          # all types
+ITEM_MOD_CRIT_RATING = 32         # all types
+ITEM_MOD_RESILIENCE_RATING = 35
+ITEM_MOD_HASTE_RATING = 36        # all types
+ITEM_MOD_EXPERTISE_RATING = 37
 ITEM_MOD_ATTACK_POWER = 38
+ITEM_MOD_RANGED_ATTACK_POWER = 39
 ITEM_MOD_SPELL_HEALING_DONE = 41  # deprecated, old items
 ITEM_MOD_SPELL_DAMAGE_DONE = 42   # deprecated, old items
 ITEM_MOD_MANA_REGENERATION = 43   # MP5
+ITEM_MOD_ARMOR_PENETRATION_RATING = 44
 ITEM_MOD_SPELL_POWER = 45
 ITEM_MOD_HEALTH_REGEN = 46        # HP5
+ITEM_MOD_SPELL_PENETRATION = 47
+ITEM_MOD_BLOCK_VALUE = 48
 
-# WotLK Priest base stats per level (from PlayerClassLevelInfo, approximated)
-# Base Stamina/Intellect/Spirit at level 1, +1 per level thereafter (simplified)
-PRIEST_BASE_STAMINA = 20     # level 1
-PRIEST_BASE_INTELLECT = 22   # level 1
-PRIEST_BASE_SPIRIT = 23      # level 1
-PRIEST_BASE_STRENGTH = 15    # level 1
-PRIEST_BASE_AGILITY = 17     # level 1
 
-# WotLK Priest spell crit per intellect (from GtChanceToSpellCrit.dbc, priest class=5)
-# Approximate values: base crit chance + int*ratio.  At low levels ~1.24% base, ~0.066/int
-PRIEST_SPELL_CRIT_BASE = 1.24   # base spell crit % at level 1 (from DBC)
-# Approximate int-to-crit ratio per level (simplified — real values from GtChanceToSpellCrit)
-# At level 1: ~0.066% per int, at level 80: ~0.006% per int
-PRIEST_SPELL_CRIT_PER_INT_L1 = 0.066
-PRIEST_SPELL_CRIT_PER_INT_L80 = 0.006
+# ─── WotLK Base Stats per Class (from PlayerClassLevelInfo at L1) ────
+# {class_id: (strength, agility, stamina, intellect, spirit)}
+# Values from Human race, level 1. Other races differ by ~1-3.
+CLASS_BASE_STATS = {
+    CLASS_WARRIOR:      (23, 20, 22, 17, 19),
+    CLASS_PALADIN:      (22, 17, 21, 20, 20),
+    CLASS_HUNTER:       (16, 24, 21, 17, 20),
+    CLASS_ROGUE:        (18, 24, 20, 17, 19),
+    CLASS_PRIEST:       (15, 17, 20, 22, 23),
+    CLASS_DEATH_KNIGHT: (24, 16, 23, 11, 18),
+    CLASS_SHAMAN:       (18, 16, 21, 20, 22),
+    CLASS_MAGE:         (15, 17, 18, 24, 22),
+    CLASS_WARLOCK:      (15, 17, 20, 22, 22),
+    CLASS_DRUID:        (17, 17, 19, 22, 22),
+}
 
-# WotLK combat rating conversion at level 80 (from GtCombatRatings.dbc)
-# Rating needed for 1% at level 80:
-CRIT_RATING_PER_PCT_L80 = 45.91    # CR_CRIT_SPELL at 80
-HASTE_RATING_PER_PCT_L80 = 32.79   # CR_HASTE_SPELL at 80
-HIT_RATING_PER_PCT_L80 = 26.23     # CR_HIT_SPELL at 80
-# Linear scaling: rating_per_pct scales linearly 1..80
-# At level 1 you need about 1/80th of the level-80 value per %
+# Base HP / Mana at level 1 per class (from PlayerClassInfo)
+# (base_hp, base_mana_or_power)
+CLASS_BASE_HP_MANA = {
+    CLASS_WARRIOR:      (60, 0),      # rage = 0 base
+    CLASS_PALADIN:      (68, 80),
+    CLASS_HUNTER:       (56, 85),
+    CLASS_ROGUE:        (55, 100),    # energy = 100
+    CLASS_PRIEST:       (72, 123),
+    CLASS_DEATH_KNIGHT: (130, 100),   # runic = 100
+    CLASS_SHAMAN:       (57, 78),
+    CLASS_MAGE:         (52, 130),
+    CLASS_WARLOCK:      (58, 110),
+    CLASS_DRUID:        (56, 90),
+}
 
-# WotLK Spirit->MP5 coefficient for Priest (from GtRegenMPPerSpt.dbc)
-# At level 1: ~0.25, at level 80: ~0.016.  Formula: sqrt(int) * spirit * coeff
-PRIEST_MP5_SPIRIT_COEFF_L1 = 0.25
-PRIEST_MP5_SPIRIT_COEFF_L80 = 0.016
+# HP gain per level (simplified — real values from DBC vary slightly)
+CLASS_HP_PER_LEVEL = {
+    CLASS_WARRIOR: 60, CLASS_PALADIN: 55, CLASS_HUNTER: 46,
+    CLASS_ROGUE: 45, CLASS_PRIEST: 50, CLASS_DEATH_KNIGHT: 60,
+    CLASS_SHAMAN: 52, CLASS_MAGE: 42, CLASS_WARLOCK: 48, CLASS_DRUID: 50,
+}
 
-# WotLK Priest spell power coefficients (from spell_bonus_data DB table)
-# coefficient = castTime / 3.5 (standard formula)
+# Mana gain per level for mana classes (simplified)
+CLASS_MANA_PER_LEVEL = {
+    CLASS_PALADIN: 18, CLASS_HUNTER: 15, CLASS_PRIEST: 5,
+    CLASS_SHAMAN: 17, CLASS_MAGE: 22, CLASS_WARLOCK: 20, CLASS_DRUID: 18,
+}
+
+
+# ─── WotLK Melee Crit from Agility (from GtChanceToMeleeCrit.dbc) ───
+# {class_id: (base_crit_fraction, ratio_L1, ratio_L80)}
+# base is from GtChanceToMeleeCritBase, ratio from GtChanceToMeleeCrit
+# C++ formula: (base + agi * ratio) * 100.0f → percentage
+GT_MELEE_CRIT = {
+    CLASS_WARRIOR:      (0.0000, 0.000523, 0.000080),
+    CLASS_PALADIN:      (0.0327, 0.000441, 0.000068),
+    CLASS_HUNTER:       (-0.0115, 0.000302, 0.000113),
+    CLASS_ROGUE:        (-0.0295, 0.000273, 0.000145),
+    CLASS_PRIEST:       (0.0157, 0.000441, 0.000068),
+    CLASS_DEATH_KNIGHT: (0.0000, 0.000523, 0.000080),
+    CLASS_SHAMAN:       (0.0167, 0.000376, 0.000078),
+    CLASS_MAGE:         (0.0335, 0.000508, 0.000078),
+    CLASS_WARLOCK:      (0.0183, 0.000441, 0.000068),
+    CLASS_DRUID:        (0.0188, 0.000376, 0.000116),
+}
+
+# ─── WotLK Spell Crit from Intellect (from GtChanceToSpellCrit.dbc) ─
+# {class_id: (base_crit_fraction, ratio_L1, ratio_L80)}
+# C++ formula: (base + int * ratio) * 100.0f → percentage
+GT_SPELL_CRIT = {
+    CLASS_WARRIOR:      (0.0000, 0.000000, 0.000000),
+    CLASS_PALADIN:      (0.0328, 0.000342, 0.000068),
+    CLASS_HUNTER:       (0.0115, 0.000441, 0.000068),
+    CLASS_ROGUE:        (0.0000, 0.000000, 0.000000),
+    CLASS_PRIEST:       (0.0124, 0.000660, 0.000060),
+    CLASS_DEATH_KNIGHT: (0.0000, 0.000000, 0.000000),
+    CLASS_SHAMAN:       (0.0229, 0.000376, 0.000078),
+    CLASS_MAGE:         (0.0091, 0.000508, 0.000078),
+    CLASS_WARLOCK:      (0.0170, 0.000441, 0.000068),
+    CLASS_DRUID:        (0.0188, 0.000376, 0.000078),
+}
+
+# ─── WotLK Dodge from Agility (from GetDodgeFromAgility in Player.cpp) ─
+# base_dodge[class] + agility * crit_ratio * crit_to_dodge_coeff
+# dodge_base values from Player.cpp line 5185
+DODGE_BASE = {
+    CLASS_WARRIOR: 0.036640, CLASS_PALADIN: 0.034943, CLASS_HUNTER: -0.040873,
+    CLASS_ROGUE: 0.020957, CLASS_PRIEST: 0.034178, CLASS_DEATH_KNIGHT: 0.036640,
+    CLASS_SHAMAN: 0.021080, CLASS_MAGE: 0.036587, CLASS_WARLOCK: 0.024211,
+    CLASS_DRUID: 0.056097,
+}
+
+# crit_to_dodge conversion (from Player.cpp line 5200, adjusted by 3.2.0 15% increase)
+CRIT_TO_DODGE = {
+    CLASS_WARRIOR: 0.85/1.15, CLASS_PALADIN: 1.00/1.15, CLASS_HUNTER: 1.11/1.15,
+    CLASS_ROGUE: 2.00/1.15, CLASS_PRIEST: 1.00/1.15, CLASS_DEATH_KNIGHT: 0.85/1.15,
+    CLASS_SHAMAN: 1.60/1.15, CLASS_MAGE: 1.00/1.15, CLASS_WARLOCK: 0.97/1.15,
+    CLASS_DRUID: 2.00/1.15,
+}
+
+# Diminishing returns constants (from StatSystem.cpp line 711)
+DR_K = {
+    CLASS_WARRIOR: 0.9560, CLASS_PALADIN: 0.9560, CLASS_HUNTER: 0.9880,
+    CLASS_ROGUE: 0.9880, CLASS_PRIEST: 0.9830, CLASS_DEATH_KNIGHT: 0.9560,
+    CLASS_SHAMAN: 0.9880, CLASS_MAGE: 0.9830, CLASS_WARLOCK: 0.9830,
+    CLASS_DRUID: 0.9720,
+}
+
+DODGE_CAP = {
+    CLASS_WARRIOR: 88.129021, CLASS_PALADIN: 88.129021, CLASS_HUNTER: 145.560408,
+    CLASS_ROGUE: 145.560408, CLASS_PRIEST: 150.375940, CLASS_DEATH_KNIGHT: 88.129021,
+    CLASS_SHAMAN: 145.560408, CLASS_MAGE: 150.375940, CLASS_WARLOCK: 150.375940,
+    CLASS_DRUID: 116.890707,
+}
+
+PARRY_CAP = {
+    CLASS_WARRIOR: 47.003525, CLASS_PALADIN: 47.003525, CLASS_HUNTER: 145.560408,
+    CLASS_ROGUE: 145.560408, CLASS_PRIEST: 0.0, CLASS_DEATH_KNIGHT: 47.003525,
+    CLASS_SHAMAN: 145.560408, CLASS_MAGE: 0.0, CLASS_WARLOCK: 0.0,
+    CLASS_DRUID: 0.0,
+}
+
+
+# ─── WotLK Spirit->Mana Regen (from GtRegenMPPerSpt.dbc) ────────────
+# {class_id: (coeff_L1, coeff_L80)}
+# C++ formula: sqrt(int) * spirit * coeff → mana per second (OOC)
+GT_REGEN_MP_PER_SPT = {
+    CLASS_PALADIN:  (0.0230, 0.0056),
+    CLASS_HUNTER:   (0.0230, 0.0045),
+    CLASS_PRIEST:   (0.0250, 0.0060),
+    CLASS_SHAMAN:   (0.0240, 0.0058),
+    CLASS_MAGE:     (0.0250, 0.0060),
+    CLASS_WARLOCK:  (0.0240, 0.0058),
+    CLASS_DRUID:    (0.0240, 0.0060),
+}
+
+# ─── WotLK Spirit->HP Regen (from GtOCTRegenHP + GtRegenHPPerSpt) ───
+# base_regen + (spirit_above_50 * spirit_ratio) — simplified
+# For most classes it's negligible and handled by OOC flat regen
+GT_HP_REGEN_PER_SPT = {
+    CLASS_WARRIOR: 0.0, CLASS_PALADIN: 0.0, CLASS_HUNTER: 0.0,
+    CLASS_ROGUE: 0.0, CLASS_PRIEST: 0.008, CLASS_DEATH_KNIGHT: 0.0,
+    CLASS_SHAMAN: 0.008, CLASS_MAGE: 0.008, CLASS_WARLOCK: 0.008,
+    CLASS_DRUID: 0.008,
+}
+
+
+# ─── WotLK Combat Rating Conversions (from GtCombatRatings.dbc) ─────
+# Rating needed for 1% at level 80. Scales linearly with level.
+# For levels below 80: rating_for_1pct = L80_value * level / 80
+CR_DEFENSE_L80 = 4.92       # defense skill rating -> 1 defense skill point
+CR_DODGE_L80 = 39.35
+CR_PARRY_L80 = 39.35
+CR_BLOCK_L80 = 16.39
+CR_HIT_MELEE_L80 = 32.79
+CR_HIT_RANGED_L80 = 32.79
+CR_HIT_SPELL_L80 = 26.23
+CR_CRIT_MELEE_L80 = 45.91
+CR_CRIT_RANGED_L80 = 45.91
+CR_CRIT_SPELL_L80 = 45.91
+CR_HASTE_MELEE_L80 = 32.79
+CR_HASTE_RANGED_L80 = 32.79
+CR_HASTE_SPELL_L80 = 32.79
+CR_EXPERTISE_L80 = 8.20     # per 1 expertise (reduces dodge/parry by 0.25%)
+CR_ARMOR_PENETRATION_L80 = 13.99
+CR_RESILIENCE_L80 = 81.97   # for 1% reduction
+
+
+# ─── WotLK Spell Power Coefficients (from spell_bonus_data DB) ──────
 SP_COEFF_SMITE = 0.7143           # 2.5s / 3.5
 SP_COEFF_HEAL = 0.8571            # 3.0s / 3.5
 SP_COEFF_MIND_BLAST = 0.4286      # 1.5s / 3.5
 SP_COEFF_SW_PAIN_TICK = 0.1833    # per tick (total ~1.1 over 6 ticks)
 SP_COEFF_PW_SHIELD = 0.8068       # absorb coefficient
-SP_COEFF_RENEW_TICK = 0.1       # per tick (~0.5 total over 5 ticks)
+SP_COEFF_RENEW_TICK = 0.1         # per tick (~0.5 total over 5 ticks)
 SP_COEFF_HOLY_FIRE = 0.5711       # direct
 SP_COEFF_HOLY_FIRE_DOT_TICK = 0.024  # per tick
 
@@ -242,74 +434,262 @@ class EquippedItem:
     weapon_dps: float = 0.0
 
 
-# ─── Per-level stat scaling ───────────────────────────────────────────
+# ─── Per-level stat scaling (class-generic WotLK formulas) ───────────
 
-def priest_base_stat(stat_base: int, level: int) -> int:
-    """Base primary stat at given level (approximate WotLK scaling)."""
-    return stat_base + (level - 1)
+def class_base_stat(class_id: int, stat_index: int, level: int) -> int:
+    """Base primary stat at given level for any class.
+
+    stat_index: 0=str, 1=agi, 2=stam, 3=int, 4=spi
+    AzerothCore scales stats at ~+1 per level (simplified).
+    """
+    base = CLASS_BASE_STATS.get(class_id, CLASS_BASE_STATS[CLASS_PRIEST])
+    return base[stat_index] + (level - 1)
 
 
-def player_max_hp(level: int, bonus_stamina: int = 0, bonus_hp: int = 0) -> int:
-    """Base HP with WotLK Stamina formula.
+def player_max_hp(level: int, bonus_stamina: int = 0, bonus_hp: int = 0,
+                  class_id: int = CLASS_PRIEST) -> int:
+    """HP with WotLK Stamina formula (StatSystem.cpp:GetHealthBonusFromStamina).
 
     First 20 stamina = 1 HP each, above 20 = 10 HP each.
-    bonus_hp = flat HP from items (ITEM_MOD_HEALTH) and buffs.
     """
-    base_hp = 72 + (level - 1) * 50
-    total_stam = priest_base_stat(PRIEST_BASE_STAMINA, level) + bonus_stamina
+    base_hp_data = CLASS_BASE_HP_MANA.get(class_id, CLASS_BASE_HP_MANA[CLASS_PRIEST])
+    hp_per_lvl = CLASS_HP_PER_LEVEL.get(class_id, 50)
+    base_hp = base_hp_data[0] + (level - 1) * hp_per_lvl
+    total_stam = class_base_stat(class_id, 2, level) + bonus_stamina
     stam_hp = min(total_stam, 20) + max(total_stam - 20, 0) * 10
     return base_hp + stam_hp + bonus_hp
 
 
-def player_max_mana(level: int, bonus_intellect: int = 0, bonus_mana: int = 0) -> int:
-    """Base Mana with WotLK Intellect formula.
+def player_max_mana(level: int, bonus_intellect: int = 0, bonus_mana: int = 0,
+                    class_id: int = CLASS_PRIEST) -> int:
+    """Mana with WotLK Intellect formula (StatSystem.cpp:GetManaBonusFromIntellect).
 
     First 20 int = 1 mana each, above 20 = 15 mana each.
-    bonus_mana = flat mana from items (ITEM_MOD_MANA).
+    Returns 0 for non-mana classes (Warrior, Rogue, DK).
     """
-    base_mana = 123 + (level - 1) * 5
-    total_int = priest_base_stat(PRIEST_BASE_INTELLECT, level) + bonus_intellect
+    if CLASS_POWER_TYPE.get(class_id, POWER_MANA) != POWER_MANA:
+        return 0
+    base_mana_data = CLASS_BASE_HP_MANA.get(class_id, CLASS_BASE_HP_MANA[CLASS_PRIEST])
+    mana_per_lvl = CLASS_MANA_PER_LEVEL.get(class_id, 5)
+    base_mana = base_mana_data[1] + (level - 1) * mana_per_lvl
+    total_int = class_base_stat(class_id, 3, level) + bonus_intellect
     int_mana = min(total_int, 20) + max(total_int - 20, 0) * 15
     return base_mana + int_mana + bonus_mana
 
 
-def spell_crit_chance(level: int, bonus_intellect: int = 0, bonus_crit_rating: int = 0) -> float:
-    """Spell crit % from Intellect + Crit Rating (WotLK formula).
+def _rating_to_pct(rating: int, l80_value: float, level: int) -> float:
+    """Convert combat rating to percentage bonus. Scales linearly with level."""
+    if rating <= 0:
+        return 0.0
+    rating_per_pct = max(0.5, l80_value * level / 80.0)
+    return rating / rating_per_pct
 
-    Returns percentage (e.g. 5.0 = 5%).
+
+def melee_crit_chance(level: int, total_agility: int, crit_rating: int = 0,
+                      class_id: int = CLASS_PRIEST) -> float:
+    """Melee crit % from Agility + Crit Rating (GtChanceToMeleeCrit.dbc).
+
+    Formula: (base + agi * ratio) * 100 + rating_bonus
     """
-    total_int = priest_base_stat(PRIEST_BASE_INTELLECT, level) + bonus_intellect
-    # Interpolate int-to-crit ratio between L1 and L80
+    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
     t = min((level - 1) / 79.0, 1.0)
-    int_ratio = PRIEST_SPELL_CRIT_PER_INT_L1 * (1 - t) + PRIEST_SPELL_CRIT_PER_INT_L80 * t
-    crit = PRIEST_SPELL_CRIT_BASE + total_int * int_ratio
-    # Add crit from rating (scales harder at higher levels)
-    if bonus_crit_rating > 0:
-        rating_per_pct = max(1.0, CRIT_RATING_PER_PCT_L80 * level / 80.0)
-        crit += bonus_crit_rating / rating_per_pct
+    agi_ratio = gt[1] * (1 - t) + gt[2] * t
+    crit = (gt[0] + total_agility * agi_ratio) * 100.0
+    crit += _rating_to_pct(crit_rating, CR_CRIT_MELEE_L80, level)
     return max(crit, 0.0)
 
 
-def spell_haste_pct(level: int, bonus_haste_rating: int = 0) -> float:
-    """Spell haste % from Haste Rating (WotLK formula)."""
-    if bonus_haste_rating <= 0:
-        return 0.0
-    rating_per_pct = max(1.0, HASTE_RATING_PER_PCT_L80 * level / 80.0)
-    return bonus_haste_rating / rating_per_pct
-
-
-def spirit_mana_regen(level: int, bonus_intellect: int = 0, bonus_spirit: int = 0) -> float:
-    """Spirit-based mana regen per tick (0.5s) while NOT casting (WotLK).
-
-    Formula: sqrt(total_int) * total_spirit * coeff_per_level
-    This is per-second regen; we return per-tick (0.5s).
-    """
-    total_int = priest_base_stat(PRIEST_BASE_INTELLECT, level) + bonus_intellect
-    total_spirit = priest_base_stat(PRIEST_BASE_SPIRIT, level) + bonus_spirit
+def ranged_crit_chance(level: int, total_agility: int, crit_rating: int = 0,
+                       class_id: int = CLASS_PRIEST) -> float:
+    """Ranged crit % — same Agility formula as melee, different rating."""
+    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
     t = min((level - 1) / 79.0, 1.0)
-    coeff = PRIEST_MP5_SPIRIT_COEFF_L1 * (1 - t) + PRIEST_MP5_SPIRIT_COEFF_L80 * t
+    agi_ratio = gt[1] * (1 - t) + gt[2] * t
+    crit = (gt[0] + total_agility * agi_ratio) * 100.0
+    crit += _rating_to_pct(crit_rating, CR_CRIT_RANGED_L80, level)
+    return max(crit, 0.0)
+
+
+def spell_crit_chance(level: int, bonus_intellect: int = 0, bonus_crit_rating: int = 0,
+                      class_id: int = CLASS_PRIEST) -> float:
+    """Spell crit % from Intellect + Crit Rating (GtChanceToSpellCrit.dbc)."""
+    gt = GT_SPELL_CRIT.get(class_id, GT_SPELL_CRIT[CLASS_PRIEST])
+    total_int = class_base_stat(class_id, 3, level) + bonus_intellect
+    t = min((level - 1) / 79.0, 1.0)
+    int_ratio = gt[1] * (1 - t) + gt[2] * t
+    crit = (gt[0] + total_int * int_ratio) * 100.0
+    crit += _rating_to_pct(bonus_crit_rating, CR_CRIT_SPELL_L80, level)
+    return max(crit, 0.0)
+
+
+def melee_haste_pct(level: int, haste_rating: int = 0) -> float:
+    """Melee haste % from Haste Rating."""
+    return _rating_to_pct(haste_rating, CR_HASTE_MELEE_L80, level)
+
+
+def ranged_haste_pct(level: int, haste_rating: int = 0) -> float:
+    """Ranged haste % from Haste Rating."""
+    return _rating_to_pct(haste_rating, CR_HASTE_RANGED_L80, level)
+
+
+def spell_haste_pct(level: int, bonus_haste_rating: int = 0) -> float:
+    """Spell haste % from Haste Rating."""
+    return _rating_to_pct(bonus_haste_rating, CR_HASTE_SPELL_L80, level)
+
+
+def dodge_chance(level: int, total_agility: int, dodge_rating: int = 0,
+                 defense_rating: int = 0, class_id: int = CLASS_PRIEST) -> float:
+    """Dodge % from Agility + Dodge Rating + Defense (WotLK diminishing returns).
+
+    From Player.cpp:GetDodgeFromAgility + StatSystem.cpp:UpdateDodgePercentage.
+    """
+    gt = GT_MELEE_CRIT.get(class_id, GT_MELEE_CRIT[CLASS_PRIEST])
+    t = min((level - 1) / 79.0, 1.0)
+    agi_ratio = gt[1] * (1 - t) + gt[2] * t
+    c2d = CRIT_TO_DODGE.get(class_id, CRIT_TO_DODGE[CLASS_PRIEST])
+    db = DODGE_BASE.get(class_id, DODGE_BASE[CLASS_PRIEST])
+
+    base_agi = class_base_stat(class_id, 1, level)
+    bonus_agi = max(0, total_agility - base_agi)
+
+    nondiminishing = 100.0 * (db + base_agi * agi_ratio * c2d)
+    diminishing = 100.0 * bonus_agi * agi_ratio * c2d
+    diminishing += _rating_to_pct(dodge_rating, CR_DODGE_L80, level)
+    diminishing += _rating_to_pct(defense_rating, CR_DEFENSE_L80, level) * 0.04
+
+    cap = DODGE_CAP.get(class_id, 150.0)
+    k = DR_K.get(class_id, 0.983)
+    if cap > 0 and diminishing > 0:
+        dr_dodge = diminishing * cap / (diminishing + cap * k)
+    else:
+        dr_dodge = 0.0
+    return max(nondiminishing + dr_dodge, 0.0)
+
+
+def parry_chance(level: int, parry_rating: int = 0, defense_rating: int = 0,
+                 class_id: int = CLASS_PRIEST) -> float:
+    """Parry % from Parry Rating + Defense (WotLK diminishing returns)."""
+    cap = PARRY_CAP.get(class_id, 0.0)
+    if cap <= 0:
+        return 0.0
+    nondiminishing = 5.0  # base 5% for classes that can parry
+    diminishing = _rating_to_pct(parry_rating, CR_PARRY_L80, level)
+    diminishing += _rating_to_pct(defense_rating, CR_DEFENSE_L80, level) * 0.04
+    k = DR_K.get(class_id, 0.983)
+    if diminishing > 0:
+        dr_parry = diminishing * cap / (diminishing + cap * k)
+    else:
+        dr_parry = 0.0
+    return max(nondiminishing + dr_parry, 0.0)
+
+
+def block_chance(level: int, block_rating: int = 0, defense_rating: int = 0) -> float:
+    """Block % from Block Rating + Defense. 5% base for shield users."""
+    base = 5.0
+    base += _rating_to_pct(block_rating, CR_BLOCK_L80, level)
+    base += _rating_to_pct(defense_rating, CR_DEFENSE_L80, level) * 0.04
+    return max(base, 0.0)
+
+
+def melee_attack_power(level: int, total_str: int, total_agi: int,
+                       class_id: int = CLASS_PRIEST) -> int:
+    """Melee Attack Power from stats (StatSystem.cpp:UpdateAttackPowerAndDamage).
+
+    Warrior/Paladin/DK: level*3 + str*2 - 20
+    Hunter/Shaman/Rogue: level*2 + str + agi - 20
+    Mage/Priest/Warlock: str - 10
+    Druid (caster): str*2 - 20
+    """
+    if class_id in (CLASS_WARRIOR, CLASS_PALADIN, CLASS_DEATH_KNIGHT):
+        return int(level * 3.0 + total_str * 2.0 - 20.0)
+    elif class_id in (CLASS_HUNTER, CLASS_SHAMAN, CLASS_ROGUE):
+        return int(level * 2.0 + total_str + total_agi - 20.0)
+    elif class_id in (CLASS_MAGE, CLASS_PRIEST, CLASS_WARLOCK):
+        return int(total_str - 10.0)
+    elif class_id == CLASS_DRUID:
+        return int(total_str * 2.0 - 20.0)
+    return int(total_str - 10.0)
+
+
+def ranged_attack_power(level: int, total_str: int, total_agi: int,
+                        class_id: int = CLASS_PRIEST) -> int:
+    """Ranged Attack Power from stats.
+
+    Hunter: level*2 + agi - 10
+    Warrior/Rogue: level + agi - 10
+    Others: agi - 10
+    """
+    if class_id == CLASS_HUNTER:
+        return int(level * 2.0 + total_agi - 10.0)
+    elif class_id in (CLASS_WARRIOR, CLASS_ROGUE):
+        return int(level + total_agi - 10.0)
+    return int(total_agi - 10.0)
+
+
+def expertise_pct(level: int, expertise_rating: int = 0) -> float:
+    """Expertise reduces dodge/parry by 0.25% per point.
+
+    Rating -> expertise points via CR_EXPERTISE_L80.
+    """
+    points = _rating_to_pct(expertise_rating, CR_EXPERTISE_L80, level)
+    return points * 0.25  # each expertise point = 0.25% dodge/parry reduction
+
+
+def armor_penetration_pct(level: int, arp_rating: int = 0) -> float:
+    """Armor penetration % from ArP rating."""
+    return min(_rating_to_pct(arp_rating, CR_ARMOR_PENETRATION_L80, level), 100.0)
+
+
+def resilience_pct(level: int, resilience_rating: int = 0) -> float:
+    """Resilience reduces crit chance/damage from players."""
+    return _rating_to_pct(resilience_rating, CR_RESILIENCE_L80, level)
+
+
+def hit_chance_melee(level: int, hit_rating: int = 0) -> float:
+    """Melee hit % bonus from Hit Rating."""
+    return _rating_to_pct(hit_rating, CR_HIT_MELEE_L80, level)
+
+
+def hit_chance_ranged(level: int, hit_rating: int = 0) -> float:
+    """Ranged hit % bonus from Hit Rating."""
+    return _rating_to_pct(hit_rating, CR_HIT_RANGED_L80, level)
+
+
+def hit_chance_spell(level: int, hit_rating: int = 0) -> float:
+    """Spell hit % bonus from Hit Rating."""
+    return _rating_to_pct(hit_rating, CR_HIT_SPELL_L80, level)
+
+
+def spirit_mana_regen(level: int, bonus_intellect: int = 0, bonus_spirit: int = 0,
+                      class_id: int = CLASS_PRIEST) -> float:
+    """Spirit-based mana regen per tick (0.5s) while NOT casting.
+
+    Formula from Player.cpp:OCTRegenMPPerSpirit + UpdateManaRegen:
+      power_regen = sqrt(int) * spirit * coeff
+    Returns per-tick value (0.5s).
+    """
+    gt = GT_REGEN_MP_PER_SPT.get(class_id)
+    if gt is None:
+        return 0.0  # non-mana classes
+    total_int = class_base_stat(class_id, 3, level) + bonus_intellect
+    total_spirit = class_base_stat(class_id, 4, level) + bonus_spirit
+    t = min((level - 1) / 79.0, 1.0)
+    coeff = gt[0] * (1 - t) + gt[1] * t
     regen_per_sec = math.sqrt(max(total_int, 1)) * total_spirit * coeff
-    return regen_per_sec * 0.5  # per tick (0.5s)
+    return regen_per_sec * 0.5  # per tick
+
+
+def spirit_hp_regen(level: int, total_spirit: int,
+                    class_id: int = CLASS_PRIEST) -> float:
+    """Spirit-based HP regen per tick (0.5s) while OOC.
+
+    Very small contribution — most HP regen is flat OOC regen.
+    """
+    coeff = GT_HP_REGEN_PER_SPT.get(class_id, 0.0)
+    if coeff <= 0:
+        return 0.0
+    extra_spirit = max(0, total_spirit - 50)
+    return extra_spirit * coeff * 0.5
 
 
 def smite_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
@@ -620,6 +1000,7 @@ INVENTORY_SLOTS = 30  # default bag capacity (no bag logic yet)
 
 @dataclass
 class Player:
+    class_id: int = CLASS_PRIEST
     hp: int = 72
     max_hp: int = 72
     mana: int = 123
@@ -667,22 +1048,65 @@ class Player:
     # Equipment system: slot -> EquippedItem (WotLK slots)
     equipment: dict = field(default_factory=dict)  # inventory_type -> EquippedItem
     equipped_scores: dict = field(default_factory=dict)  # inventory_type -> best score (compat)
-    # Derived secondary stats (recalculated when equipment changes)
+    # ─── Gear stats (accumulated from equipped items) ────────────────
+    gear_strength: int = 0
+    gear_agility: int = 0
     gear_stamina: int = 0
     gear_intellect: int = 0
     gear_spirit: int = 0
-    gear_spell_power: int = 0      # from ITEM_MOD_SPELL_POWER + deprecated SP/Heal mods
-    gear_crit_rating: int = 0
-    gear_haste_rating: int = 0
-    gear_hit_rating: int = 0
-    gear_mp5: int = 0              # ITEM_MOD_MANA_REGENERATION (flat MP5)
-    gear_armor: int = 0            # total armor from gear
+    gear_armor: int = 0            # total armor from gear pieces
     gear_bonus_hp: int = 0         # flat HP from ITEM_MOD_HEALTH
     gear_bonus_mana: int = 0       # flat Mana from ITEM_MOD_MANA
-    # Derived combat stats (cached, recalculated via recalculate_stats)
-    total_spell_power: int = 0     # gear SP + Inner Fire SP
-    total_spell_crit: float = 0.0  # spell crit % (from Int + Crit Rating)
-    total_haste_pct: float = 0.0   # spell haste % (from Haste Rating)
+    # Offensive ratings from gear
+    gear_attack_power: int = 0     # ITEM_MOD_ATTACK_POWER
+    gear_ranged_ap: int = 0        # ITEM_MOD_RANGED_ATTACK_POWER
+    gear_spell_power: int = 0      # ITEM_MOD_SPELL_POWER + deprecated SP/Heal mods
+    gear_hit_rating: int = 0       # combined hit rating (melee+ranged+spell)
+    gear_crit_rating: int = 0      # combined crit rating
+    gear_haste_rating: int = 0     # combined haste rating
+    gear_expertise_rating: int = 0
+    gear_armor_pen_rating: int = 0
+    gear_spell_pen: int = 0        # flat spell penetration
+    # Defensive ratings from gear
+    gear_defense_rating: int = 0
+    gear_dodge_rating: int = 0
+    gear_parry_rating: int = 0
+    gear_block_rating: int = 0
+    gear_block_value: int = 0      # ITEM_MOD_BLOCK_VALUE
+    gear_resilience_rating: int = 0
+    # Regen from gear
+    gear_mp5: int = 0              # ITEM_MOD_MANA_REGENERATION (flat MP5)
+    gear_hp5: int = 0              # ITEM_MOD_HEALTH_REGEN (flat HP5)
+    # ─── Derived combat stats (cached, recalculated via recalculate_stats) ─
+    # Primary stat totals (base + gear)
+    total_strength: int = 0
+    total_agility: int = 0
+    total_stamina: int = 0
+    total_intellect: int = 0
+    total_spirit: int = 0
+    # Offensive
+    total_attack_power: int = 0       # melee AP (from str/agi/level/gear)
+    total_ranged_ap: int = 0          # ranged AP
+    total_spell_power: int = 0        # gear SP + buffs
+    total_melee_crit: float = 0.0     # melee crit % (from Agi + rating)
+    total_ranged_crit: float = 0.0    # ranged crit %
+    total_spell_crit: float = 0.0     # spell crit % (from Int + rating)
+    total_melee_haste: float = 0.0    # melee haste %
+    total_ranged_haste: float = 0.0   # ranged haste %
+    total_spell_haste: float = 0.0    # spell haste %
+    total_hit_melee: float = 0.0      # melee hit %
+    total_hit_ranged: float = 0.0     # ranged hit %
+    total_hit_spell: float = 0.0      # spell hit %
+    total_expertise: float = 0.0      # expertise dodge/parry reduction %
+    total_armor_pen: float = 0.0      # armor penetration %
+    # Defensive
+    total_armor: int = 0              # gear armor + agi*2 + buffs
+    total_dodge: float = 0.0          # dodge % (with DR)
+    total_parry: float = 0.0          # parry % (with DR)
+    total_block: float = 0.0          # block % (shield only)
+    total_block_value: int = 0        # block amount (str/2 + gear)
+    total_defense: float = 0.0        # bonus defense from rating
+    total_resilience: float = 0.0     # resilience %
     # Inventory: actual items stored (for sell copper calculation)
     inventory: list = field(default_factory=list)  # list of InventoryItem
     copper: int = 0                                 # total copper balance
@@ -768,7 +1192,8 @@ class CombatSimulation:
                  terrain: 'SimTerrain | None' = None, env3d=None,
                  creature_db: 'CreatureDB | None' = None,
                  loot_db: 'LootDB | None' = None,
-                 quest_db: 'QuestDB | None' = None):
+                 quest_db: 'QuestDB | None' = None,
+                 class_id: int = CLASS_PRIEST):
         self.rng = random.Random(seed)
         self.num_mobs = num_mobs  # None = all spawns
         self.terrain = terrain
@@ -776,8 +1201,9 @@ class CombatSimulation:
         self.creature_db = creature_db
         self.loot_db = loot_db    # LootDB for item drops from CSV loot tables
         self.quest_db = quest_db  # QuestDB for quest definitions and NPCs
+        self.class_id = class_id  # player class
         self.map_id = 0           # Eastern Kingdoms
-        self.player = Player()
+        self.player = Player(class_id=class_id)
         if self.terrain:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.mobs: list[Mob] = []
@@ -1046,7 +1472,7 @@ class CombatSimulation:
 
     def reset(self) -> None:
         """Reset player and mobs to initial state."""
-        self.player = Player()
+        self.player = Player(class_id=self.class_id)
         if self.terrain:
             self.player.z = self.terrain.get_height(self.player.x, self.player.y)
         self.target = None
@@ -1088,73 +1514,214 @@ class CombatSimulation:
     def recalculate_gear_stats(self):
         """Sum all stats from equipped items into player gear_* fields."""
         p = self.player
+        # Reset all gear stats
+        p.gear_strength = 0
+        p.gear_agility = 0
         p.gear_stamina = 0
         p.gear_intellect = 0
         p.gear_spirit = 0
-        p.gear_spell_power = 0
-        p.gear_crit_rating = 0
-        p.gear_haste_rating = 0
-        p.gear_hit_rating = 0
-        p.gear_mp5 = 0
         p.gear_armor = 0
         p.gear_bonus_hp = 0
         p.gear_bonus_mana = 0
+        p.gear_attack_power = 0
+        p.gear_ranged_ap = 0
+        p.gear_spell_power = 0
+        p.gear_hit_rating = 0
+        p.gear_crit_rating = 0
+        p.gear_haste_rating = 0
+        p.gear_expertise_rating = 0
+        p.gear_armor_pen_rating = 0
+        p.gear_spell_pen = 0
+        p.gear_defense_rating = 0
+        p.gear_dodge_rating = 0
+        p.gear_parry_rating = 0
+        p.gear_block_rating = 0
+        p.gear_block_value = 0
+        p.gear_resilience_rating = 0
+        p.gear_mp5 = 0
+        p.gear_hp5 = 0
 
         for item in p.equipment.values():
             p.gear_armor += item.armor
             for st, sv in item.stats.items():
-                if st == ITEM_MOD_STAMINA:
+                if st == ITEM_MOD_STRENGTH:
+                    p.gear_strength += sv
+                elif st == ITEM_MOD_AGILITY:
+                    p.gear_agility += sv
+                elif st == ITEM_MOD_STAMINA:
                     p.gear_stamina += sv
                 elif st == ITEM_MOD_INTELLECT:
                     p.gear_intellect += sv
                 elif st == ITEM_MOD_SPIRIT:
                     p.gear_spirit += sv
+                elif st == ITEM_MOD_HEALTH:
+                    p.gear_bonus_hp += sv
+                elif st == ITEM_MOD_MANA:
+                    p.gear_bonus_mana += sv
+                # Offensive
+                elif st == ITEM_MOD_ATTACK_POWER:
+                    p.gear_attack_power += sv
+                elif st == ITEM_MOD_RANGED_ATTACK_POWER:
+                    p.gear_ranged_ap += sv
                 elif st == ITEM_MOD_SPELL_POWER:
                     p.gear_spell_power += sv
                 elif st == ITEM_MOD_SPELL_DAMAGE_DONE:
                     p.gear_spell_power += sv
                 elif st == ITEM_MOD_SPELL_HEALING_DONE:
                     p.gear_spell_power += sv
-                elif st == ITEM_MOD_CRIT_RATING:
-                    p.gear_crit_rating += sv
-                elif st == ITEM_MOD_HASTE_RATING:
-                    p.gear_haste_rating += sv
+                # Hit (combined and per-type)
                 elif st == ITEM_MOD_HIT_RATING:
                     p.gear_hit_rating += sv
+                elif st == ITEM_MOD_HIT_MELEE_RATING:
+                    p.gear_hit_rating += sv
+                elif st == ITEM_MOD_HIT_RANGED_RATING:
+                    p.gear_hit_rating += sv
+                elif st == ITEM_MOD_HIT_SPELL_RATING:
+                    p.gear_hit_rating += sv
+                # Crit (combined and per-type)
+                elif st == ITEM_MOD_CRIT_RATING:
+                    p.gear_crit_rating += sv
+                elif st == ITEM_MOD_CRIT_MELEE_RATING:
+                    p.gear_crit_rating += sv
+                elif st == ITEM_MOD_CRIT_RANGED_RATING:
+                    p.gear_crit_rating += sv
+                elif st == ITEM_MOD_CRIT_SPELL_RATING:
+                    p.gear_crit_rating += sv
+                # Haste (combined and per-type)
+                elif st == ITEM_MOD_HASTE_RATING:
+                    p.gear_haste_rating += sv
+                elif st == ITEM_MOD_HASTE_MELEE_RATING:
+                    p.gear_haste_rating += sv
+                elif st == ITEM_MOD_HASTE_RANGED_RATING:
+                    p.gear_haste_rating += sv
+                elif st == ITEM_MOD_HASTE_SPELL_RATING:
+                    p.gear_haste_rating += sv
+                # Defensive ratings
+                elif st == ITEM_MOD_DEFENSE_SKILL_RATING:
+                    p.gear_defense_rating += sv
+                elif st == ITEM_MOD_DODGE_RATING:
+                    p.gear_dodge_rating += sv
+                elif st == ITEM_MOD_PARRY_RATING:
+                    p.gear_parry_rating += sv
+                elif st == ITEM_MOD_BLOCK_RATING:
+                    p.gear_block_rating += sv
+                elif st == ITEM_MOD_BLOCK_VALUE:
+                    p.gear_block_value += sv
+                elif st == ITEM_MOD_RESILIENCE_RATING:
+                    p.gear_resilience_rating += sv
+                # Other
+                elif st == ITEM_MOD_EXPERTISE_RATING:
+                    p.gear_expertise_rating += sv
+                elif st == ITEM_MOD_ARMOR_PENETRATION_RATING:
+                    p.gear_armor_pen_rating += sv
+                elif st == ITEM_MOD_SPELL_PENETRATION:
+                    p.gear_spell_pen += sv
                 elif st == ITEM_MOD_MANA_REGENERATION:
                     p.gear_mp5 += sv
-                elif st == ITEM_MOD_HEALTH:
-                    p.gear_bonus_hp += sv
-                elif st == ITEM_MOD_MANA:
-                    p.gear_bonus_mana += sv
+                elif st == ITEM_MOD_HEALTH_REGEN:
+                    p.gear_hp5 += sv
 
     def recalculate_stats(self):
-        """Recalculate all derived stats from gear + level. Call after equip/level-up."""
+        """Recalculate all derived stats from gear + level + buffs.
+
+        Call after equip, level-up, or buff change. Uses exact WotLK formulas
+        from AzerothCore C++ source (StatSystem.cpp, Player.cpp).
+        """
         p = self.player
+        cls = p.class_id
         self.recalculate_gear_stats()
 
-        # Max HP (preserve HP ratio)
+        # ─── Primary stat totals (base + gear) ──────────────────────
+        p.total_strength = class_base_stat(cls, 0, p.level) + p.gear_strength
+        p.total_agility = class_base_stat(cls, 1, p.level) + p.gear_agility
+        p.total_stamina = class_base_stat(cls, 2, p.level) + p.gear_stamina
+        p.total_intellect = class_base_stat(cls, 3, p.level) + p.gear_intellect
+        p.total_spirit = class_base_stat(cls, 4, p.level) + p.gear_spirit
+
+        # ─── Max HP (preserve ratio) ────────────────────────────────
         old_max_hp = max(p.max_hp, 1)
         fort_bonus = p.fortitude_hp_bonus if p.fortitude_remaining > 0 else 0
-        p.max_hp = player_max_hp(p.level, p.gear_stamina, p.gear_bonus_hp) + fort_bonus
+        p.max_hp = player_max_hp(p.level, p.gear_stamina, p.gear_bonus_hp, cls) + fort_bonus
         hp_ratio = p.hp / old_max_hp
         p.hp = max(1, int(hp_ratio * p.max_hp))
 
-        # Max Mana (preserve mana ratio)
+        # ─── Max Mana (preserve ratio) ──────────────────────────────
         old_max_mana = max(p.max_mana, 1)
-        p.max_mana = player_max_mana(p.level, p.gear_intellect, p.gear_bonus_mana)
-        mana_ratio = p.mana / old_max_mana
-        p.mana = max(0, int(mana_ratio * p.max_mana))
+        p.max_mana = player_max_mana(p.level, p.gear_intellect, p.gear_bonus_mana, cls)
+        if p.max_mana > 0:
+            mana_ratio = p.mana / old_max_mana
+            p.mana = max(0, int(mana_ratio * p.max_mana))
 
-        # Spell Power: gear + Inner Fire buff
+        # ─── Armor (gear + agi*2 + Inner Fire) ──────────────────────
+        p.total_armor = p.gear_armor + p.total_agility * 2
+        if p.inner_fire_remaining > 0:
+            p.total_armor += p.inner_fire_armor
+
+        # ─── Attack Power (melee + ranged) ───────────────────────────
+        p.total_attack_power = melee_attack_power(
+            p.level, p.total_strength, p.total_agility, cls) + p.gear_attack_power
+        p.total_ranged_ap = ranged_attack_power(
+            p.level, p.total_strength, p.total_agility, cls) + p.gear_ranged_ap
+
+        # ─── Spell Power (gear + Inner Fire buff) ───────────────────
         inner_fire_sp = p.inner_fire_spellpower if p.inner_fire_remaining > 0 else 0
         p.total_spell_power = p.gear_spell_power + inner_fire_sp
 
-        # Spell Crit %
-        p.total_spell_crit = spell_crit_chance(p.level, p.gear_intellect, p.gear_crit_rating)
+        # ─── Crit (melee, ranged, spell) ─────────────────────────────
+        p.total_melee_crit = melee_crit_chance(
+            p.level, p.total_agility, p.gear_crit_rating, cls)
+        p.total_ranged_crit = ranged_crit_chance(
+            p.level, p.total_agility, p.gear_crit_rating, cls)
+        p.total_spell_crit = spell_crit_chance(
+            p.level, p.gear_intellect, p.gear_crit_rating, cls)
 
-        # Haste %
-        p.total_haste_pct = spell_haste_pct(p.level, p.gear_haste_rating)
+        # ─── Haste (melee, ranged, spell) ────────────────────────────
+        p.total_melee_haste = melee_haste_pct(p.level, p.gear_haste_rating)
+        p.total_ranged_haste = ranged_haste_pct(p.level, p.gear_haste_rating)
+        p.total_spell_haste = spell_haste_pct(p.level, p.gear_haste_rating)
+
+        # ─── Hit (melee, ranged, spell) ──────────────────────────────
+        p.total_hit_melee = hit_chance_melee(p.level, p.gear_hit_rating)
+        p.total_hit_ranged = hit_chance_ranged(p.level, p.gear_hit_rating)
+        p.total_hit_spell = hit_chance_spell(p.level, p.gear_hit_rating)
+
+        # ─── Dodge (with diminishing returns) ────────────────────────
+        p.total_dodge = dodge_chance(
+            p.level, p.total_agility, p.gear_dodge_rating,
+            p.gear_defense_rating, cls)
+
+        # ─── Parry (with diminishing returns) ────────────────────────
+        p.total_parry = parry_chance(
+            p.level, p.gear_parry_rating, p.gear_defense_rating, cls)
+
+        # ─── Block ───────────────────────────────────────────────────
+        # Only classes with shields can block
+        has_shield = 14 in p.equipment  # inventory_type 14 = Shield
+        if has_shield:
+            p.total_block = block_chance(
+                p.level, p.gear_block_rating, p.gear_defense_rating)
+            # Block value: str/2 - 10 + gear (StatSystem.cpp:GetShieldBlockValue)
+            p.total_block_value = max(0, int(p.total_strength * 0.5 - 10) + p.gear_block_value)
+        else:
+            p.total_block = 0.0
+            p.total_block_value = 0
+
+        # ─── Defense ─────────────────────────────────────────────────
+        p.total_defense = _rating_to_pct(
+            p.gear_defense_rating, CR_DEFENSE_L80, p.level)
+
+        # ─── Expertise ───────────────────────────────────────────────
+        p.total_expertise = expertise_pct(p.level, p.gear_expertise_rating)
+
+        # ─── Armor Penetration ───────────────────────────────────────
+        p.total_armor_pen = armor_penetration_pct(p.level, p.gear_armor_pen_rating)
+
+        # ─── Resilience ──────────────────────────────────────────────
+        p.total_resilience = resilience_pct(p.level, p.gear_resilience_rating)
+
+        # ─── Backwards compat aliases ────────────────────────────────
+        # (old code uses total_haste_pct — keep it as spell haste)
+        p.total_haste_pct = p.total_spell_haste
 
     def try_equip_item(self, item_data) -> bool:
         """Try to equip an item if it's better than current (score-based).
@@ -1964,8 +2531,9 @@ class CombatSimulation:
         #   While casting: only MP5 from gear (flat)
         mp5_per_tick = p.gear_mp5 / 5.0 * 0.5  # MP5 -> per tick (0.5s)
         if not p.is_casting:
-            spirit_regen = spirit_mana_regen(p.level, p.gear_intellect, p.gear_spirit)
-            p.mana_regen_accumulator += spirit_regen + mp5_per_tick
+            spi_regen = spirit_mana_regen(
+                p.level, p.gear_intellect, p.gear_spirit, p.class_id)
+            p.mana_regen_accumulator += spi_regen + mp5_per_tick
         else:
             p.mana_regen_accumulator += mp5_per_tick
         # Fallback minimum: 2% of max_mana per tick if spirit regen is too low
@@ -1980,28 +2548,25 @@ class CombatSimulation:
     def _damage_player(self, damage: int):
         """Apply damage to player, considering armor mitigation and shield.
 
-        Armor mitigation uses the WotLK formula from Unit::CalcArmorReducedDamage:
-          dr = 0.1 * armor / (8.5 * level + 40)
+        Armor mitigation uses the WotLK formula from Unit::CalcArmorReducedDamage
+        (Unit.cpp:2067):
+          eff_level = attacker_level + 4.5*(attacker_level-59) if >59
+          dr = 0.1 * armor / (8.5 * eff_level + 40)
           mitigation = dr / (1 + dr), capped at 75%
         """
         p = self.player
-        # Total armor: gear + agility*2 + Inner Fire buff
-        total_armor = p.gear_armor
-        total_armor += (priest_base_stat(PRIEST_BASE_AGILITY, p.level)) * 2
-        if p.inner_fire_remaining > 0:
-            total_armor += p.inner_fire_armor
-        if total_armor > 0:
+        # total_armor is pre-computed in recalculate_stats (gear + agi*2 + inner fire)
+        if p.total_armor > 0:
             mob_level = 1  # approximate attacker level
             if self.target and self.target.alive:
                 mob_level = self.target.level
             else:
-                # Use average nearby mob level
                 for m in self.mobs:
                     if m.alive and m.target_player:
                         mob_level = m.level
                         break
             eff_level = mob_level + (4.5 * (mob_level - 59) if mob_level > 59 else 0)
-            dr = 0.1 * total_armor / (8.5 * eff_level + 40)
+            dr = 0.1 * p.total_armor / (8.5 * eff_level + 40)
             mitigation = dr / (1 + dr)
             mitigation = min(mitigation, 0.75)
             damage = max(1, int(damage * (1 - mitigation)))
@@ -2196,10 +2761,36 @@ class CombatSimulation:
                 }
                 for m in nearby
             ],
-            # Equipment / attribute stats (sim-only)
+            # Primary stats (sim-only, total = base + gear)
+            "total_strength": p.total_strength,
+            "total_agility": p.total_agility,
+            "total_stamina": p.total_stamina,
+            "total_intellect": p.total_intellect,
+            "total_spirit": p.total_spirit,
+            # Offensive stats
+            "attack_power": p.total_attack_power,
+            "ranged_ap": p.total_ranged_ap,
             "spell_power": p.total_spell_power,
+            "melee_crit": p.total_melee_crit,
+            "ranged_crit": p.total_ranged_crit,
             "spell_crit": p.total_spell_crit,
-            "spell_haste": p.total_haste_pct,
+            "melee_haste": p.total_melee_haste,
+            "ranged_haste": p.total_ranged_haste,
+            "spell_haste": p.total_spell_haste,
+            "hit_melee": p.total_hit_melee,
+            "hit_ranged": p.total_hit_ranged,
+            "hit_spell": p.total_hit_spell,
+            "expertise": p.total_expertise,
+            "armor_pen": p.total_armor_pen,
+            # Defensive stats
+            "total_armor": p.total_armor,
+            "dodge": p.total_dodge,
+            "parry": p.total_parry,
+            "block": p.total_block,
+            "block_value": p.total_block_value,
+            "defense": p.total_defense,
+            "resilience": p.total_resilience,
+            # Gear totals (for backwards compat)
             "gear_armor": p.gear_armor,
             "gear_stamina": p.gear_stamina,
             "gear_intellect": p.gear_intellect,
