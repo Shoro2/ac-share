@@ -105,6 +105,7 @@ class SimEpisodeLogger:
             "xp": stats.get("xp", 0),
             "deaths": stats.get("death", 0),
             "damage_dealt": stats.get("damage_dealt", 0),
+            "quests_completed": stats.get("quests_completed", 0),
             "reward": round(stats.get("reward", 0.0), 2),
             "trail": self._trail,
             "events": self._events,
