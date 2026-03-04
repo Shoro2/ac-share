@@ -8,8 +8,9 @@ Core idea: the server publishes game state over a local TCP socket, Python decid
 
 - `python/`
   Python control + training code:
+  - **Offline simulation** (`sim/`) — full WotLK 3.3.5 combat sim with stat system, 19-slot equipment, 9 Priest spells, ~1000x faster than live
   - A Gymnasium environment (`wow_env.py`) that connects to the server socket
-  - Stable-Baselines3 PPO training (`train.py`)
+  - Stable-Baselines3 PPO training (`train.py` for live, `sim/train_sim.py` for offline)
   - Model runner (`run_model.py`)
   - Hybrid “route grind” runner (`auto_grind.py`)
   - Utilities (`get_gps.py`, `check_env.py`, `test_multibot.py`)
@@ -254,7 +255,87 @@ This improves stability for training and demos, but it also means the learned po
 - `python/run_bot.py`
   Scratch/experimental file. As committed, it is not valid Python and is not used by the main workflow.
 
+## Offline simulation (current main focus)
+
+The `python/sim/` package provides a complete training environment without a running WoW server. It replicates the WoW 3.3.5 WotLK combat system in pure Python (~5000+ FPS).
+
+### WotLK 3.3.5 stat system
+
+The simulation implements the full WotLK attribute system derived from AzerothCore C++ source (StatSystem.cpp, Player.cpp, Unit.cpp, DBC game tables):
+
+- **All 10 classes** supported with correct base stats from DBC (Warrior, Paladin, Hunter, Rogue, Priest, Death Knight, Shaman, Mage, Warlock, Druid). Currently only Priest has spell implementations.
+- **5 primary stats**: Strength, Agility, Stamina, Intellect, Spirit — each scales +1 per level
+- **Stamina → HP**: First 20 stamina = 1 HP each, above 20 = 10 HP each (WotLK formula)
+- **Intellect → Mana**: First 20 int = 1 mana each, above 20 = 15 mana each
+- **Spirit → Mana Regen**: `sqrt(intellect) * spirit * coeff` per second (OOC, 5-second rule)
+- **Combat ratings**: Hit, Crit, Haste, Dodge, Parry, Block, Defense, Expertise, Armor Penetration, Resilience — all with non-linear per-level scaling from GtCombatRatings.dbc
+- **Dodge/Parry diminishing returns**: Class-specific k values and caps from StatSystem.cpp
+- **Armor mitigation**: WotLK formula from Unit.cpp, capped at 75%
+- **Attack Power**: Class-specific formulas (Warrior: level*3 + str*2 - 20, Priest: str - 10, etc.)
+
+### Equipment system (19 slots)
+
+Full WoW-style equipment with stat recalculation:
+
+- **19 equipment slots**: Head, Neck, Shoulders, Shirt, Chest, Waist, Legs, Feet, Wrists, Hands, Finger 1/2, Trinket 1/2, Back, Main Hand, Off Hand, Ranged, Tabard
+- **Item stats**: Each item carries up to 10 stat types (Stamina, Intellect, Spell Power, Crit Rating, etc.) parsed from AzerothCore CSV exports
+- **Auto-equip upgrades**: Looted items with higher score automatically replace current gear
+- **Stat recalculation**: On equip/unequip/level-up, all derived stats (HP, Mana, Crit%, Dodge%, Spell Power, etc.) are recomputed from scratch
+- **Dual-slot items**: Rings and trinkets fill empty slot first, then replace weakest
+- **Two-hand weapons**: Automatically clear offhand slot
+- **Combat-locked**: Equipment changes blocked during combat (WoW behaviour)
+
+### Spell power and crit
+
+All 9 Priest spells scale with spell power via WotLK coefficients:
+
+- **Smite** (585): 0.7143 SP coeff, 2.5s cast
+- **Lesser Heal** (2050): 0.8571 SP coeff, 3.0s cast
+- **Mind Blast** (8092): 0.4286 SP coeff, 1.5s cast, 8s cooldown
+- **SW:Pain** (589): 0.1833 SP coeff per tick, instant DoT
+- **PW:Shield** (17): 0.8068 SP coeff, instant absorb, Weakened Soul 15s
+- **Renew** (139): 0.1 SP coeff per tick, instant HoT
+- **Holy Fire** (14914): 0.5711 SP coeff direct + DoT, 2.0s cast, 10s cooldown
+- **Inner Fire** (588): Self-buff — armor + spell power, instant
+- **PW:Fortitude** (1243): Self-buff — bonus HP, instant
+
+All damage and healing spells can crit (150% multiplier) based on `total_spell_crit` from Intellect + crit rating.
+
+### Sim environment
+
+`python/sim/wow_sim_env.py` provides the Gymnasium interface:
+
+- **Action Space**: `Discrete(17)` — No-op, Move, Turn x2, Target, 9 spells, Loot, Sell, Quest Interact
+- **Observation Space**: `Box(38,)` — 22 base dims + 10 stat dims (spell power, crit, haste, armor, AP, dodge, hit, expertise, ArP) + 6 quest dims
+- **Stat observations** update dynamically as the bot equips gear and levels up
+
+### Sim training
+
+```bash
+# Standard training (pure sim, no server needed)
+python -m sim.train_sim --steps 500000
+
+# With 3D terrain + full-world creature spawning + quests
+python -m sim.train_sim --data-root /path/to/Data --creature-data /path/to/csv --enable-quests --steps 500000
+
+# Visualize training episodes
+python -m sim.visualize --log-dir logs/episodes
+```
+
+## Live server workflow (later phase)
+
+The live server path uses the C++ module and TCP protocol described below.
+
 ## Typical workflow
+
+### Sim training (recommended — no server needed)
+
+1. `cd python`
+2. `python -m sim.train_sim --steps 500000` (optionally add `--data-root`, `--creature-data`, `--enable-quests`)
+3. Monitor with TensorBoard: `tensorboard --logdir logs/`
+4. Run tests: `python -m sim.test_sim`
+
+### Live server training (later phase)
 
 1. Build and run `worldserver` from `src_azeroth_core/` (standard AzerothCore build process applies).
 2. Integrate/build the module sources from `src_module-ai-controller/` into your AzerothCore modules setup.
