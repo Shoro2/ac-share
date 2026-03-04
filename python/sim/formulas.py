@@ -378,3 +378,164 @@ def fortitude_hp_bonus(level: int) -> int:
     return 20 + (level - 1) * 8
 
 
+# ─── Combat Resolution Formulas (WotLK attack table) ─────────────────
+
+# Melee attack outcomes (single-roll table, WotLK)
+MELEE_MISS = 'miss'
+MELEE_DODGE = 'dodge'
+MELEE_PARRY = 'parry'
+MELEE_BLOCK = 'block'       # partial mitigation (damage reduced by block_value)
+MELEE_CRIT = 'crit'
+MELEE_NORMAL = 'normal'
+MELEE_CRUSHING = 'crushing'  # 150% damage, mob 4+ levels above player
+
+# Spell outcomes
+SPELL_MISS = 'miss'
+SPELL_HIT = 'hit'
+SPELL_CRIT = 'crit'
+
+
+def spell_miss_chance(player_level: int, mob_level: int,
+                      hit_bonus_pct: float = 0.0) -> float:
+    """Spell miss % based on level difference (WotLK SpellMgr.cpp).
+
+    WotLK base spell miss against same-level mob: 4%.
+    Each level of mob above player: +1% (up to +2 diff).
+    At +3 level diff: big jump to 17% (boss penalty).
+    Hit rating reduces miss chance (cannot go below 1%).
+    """
+    diff = mob_level - player_level
+    if diff <= 0:
+        base_miss = max(4.0 + diff, 1.0)  # easier mobs = less miss, floor 1%
+    elif diff == 1:
+        base_miss = 5.0
+    elif diff == 2:
+        base_miss = 6.0
+    elif diff == 3:
+        base_miss = 17.0  # boss-level jump
+    else:
+        base_miss = 17.0 + (diff - 3) * 11.0  # beyond +3: very punishing
+    return max(base_miss - hit_bonus_pct, 1.0)
+
+
+def mob_melee_miss_chance(attacker_level: int, defender_level: int,
+                          defender_defense_bonus: float = 0.0) -> float:
+    """Mob melee miss chance against player (Unit.cpp:RollMeleeOutcomeAgainst).
+
+    WotLK: base 5% miss for equal level.
+    Defense skill above attacker weapon skill adds 0.04% miss per point.
+    Weapon skill = level * 5, defense skill = level * 5 + bonus.
+    """
+    attacker_skill = attacker_level * 5
+    defender_skill = defender_level * 5 + defender_defense_bonus
+    skill_diff = defender_skill - attacker_skill
+    miss = 5.0 + skill_diff * 0.04
+    return max(miss, 0.0)
+
+
+def mob_melee_crit_chance(attacker_level: int, defender_level: int,
+                          defender_defense_bonus: float = 0.0,
+                          defender_resilience_pct: float = 0.0) -> float:
+    """Mob melee crit chance against player (Unit.cpp:RollMeleeOutcomeAgainst).
+
+    WotLK: base 5% crit for mobs.
+    Each point of attacker weapon skill above defender defense skill: +0.04% crit.
+    Defense bonus and Resilience reduce crit.
+    """
+    attacker_skill = attacker_level * 5
+    defender_skill = defender_level * 5 + defender_defense_bonus
+    skill_diff = attacker_skill - defender_skill
+    crit = 5.0 + skill_diff * 0.04
+    crit -= defender_resilience_pct  # resilience reduces incoming crit
+    return max(crit, 0.0)
+
+
+def mob_crushing_chance(attacker_level: int, defender_level: int) -> float:
+    """Crushing blow chance: mob must be 4+ levels above player.
+
+    WotLK: 2% per missing defense skill point above 15-point gap.
+    Weapon skill = level * 5.
+    """
+    skill_diff = (attacker_level * 5) - (defender_level * 5)
+    if skill_diff < 15:
+        return 0.0
+    return max(0.0, (skill_diff - 15) * 2.0)
+
+
+def resolve_mob_melee_attack(attacker_level: int, defender_level: int,
+                             defender_dodge: float, defender_parry: float,
+                             defender_block: float,
+                             defender_defense_bonus: float = 0.0,
+                             defender_resilience_pct: float = 0.0,
+                             roll: float = 0.0) -> str:
+    """Single-roll melee attack table for mob attacking player.
+
+    WotLK uses a single roll against cumulative thresholds:
+      miss -> dodge -> parry -> block -> crit -> crushing -> normal
+
+    Args:
+        roll: 0-100 uniform random value (for deterministic testing)
+
+    Returns one of: MELEE_MISS, MELEE_DODGE, MELEE_PARRY, MELEE_BLOCK,
+                    MELEE_CRIT, MELEE_CRUSHING, MELEE_NORMAL
+    """
+    miss = mob_melee_miss_chance(attacker_level, defender_level,
+                                defender_defense_bonus)
+    crit = mob_melee_crit_chance(attacker_level, defender_level,
+                                defender_defense_bonus,
+                                defender_resilience_pct)
+    crushing = mob_crushing_chance(attacker_level, defender_level)
+
+    # Cumulative thresholds on a single 0-100 roll
+    threshold = 0.0
+
+    threshold += miss
+    if roll < threshold:
+        return MELEE_MISS
+
+    threshold += defender_dodge
+    if roll < threshold:
+        return MELEE_DODGE
+
+    threshold += defender_parry
+    if roll < threshold:
+        return MELEE_PARRY
+
+    # Block: checked before crit in WotLK (block can't prevent crit,
+    # but in the single-roll table block is checked before crit)
+    threshold += defender_block
+    if roll < threshold:
+        return MELEE_BLOCK
+
+    threshold += crit
+    if roll < threshold:
+        return MELEE_CRIT
+
+    threshold += crushing
+    if roll < threshold:
+        return MELEE_CRUSHING
+
+    return MELEE_NORMAL
+
+
+def resolve_spell_hit(player_level: int, mob_level: int,
+                      hit_bonus_pct: float, spell_crit_pct: float,
+                      roll_hit: float, roll_crit: float) -> str:
+    """Resolve spell outcome: miss, hit, or crit.
+
+    Two separate rolls (spells use two-roll unlike melee single-roll):
+      1. Hit roll: if roll < miss_chance -> SPELL_MISS
+      2. Crit roll: if roll < crit_chance -> SPELL_CRIT, else SPELL_HIT
+
+    Args:
+        roll_hit: 0-100 for miss check
+        roll_crit: 0-100 for crit check
+    """
+    miss = spell_miss_chance(player_level, mob_level, hit_bonus_pct)
+    if roll_hit < miss:
+        return SPELL_MISS
+    if roll_crit < spell_crit_pct:
+        return SPELL_CRIT
+    return SPELL_HIT
+
+

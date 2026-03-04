@@ -294,8 +294,11 @@ Simulates the complete WoW 3.3.5 WotLK combat system in pure Python. All formula
 - **9 Priest Spells**: Smite (585), Lesser Heal (2050), SW:Pain (589), PW:Shield (17), Mind Blast (8092), Renew (139), Holy Fire (14914), Inner Fire (588), PW:Fortitude (1243)
 - **Spell Power Scaling**: All spells scale with `total_spell_power` via WotLK coefficients from `spell_bonus_data`
 - **Spell Crit**: All damage/heal spells can crit (150% multiplier) based on `total_spell_crit` from Intellect + rating
+- **Spell Miss**: Offensive spells use WotLK two-roll hit system — base 4% miss at equal level, +1% per level diff (up to +2), 17% at +3 level diff (boss penalty), hit rating reduces miss (floor 1%)
+- **Melee Attack Table**: Mob melee attacks use WotLK single-roll attack table: miss (5% base) → dodge → parry → block → crit (5% base, 200% dmg) → crushing (150% dmg, 4+ level gap) → normal. Level difference and defense rating shift all thresholds.
+- **Dodge/Parry/Block**: Player dodge, parry, and block stats (already computed with DR) are now checked on every incoming mob melee attack. Block reduces damage by `block_value` instead of full avoidance.
 - **Armor Mitigation**: WotLK formula from `Unit.cpp:CalcArmorReducedDamage`, capped at 75%
-- **Mob AI**: Aggro range (10-20 units), chase, melee attack, leash (60 units)
+- **Mob AI**: Aggro range (10-20 units), chase, melee attack (with full attack table), leash (60 units)
 - **Loot System**: Copper drops, item score system, gear stats parsed from CSV (10 stat slots per item)
 - **Respawn**: Dead mobs respawn after 60s at original spawn point
 - **XP**: AzerothCore formula `BaseGain()` with gray level, ZeroDifference — mobs below gray level give 0 XP
@@ -370,6 +373,40 @@ eff_level = mob_level + 4.5 * max(0, mob_level - 59)
 dr = 0.1 * armor / (8.5 * eff_level + 40)
 mitigation = min(dr / (1 + dr), 0.75)
 ```
+
+**Combat Resolution — Melee Attack Table** (Unit.cpp:RollMeleeOutcomeAgainst):
+
+Mob melee attacks use a WotLK single-roll attack table. A single 0-100 roll is compared against cumulative thresholds:
+
+| Order | Outcome | Base % (equal level) | Effect |
+|---|---|---|---|
+| 1 | Miss | 5% + (def_skill - atk_skill) * 0.04% | No damage |
+| 2 | Dodge | player `total_dodge` | No damage |
+| 3 | Parry | player `total_parry` | No damage |
+| 4 | Block | player `total_block` (shield only) | Damage reduced by `block_value` |
+| 5 | Crit | 5% + (atk_skill - def_skill) * 0.04% | 200% damage |
+| 6 | Crushing | (skill_diff - 15) * 2% if gap ≥ 15 | 150% damage (mob 4+ levels above) |
+| 7 | Normal | remainder | Full damage |
+
+- **Weapon Skill**: `attacker_level * 5`, **Defense Skill**: `defender_level * 5 + defense_bonus`
+- **Defense Rating** increases miss chance and reduces mob crit chance (0.04% per skill point)
+- **Resilience** reduces incoming crit chance
+
+**Combat Resolution — Spell Hit** (SpellMgr.cpp):
+
+Offensive spells use a two-roll system (miss roll + crit roll):
+
+| Level Diff | Base Miss % | Notes |
+|---|---|---|
+| 0 (equal) | 4% | |
+| +1 | 5% | |
+| +2 | 6% | |
+| +3 (boss) | 17% | Big jump — boss penalty |
+| -N (lower) | max(4-N, 1%) | Floor at 1% |
+
+- **Hit Rating** reduces miss chance (cannot go below 1%)
+- Healing spells never miss (friendly target)
+- Self-buffs (Inner Fire, PW:Fortitude, PW:Shield, Renew) never miss
 
 **Attack Power Formulas** (StatSystem.cpp:UpdateAttackPowerAndDamage):
 - Warrior/Paladin/DK: `level*3 + str*2 - 20`
@@ -643,7 +680,7 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-12 test functions:
+14 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
 2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
 3. **test_random_episode()**: 1000-step episode with random actions
@@ -656,6 +693,8 @@ Interactive map visualization for analyzing training episodes:
 10. **test_quest_csv_loading()**: QuestDB CSV loading from AzerothCore exports, objective parsing (kill/collect), chain info, QuestXP.dbc parsing, NPC position loading, fallback behavior
 11. **test_attribute_system()**: WotLK base stats, HP/Mana formulas, spell crit from Intellect, Spirit mana regen, spell power scaling, armor mitigation, combat rating conversions, state_dict stat fields, observation vector stat dims, stat persistence across reset
 12. **test_equipment_system()**: Equipment slots, equip/unequip, stat recalculation, dual-slot items (rings/trinkets), two-hand offhand clearing, combat-lock, item stats accumulation, upgrade detection with gear stats
+13. **test_bag_system()**: Bag equip/upgrade, capacity tracking, profession bag rejection, combat-lock, sell preserves bags, state_dict bag info, reset clears bags
+14. **test_combat_resolution()**: WotLK melee attack table (single-roll: miss/dodge/parry/block/crit/crushing/normal), spell miss with level difference (4%/5%/6%/17%), spell hit two-roll system, mob crit 200% damage, block damage reduction by block_value, hit rating reduces miss, heal spells never miss, consume_events combat counters
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -877,7 +916,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 
 | Component | Status | Details |
 |---|---|---|
-| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 9 Priest spells, WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
+| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 9 Priest spells, WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, full combat resolution (melee attack table + spell miss/crit), dodge/parry/block, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
 | **WotLK Attribute System** | done | 5 primary stats, all combat ratings (hit/crit/haste/dodge/parry/block/expertise/ArP/resilience), spell power coefficients, DBC-derived formulas, diminishing returns |
 | **Equipment System** | done | 19 WoW equipment slots, equip/unequip with stat recalculation, combat-locked, two-hand offhand clearing, dual-slot logic (rings/trinkets), item stats from CSV |
 | **WoWSimEnv (Gym Interface)** | done | Discrete(17) actions, Box(38) obs (22 base + 10 stat + 6 quest), sparse rewards, stall detection |
