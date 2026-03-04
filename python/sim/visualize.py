@@ -146,6 +146,7 @@ class BotRecording:
     total_kills: int = 0
     total_xp: int = 0
     total_deaths: int = 0
+    total_quests: int = 0
 
 
 # ─── Load from log files ────────────────────────────────────────────────
@@ -164,6 +165,7 @@ def load_recordings_from_logs(log_dir: str, bot_name: str = None,
         rec.total_kills = ep.get("kills", 0)
         rec.total_xp = ep.get("xp", 0)
         rec.total_deaths = ep.get("deaths", 0)
+        rec.total_quests = ep.get("quests_completed", 0)
 
         # Trail: each entry is [step, x, y, hp_pct, level, in_combat, orientation]
         for pt in ep.get("trail", []):
@@ -280,6 +282,7 @@ def run_episode(env, model=None, max_steps: int = 4000,
 
     prev_kills = 0
     prev_level = p.level
+    prev_quests = 0
 
     for step in range(1, max_steps + 1):
         if model is not None:
@@ -319,6 +322,16 @@ def run_episode(env, model=None, max_steps: int = 4000,
                 label=f"Lv{p.level}",
             ))
             prev_level = p.level
+
+        if sim.quests_completed > prev_quests:
+            new_q = sim.quests_completed - prev_quests
+            for _ in range(new_q):
+                rec.events.append(MapEvent(
+                    step=step, x=p.x, y=p.y, kind="quest",
+                    label=f"Quest #{sim.quests_completed}",
+                ))
+            rec.total_quests += new_q
+            prev_quests = sim.quests_completed
 
         if terminated and p.hp <= 0:
             rec.events.append(MapEvent(
@@ -494,6 +507,14 @@ def _draw_trail(ax, rec, color_idx):
                         textcoords="offset points", xytext=(6, -10),
                         fontsize=8, fontweight="bold", color="red",
                         zorder=9)
+        elif ev.kind == "quest":
+            ax.scatter([ex], [ey], c="#00FF88", marker="D", s=80,
+                       edgecolors="white", linewidths=0.8, zorder=9)
+            label = ev.label if ev.label else "Quest"
+            ax.annotate(label, (ex, ey),
+                        textcoords="offset points", xytext=(6, 6),
+                        fontsize=7, fontweight="bold", color="#00FF88",
+                        zorder=9)
 
 
 # ─── Static plot (PNG export) ────────────────────────────────────────────
@@ -553,6 +574,8 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
                               linestyle="None", markersize=12, label="Level-Up"))
     handles.append(plt.Line2D([0], [0], marker="X", color="red",
                               linestyle="None", markersize=10, label="Death"))
+    handles.append(plt.Line2D([0], [0], marker="D", color="#00FF88",
+                              linestyle="None", markersize=8, label="Quest"))
 
     stats_lines = []
     for rec in recordings:
@@ -560,6 +583,8 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
                 f"Lv{rec.final_level}, {rec.total_xp} XP")
         if rec.total_deaths > 0:
             line += f", {rec.total_deaths} deaths"
+        if rec.total_quests > 0:
+            line += f", {rec.total_quests} quests"
         stats_lines.append(line)
 
     legend = ax.legend(handles=handles, loc="upper left",
@@ -1028,7 +1053,8 @@ class InteractiveViewer:
             lines.append(f"\u2500\u2500 {rec.name} \u2500\u2500")
             lines.append(
                 f"  Level: {rec.final_level}  |  Kills: {rec.total_kills}"
-                f"  |  XP: {rec.total_xp}  |  Deaths: {rec.total_deaths}")
+                f"  |  XP: {rec.total_xp}  |  Deaths: {rec.total_deaths}"
+                f"  |  Quests: {rec.total_quests}")
             steps = rec.trail[-1].step if rec.trail else 0
             lines.append(
                 f"  Trail points: {len(rec.trail)}  |  Steps: {steps}")
@@ -1150,6 +1176,9 @@ class InteractiveViewer:
         handles.append(plt.Line2D(
             [0], [0], marker="X", color="red",
             linestyle="None", markersize=10, label="Death"))
+        handles.append(plt.Line2D(
+            [0], [0], marker="D", color="#00FF88",
+            linestyle="None", markersize=8, label="Quest"))
         legend = self.ax_map.legend(
             handles=handles, loc="upper left", fontsize=8,
             facecolor="#1a1a2e", edgecolor="#444",
@@ -1194,7 +1223,7 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
         recordings.append(rec)
         print(f"Lv{rec.final_level}, {rec.total_kills} kills, "
               f"{rec.total_xp} XP, {rec.total_deaths} deaths, "
-              f"{len(rec.trail)} steps")
+              f"{rec.total_quests} quests, {len(rec.trail)} steps")
         env.close()
 
     print(f">>> All episodes done. <<<")
@@ -1330,7 +1359,7 @@ def main():
         for rec in filtered:
             print(f"  {rec.name} ep{rec.episode}: {rec.total_kills} kills, "
                   f"Lv{rec.final_level}, {rec.total_xp} XP, "
-                  f"{len(rec.trail)} trail points")
+                  f"{rec.total_quests} quests, {len(rec.trail)} trail points")
 
         # Static PNG export if requested
         if args.output:
