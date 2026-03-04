@@ -418,9 +418,12 @@ class WoWSimEnv(gym.Env):
                     self._step_count, p.x, p.y, "levelup",
                     f"Lv{p.level}")
 
-        # 6. Equipment-Upgrade
-        if events["equipped_upgrade"]:
-            reward += 3.0
+        # 6. Equipment-Upgrade — scaled by class-aware score improvement
+        #    Small upgrades (~5 score diff) -> ~1.5 reward
+        #    Medium upgrades (~20 score diff) -> ~4.0 reward (capped at 5.0)
+        upgrade_score = events["equipped_upgrade"]
+        if upgrade_score > 0:
+            reward += min(1.0 + upgrade_score * 0.15, 5.0)
 
         # 7. Loot — quality-based reward per item, penalty when inventory full
         copper = events["loot_copper"]

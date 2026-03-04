@@ -460,7 +460,7 @@ Loads AzerothCore CSV exports for full-world creature spawning with spatial inde
 
 Loads AzerothCore CSV exports for realistic item drops with full group/reference logic:
 - **Loads**: `item_template.csv` (item data, scores), `creature_loot_template.csv` (drop tables), `reference_loot_template.csv` (optional, shared loot references)
-- **Item Score**: Precomputed via `GetItemScore` formula: `(Quality*10) + ItemLevel + Armor + WeaponDPS + (TotalStats*2)`
+- **Item Score**: Base score via `GetItemScore` formula: `(Quality*10) + ItemLevel + Armor + WeaponDPS + (TotalStats*2)`. Equipment decisions use `class_aware_score()` which replaces the flat `TotalStats*2` with class-specific stat weights (e.g., Priest values INT at 3x, STR at 0.1x)
 - **Group System** (AzerothCore standard):
   - **Group 0**: Each entry rolls independently (chance %)
   - **Group N>0**: Exactly one entry wins per group (weighted selection)
@@ -572,7 +572,7 @@ Stat dims (22-31) reflect gear + buffs and update as the bot equips items or lev
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
 | XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
 | Level-Up | +15.0 * levels | per level gained |
-| Equipment Upgrade | +3.0 | |
+| Equipment Upgrade | min(1.0 + diff * 0.15, 5.0) | class-aware scoring, scaled by score improvement |
 | Loot | per-item quality reward (0.1 grey to 5.0 epic) + min(copper * 0.01, 1.0) | penalty if inventory full |
 | Sell | 1.0 + 7.0 * fullness + min(copper * 0.005, 2.0) | scales with inventory fill (1-8) + copper bonus |
 | New Area Entered | +1.0 | real WoW Area ID or grid fallback (once per episode) |

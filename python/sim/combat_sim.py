@@ -247,6 +247,207 @@ ITEM_MOD_SPELL_PENETRATION = 47
 ITEM_MOD_BLOCK_VALUE = 48
 
 
+# ─── Class-Specific Stat Weights for Item Scoring ───────────────────
+# Each class has multipliers for how valuable each stat type is.
+# Default weight is 1.0 (Stamina), useful stats get higher weights,
+# useless stats get low weights (0.1-0.3).
+# Weights are applied in class_aware_score() to replace the flat
+# TotalStats*2 component of GetItemScore.
+
+_CASTER_WEIGHTS = {
+    ITEM_MOD_INTELLECT: 3.0, ITEM_MOD_SPIRIT: 2.0, ITEM_MOD_SPELL_POWER: 3.0,
+    ITEM_MOD_STAMINA: 1.0, ITEM_MOD_MANA: 0.5, ITEM_MOD_HEALTH: 0.5,
+    ITEM_MOD_CRIT_SPELL_RATING: 2.0, ITEM_MOD_HASTE_SPELL_RATING: 2.0,
+    ITEM_MOD_HIT_SPELL_RATING: 2.5, ITEM_MOD_CRIT_RATING: 2.0,
+    ITEM_MOD_HASTE_RATING: 2.0, ITEM_MOD_HIT_RATING: 2.0,
+    ITEM_MOD_MANA_REGENERATION: 1.5, ITEM_MOD_SPELL_HEALING_DONE: 2.0,
+    ITEM_MOD_SPELL_DAMAGE_DONE: 2.5, ITEM_MOD_SPELL_PENETRATION: 1.5,
+    ITEM_MOD_RESILIENCE_RATING: 0.5,
+    ITEM_MOD_STRENGTH: 0.1, ITEM_MOD_AGILITY: 0.1,
+    ITEM_MOD_ATTACK_POWER: 0.1, ITEM_MOD_RANGED_ATTACK_POWER: 0.0,
+    ITEM_MOD_EXPERTISE_RATING: 0.0, ITEM_MOD_ARMOR_PENETRATION_RATING: 0.0,
+    ITEM_MOD_HIT_MELEE_RATING: 0.1, ITEM_MOD_CRIT_MELEE_RATING: 0.1,
+    ITEM_MOD_HASTE_MELEE_RATING: 0.1, ITEM_MOD_HIT_RANGED_RATING: 0.0,
+    ITEM_MOD_CRIT_RANGED_RATING: 0.0, ITEM_MOD_HASTE_RANGED_RATING: 0.0,
+    ITEM_MOD_DODGE_RATING: 0.3, ITEM_MOD_PARRY_RATING: 0.1,
+    ITEM_MOD_BLOCK_RATING: 0.1, ITEM_MOD_DEFENSE_SKILL_RATING: 0.3,
+    ITEM_MOD_BLOCK_VALUE: 0.1, ITEM_MOD_HEALTH_REGEN: 0.5,
+}
+
+_MELEE_WEIGHTS = {
+    ITEM_MOD_STRENGTH: 3.0, ITEM_MOD_AGILITY: 2.0, ITEM_MOD_STAMINA: 1.0,
+    ITEM_MOD_ATTACK_POWER: 2.5, ITEM_MOD_HEALTH: 0.5, ITEM_MOD_MANA: 0.1,
+    ITEM_MOD_CRIT_MELEE_RATING: 2.5, ITEM_MOD_HIT_MELEE_RATING: 2.5,
+    ITEM_MOD_HASTE_MELEE_RATING: 2.0, ITEM_MOD_EXPERTISE_RATING: 2.5,
+    ITEM_MOD_CRIT_RATING: 2.5, ITEM_MOD_HIT_RATING: 2.5,
+    ITEM_MOD_HASTE_RATING: 2.0, ITEM_MOD_ARMOR_PENETRATION_RATING: 2.0,
+    ITEM_MOD_DODGE_RATING: 1.0, ITEM_MOD_PARRY_RATING: 1.0,
+    ITEM_MOD_BLOCK_RATING: 0.5, ITEM_MOD_DEFENSE_SKILL_RATING: 1.0,
+    ITEM_MOD_BLOCK_VALUE: 0.5, ITEM_MOD_RESILIENCE_RATING: 0.5,
+    ITEM_MOD_HEALTH_REGEN: 0.5,
+    ITEM_MOD_INTELLECT: 0.1, ITEM_MOD_SPIRIT: 0.1, ITEM_MOD_SPELL_POWER: 0.0,
+    ITEM_MOD_SPELL_HEALING_DONE: 0.0, ITEM_MOD_SPELL_DAMAGE_DONE: 0.0,
+    ITEM_MOD_MANA_REGENERATION: 0.1, ITEM_MOD_SPELL_PENETRATION: 0.0,
+    ITEM_MOD_CRIT_SPELL_RATING: 0.1, ITEM_MOD_HASTE_SPELL_RATING: 0.1,
+    ITEM_MOD_HIT_SPELL_RATING: 0.1, ITEM_MOD_RANGED_ATTACK_POWER: 0.1,
+    ITEM_MOD_HIT_RANGED_RATING: 0.1, ITEM_MOD_CRIT_RANGED_RATING: 0.1,
+    ITEM_MOD_HASTE_RANGED_RATING: 0.1,
+}
+
+_HUNTER_WEIGHTS = {
+    ITEM_MOD_AGILITY: 3.0, ITEM_MOD_STAMINA: 1.0, ITEM_MOD_INTELLECT: 1.5,
+    ITEM_MOD_ATTACK_POWER: 2.0, ITEM_MOD_RANGED_ATTACK_POWER: 3.0,
+    ITEM_MOD_CRIT_RATING: 2.5, ITEM_MOD_HIT_RATING: 2.5,
+    ITEM_MOD_HASTE_RATING: 2.0, ITEM_MOD_ARMOR_PENETRATION_RATING: 2.0,
+    ITEM_MOD_CRIT_RANGED_RATING: 2.5, ITEM_MOD_HIT_RANGED_RATING: 2.5,
+    ITEM_MOD_HASTE_RANGED_RATING: 2.0,
+    ITEM_MOD_HEALTH: 0.5, ITEM_MOD_MANA: 0.3,
+    ITEM_MOD_MANA_REGENERATION: 0.5, ITEM_MOD_HEALTH_REGEN: 0.5,
+    ITEM_MOD_RESILIENCE_RATING: 0.5,
+    ITEM_MOD_STRENGTH: 0.3, ITEM_MOD_SPIRIT: 0.3,
+    ITEM_MOD_SPELL_POWER: 0.0, ITEM_MOD_SPELL_HEALING_DONE: 0.0,
+    ITEM_MOD_SPELL_DAMAGE_DONE: 0.0, ITEM_MOD_SPELL_PENETRATION: 0.0,
+    ITEM_MOD_EXPERTISE_RATING: 0.5,
+    ITEM_MOD_DODGE_RATING: 0.5, ITEM_MOD_PARRY_RATING: 0.3,
+    ITEM_MOD_BLOCK_RATING: 0.1, ITEM_MOD_BLOCK_VALUE: 0.1,
+    ITEM_MOD_DEFENSE_SKILL_RATING: 0.3,
+    ITEM_MOD_CRIT_MELEE_RATING: 0.3, ITEM_MOD_HIT_MELEE_RATING: 0.3,
+    ITEM_MOD_HASTE_MELEE_RATING: 0.3,
+    ITEM_MOD_CRIT_SPELL_RATING: 0.3, ITEM_MOD_HIT_SPELL_RATING: 0.3,
+    ITEM_MOD_HASTE_SPELL_RATING: 0.3,
+}
+
+_AGI_MELEE_WEIGHTS = {
+    ITEM_MOD_AGILITY: 3.0, ITEM_MOD_STRENGTH: 1.5, ITEM_MOD_STAMINA: 1.0,
+    ITEM_MOD_ATTACK_POWER: 2.5, ITEM_MOD_HEALTH: 0.5,
+    ITEM_MOD_CRIT_MELEE_RATING: 2.5, ITEM_MOD_HIT_MELEE_RATING: 2.5,
+    ITEM_MOD_HASTE_MELEE_RATING: 2.0, ITEM_MOD_EXPERTISE_RATING: 2.5,
+    ITEM_MOD_CRIT_RATING: 2.5, ITEM_MOD_HIT_RATING: 2.5,
+    ITEM_MOD_HASTE_RATING: 2.0, ITEM_MOD_ARMOR_PENETRATION_RATING: 2.5,
+    ITEM_MOD_DODGE_RATING: 1.0, ITEM_MOD_PARRY_RATING: 0.5,
+    ITEM_MOD_RESILIENCE_RATING: 0.5, ITEM_MOD_HEALTH_REGEN: 0.5,
+    ITEM_MOD_MANA: 0.1, ITEM_MOD_INTELLECT: 0.1, ITEM_MOD_SPIRIT: 0.1,
+    ITEM_MOD_SPELL_POWER: 0.0, ITEM_MOD_SPELL_HEALING_DONE: 0.0,
+    ITEM_MOD_SPELL_DAMAGE_DONE: 0.0, ITEM_MOD_MANA_REGENERATION: 0.1,
+    ITEM_MOD_SPELL_PENETRATION: 0.0, ITEM_MOD_BLOCK_RATING: 0.1,
+    ITEM_MOD_BLOCK_VALUE: 0.1, ITEM_MOD_DEFENSE_SKILL_RATING: 0.3,
+    ITEM_MOD_RANGED_ATTACK_POWER: 0.1,
+    ITEM_MOD_CRIT_SPELL_RATING: 0.1, ITEM_MOD_HIT_SPELL_RATING: 0.1,
+    ITEM_MOD_HASTE_SPELL_RATING: 0.1, ITEM_MOD_HIT_RANGED_RATING: 0.1,
+    ITEM_MOD_CRIT_RANGED_RATING: 0.1, ITEM_MOD_HASTE_RANGED_RATING: 0.1,
+}
+
+_PALADIN_WEIGHTS = {
+    ITEM_MOD_STRENGTH: 2.5, ITEM_MOD_STAMINA: 1.5, ITEM_MOD_INTELLECT: 2.0,
+    ITEM_MOD_SPELL_POWER: 2.0, ITEM_MOD_ATTACK_POWER: 1.5,
+    ITEM_MOD_AGILITY: 0.5, ITEM_MOD_SPIRIT: 0.5,
+    ITEM_MOD_CRIT_RATING: 2.0, ITEM_MOD_HIT_RATING: 2.0,
+    ITEM_MOD_HASTE_RATING: 2.0, ITEM_MOD_EXPERTISE_RATING: 2.0,
+    ITEM_MOD_CRIT_MELEE_RATING: 2.0, ITEM_MOD_HIT_MELEE_RATING: 2.0,
+    ITEM_MOD_CRIT_SPELL_RATING: 1.5, ITEM_MOD_HIT_SPELL_RATING: 1.5,
+    ITEM_MOD_HASTE_SPELL_RATING: 1.5, ITEM_MOD_HASTE_MELEE_RATING: 1.5,
+    ITEM_MOD_DODGE_RATING: 1.0, ITEM_MOD_PARRY_RATING: 1.0,
+    ITEM_MOD_BLOCK_RATING: 1.0, ITEM_MOD_BLOCK_VALUE: 1.0,
+    ITEM_MOD_DEFENSE_SKILL_RATING: 1.0,
+    ITEM_MOD_HEALTH: 0.5, ITEM_MOD_MANA: 0.5,
+    ITEM_MOD_MANA_REGENERATION: 1.0, ITEM_MOD_HEALTH_REGEN: 0.5,
+    ITEM_MOD_RESILIENCE_RATING: 0.5, ITEM_MOD_ARMOR_PENETRATION_RATING: 1.0,
+    ITEM_MOD_SPELL_HEALING_DONE: 1.5, ITEM_MOD_SPELL_DAMAGE_DONE: 1.5,
+    ITEM_MOD_SPELL_PENETRATION: 0.5,
+    ITEM_MOD_RANGED_ATTACK_POWER: 0.0,
+    ITEM_MOD_HIT_RANGED_RATING: 0.0, ITEM_MOD_CRIT_RANGED_RATING: 0.0,
+    ITEM_MOD_HASTE_RANGED_RATING: 0.0,
+}
+
+_DRUID_WEIGHTS = {
+    ITEM_MOD_AGILITY: 2.0, ITEM_MOD_STRENGTH: 1.5, ITEM_MOD_STAMINA: 1.0,
+    ITEM_MOD_INTELLECT: 2.0, ITEM_MOD_SPIRIT: 1.5, ITEM_MOD_SPELL_POWER: 2.0,
+    ITEM_MOD_ATTACK_POWER: 1.5,
+    ITEM_MOD_CRIT_RATING: 2.0, ITEM_MOD_HIT_RATING: 2.0,
+    ITEM_MOD_HASTE_RATING: 2.0,
+    ITEM_MOD_DODGE_RATING: 1.0, ITEM_MOD_DEFENSE_SKILL_RATING: 0.5,
+    ITEM_MOD_HEALTH: 0.5, ITEM_MOD_MANA: 0.5,
+    ITEM_MOD_MANA_REGENERATION: 1.0, ITEM_MOD_HEALTH_REGEN: 0.5,
+    ITEM_MOD_CRIT_MELEE_RATING: 1.5, ITEM_MOD_HIT_MELEE_RATING: 1.5,
+    ITEM_MOD_HASTE_MELEE_RATING: 1.5, ITEM_MOD_EXPERTISE_RATING: 1.5,
+    ITEM_MOD_ARMOR_PENETRATION_RATING: 1.5,
+    ITEM_MOD_CRIT_SPELL_RATING: 1.5, ITEM_MOD_HIT_SPELL_RATING: 1.5,
+    ITEM_MOD_HASTE_SPELL_RATING: 1.5,
+    ITEM_MOD_SPELL_HEALING_DONE: 1.5, ITEM_MOD_SPELL_DAMAGE_DONE: 1.5,
+    ITEM_MOD_RESILIENCE_RATING: 0.5, ITEM_MOD_SPELL_PENETRATION: 0.5,
+    ITEM_MOD_PARRY_RATING: 0.0, ITEM_MOD_BLOCK_RATING: 0.0,
+    ITEM_MOD_BLOCK_VALUE: 0.0,
+    ITEM_MOD_RANGED_ATTACK_POWER: 0.0,
+    ITEM_MOD_HIT_RANGED_RATING: 0.0, ITEM_MOD_CRIT_RANGED_RATING: 0.0,
+    ITEM_MOD_HASTE_RANGED_RATING: 0.0,
+}
+
+_SHAMAN_WEIGHTS = {
+    ITEM_MOD_INTELLECT: 2.5, ITEM_MOD_SPELL_POWER: 2.5, ITEM_MOD_STAMINA: 1.0,
+    ITEM_MOD_AGILITY: 1.5, ITEM_MOD_STRENGTH: 1.0, ITEM_MOD_SPIRIT: 1.0,
+    ITEM_MOD_ATTACK_POWER: 1.5, ITEM_MOD_MANA: 0.5, ITEM_MOD_HEALTH: 0.5,
+    ITEM_MOD_CRIT_RATING: 2.0, ITEM_MOD_HIT_RATING: 2.0,
+    ITEM_MOD_HASTE_RATING: 2.0,
+    ITEM_MOD_CRIT_MELEE_RATING: 1.5, ITEM_MOD_HIT_MELEE_RATING: 1.5,
+    ITEM_MOD_HASTE_MELEE_RATING: 1.5, ITEM_MOD_EXPERTISE_RATING: 1.5,
+    ITEM_MOD_CRIT_SPELL_RATING: 2.0, ITEM_MOD_HIT_SPELL_RATING: 2.0,
+    ITEM_MOD_HASTE_SPELL_RATING: 2.0,
+    ITEM_MOD_MANA_REGENERATION: 1.0, ITEM_MOD_HEALTH_REGEN: 0.5,
+    ITEM_MOD_SPELL_HEALING_DONE: 1.5, ITEM_MOD_SPELL_DAMAGE_DONE: 1.5,
+    ITEM_MOD_RESILIENCE_RATING: 0.5, ITEM_MOD_SPELL_PENETRATION: 0.5,
+    ITEM_MOD_ARMOR_PENETRATION_RATING: 1.0,
+    ITEM_MOD_DODGE_RATING: 0.5, ITEM_MOD_PARRY_RATING: 0.5,
+    ITEM_MOD_BLOCK_RATING: 0.5, ITEM_MOD_BLOCK_VALUE: 0.5,
+    ITEM_MOD_DEFENSE_SKILL_RATING: 0.5,
+    ITEM_MOD_RANGED_ATTACK_POWER: 0.0,
+    ITEM_MOD_HIT_RANGED_RATING: 0.0, ITEM_MOD_CRIT_RANGED_RATING: 0.0,
+    ITEM_MOD_HASTE_RANGED_RATING: 0.0,
+}
+
+# Map class_id -> stat weights
+CLASS_STAT_WEIGHTS = {
+    CLASS_WARRIOR:      _MELEE_WEIGHTS,
+    CLASS_PALADIN:      _PALADIN_WEIGHTS,
+    CLASS_HUNTER:       _HUNTER_WEIGHTS,
+    CLASS_ROGUE:        _AGI_MELEE_WEIGHTS,
+    CLASS_PRIEST:       _CASTER_WEIGHTS,
+    CLASS_DEATH_KNIGHT: _MELEE_WEIGHTS,
+    CLASS_SHAMAN:       _SHAMAN_WEIGHTS,
+    CLASS_MAGE:         _CASTER_WEIGHTS,
+    CLASS_WARLOCK:      _CASTER_WEIGHTS,
+    CLASS_DRUID:        _DRUID_WEIGHTS,
+}
+
+_DEFAULT_STAT_WEIGHT = 1.0  # fallback for unmapped stat types
+
+
+def class_aware_score(item_stats: dict, item_quality: int, item_level: int,
+                      armor: int, weapon_dps: float, class_id: int) -> float:
+    """Compute a class-aware item score using stat weights.
+
+    Replaces the flat TotalStats*2 with weighted stat values.
+    Base components (Quality, ItemLevel, Armor, WeaponDPS) remain unchanged.
+
+    Args:
+        item_stats: Dict of {ITEM_MOD_*: value} from the item.
+        item_quality: WoW quality (0-4).
+        item_level: Item level.
+        armor: Armor value.
+        weapon_dps: Average weapon DPS.
+        class_id: Player class constant (CLASS_PRIEST, etc.).
+
+    Returns:
+        Weighted item score (float).
+    """
+    weights = CLASS_STAT_WEIGHTS.get(class_id, {})
+    weighted_stats = 0.0
+    for stat_type, stat_value in item_stats.items():
+        w = weights.get(stat_type, _DEFAULT_STAT_WEIGHT)
+        weighted_stats += abs(stat_value) * w
+    base = (item_quality * 10) + item_level + armor + weapon_dps
+    return base + weighted_stats
+
+
 # ─── WoW Equipment Slots (Player.h EQUIPMENT_SLOT_*) ────────────────
 EQUIPMENT_SLOT_HEAD = 0
 EQUIPMENT_SLOT_NECK = 1
@@ -1151,7 +1352,7 @@ class Player:
     xp_gained: int = 0
     loot_copper: int = 0
     loot_score: int = 0
-    equipped_upgrade: bool = False
+    equipped_upgrade: float = 0.0  # score improvement (0.0 = no upgrade)
     leveled_up: bool = False    # set True on level-up, consumed on read
     levels_gained: int = 0      # how many levels gained this tick (consumed on read)
     # Quality of items successfully looted this tick (consume-on-read)
@@ -1963,10 +2164,11 @@ class CombatSimulation:
         return item
 
     def try_equip_item(self, item_data) -> bool:
-        """Try to equip an item if it's better than current (score-based).
+        """Try to equip an item if it's better than current (class-aware scoring).
 
         item_data can be a LootDB ItemData or an InventoryItem with stats.
         Uses proper WoW equipment slots via INVTYPE_TO_SLOTS mapping.
+        Uses class-specific stat weights to determine if the item is an upgrade.
         Returns True if equipped (upgrade detected).
         """
         inv_type = item_data.inventory_type
@@ -1977,15 +2179,35 @@ class CombatSimulation:
         if slot is None:
             return False
 
+        cid = self.player.class_id
+        item_stats = getattr(item_data, 'stats', None) or {}
+        new_score = class_aware_score(
+            item_stats, item_data.quality if hasattr(item_data, 'quality') else 0,
+            item_data.item_level if hasattr(item_data, 'item_level') else 0,
+            getattr(item_data, 'armor', 0),
+            getattr(item_data, 'weapon_dps', 0.0), cid)
+
         current = self.player.equipment.get(slot)
-        current_score = current.score if current else 0.0
-        new_score = item_data.score
+        if current:
+            cur_stats = getattr(current, 'stats', None) or {}
+            cur_quality = getattr(current, 'quality', 0)
+            cur_ilvl = getattr(current, 'item_level', 0)
+            current_score = class_aware_score(
+                cur_stats, cur_quality, cur_ilvl,
+                getattr(current, 'armor', 0),
+                getattr(current, 'weapon_dps', 0.0), cid)
+        else:
+            current_score = 0.0
 
         if new_score <= current_score:
             return False
 
+        score_diff = new_score - current_score
         # Equip via equip_item (handles offhand clearing, inventory return, stat recalc)
         success, _ = self.equip_item(item_data, slot)
+        if success:
+            # Accumulate score improvement for reward scaling
+            self.player.equipped_upgrade += score_diff
         return success
 
     def _update_exploration(self):
@@ -2336,10 +2558,9 @@ class CombatSimulation:
                         armor=result.item.armor,
                         weapon_dps=result.item.weapon_dps,
                     ))
-                    # Auto-equip if it's an upgrade
+                    # Auto-equip if it's an upgrade (score diff tracked by try_equip_item)
                     if result.item.inventory_type > 0:
-                        if self.try_equip_item(result.item):
-                            self.player.equipped_upgrade = True
+                        self.try_equip_item(result.item)
                 else:
                     self.player.loot_failed.append(quality)
         else:
@@ -2360,7 +2581,7 @@ class CombatSimulation:
                         inventory_type=0,
                     ))
                     if self.rng.random() < self.UPGRADE_CHANCE:
-                        self.player.equipped_upgrade = True
+                        self.player.equipped_upgrade += score  # fallback: use raw score as diff
                 else:
                     self.player.loot_failed.append(quality)
         # Quest collect objective tracking
@@ -2957,7 +3178,7 @@ class CombatSimulation:
             "combat": "true" if p.in_combat else "false",
             "casting": "true" if p.is_casting else "false",
             "free_slots": p.free_slots,
-            "equipped_upgrade": "true" if p.equipped_upgrade else "false",
+            "equipped_upgrade": "true" if p.equipped_upgrade > 0 else "false",
             "target_status": t_info["status"],
             "target_hp": t_info["hp"],
             "target_level": t_info.get("level", 0),
@@ -3119,7 +3340,7 @@ class CombatSimulation:
         p.xp_gained = 0
         p.loot_copper = 0
         p.loot_score = 0
-        p.equipped_upgrade = False
+        p.equipped_upgrade = 0.0
         p.leveled_up = False
         p.levels_gained = 0
         p.loot_items.clear()
