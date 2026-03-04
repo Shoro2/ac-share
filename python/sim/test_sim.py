@@ -282,17 +282,17 @@ def test_level_system():
     assert xp == 0, f"L10 vs L3 (gray) expected 0, got {xp}"
     print(f"  XP L10 vs L3 (gray): {xp} ✓")
 
-    # --- Stat scaling (WotLK: includes base stamina/intellect contribution) ---
-    # player_max_hp(1) = 72 + stam_hp(priest_base_stam(20,1)=20) = 72 + 20 = 92
-    assert player_max_hp(1) == 92, f"HP(1) expected 92, got {player_max_hp(1)}"
-    # player_max_hp(2) = 122 + stam_hp(21) = 122 + 20 + 10 = 152
-    assert player_max_hp(2) == 152, f"HP(2) expected 152, got {player_max_hp(2)}"
-    # player_max_hp(10) = 522 + stam_hp(29) = 522 + 20 + 90 = 632
-    assert player_max_hp(10) == 632, f"HP(10) expected 632, got {player_max_hp(10)}"
-    # player_max_mana(1) = 123 + int_mana(priest_base_int(22,1)=22) = 123 + 20 + 30 = 173
-    assert player_max_mana(1) == 173, f"Mana(1) expected 173, got {player_max_mana(1)}"
-    # player_max_mana(2) = 128 + int_mana(23) = 128 + 20 + 45 = 193
-    assert player_max_mana(2) == 193, f"Mana(2) expected 193, got {player_max_mana(2)}"
+    # --- Stat scaling (WotLK: DBC-based BaseHP/BaseMana + stamina/intellect contribution) ---
+    # player_max_hp(1) = BaseHP(52) + stam_hp(20) = 52 + 20 = 72
+    assert player_max_hp(1) == 72, f"HP(1) expected 72, got {player_max_hp(1)}"
+    # player_max_hp(2) = BaseHP(57) + stam_hp(20) = 57 + 20 = 77
+    assert player_max_hp(2) == 77, f"HP(2) expected 77, got {player_max_hp(2)}"
+    # player_max_hp(10) = BaseHP(147) + stam_hp(23) = 147 + 20 + 30 = 187 (with non-linear stam from CSV)
+    assert player_max_hp(10) == 187, f"HP(10) expected 187, got {player_max_hp(10)}"
+    # player_max_mana(1) = BaseMana(73) + int_mana(22) = 73 + 20 + 30 = 123
+    assert player_max_mana(1) == 123, f"Mana(1) expected 123, got {player_max_mana(1)}"
+    # player_max_mana(2) = BaseMana(79) + int_mana(22) = 79 + 20 + 42 (non-linear from CSV) = 141
+    assert player_max_mana(2) == 141, f"Mana(2) expected 141, got {player_max_mana(2)}"
     # Smite/Heal base damage unchanged (no SP)
     min_d, max_d = smite_damage(1)
     assert (min_d, max_d) == (13, 17)
@@ -1269,29 +1269,29 @@ def test_attribute_system():
     """Test WotLK 3.3.5 attribute system: stats, equipment, spell scaling, armor."""
     print("=== Test 11: Attribute & Equipment System ===")
 
-    # --- Test 11a: Base stat formulas (WotLK — all classes) ---
+    # --- Test 11a: Base stat formulas (WotLK — DBC per-level lookup) ---
     # stat_index: 0=str, 1=agi, 2=stam, 3=int, 4=spi
-    # Priest base stats at level 1: (15, 17, 20, 22, 23)
+    # Priest base stats at level 1: (20, 20, 20, 22, 23) from player_class_stats.csv
     assert class_base_stat(CLASS_PRIEST, 2, 1) == 20   # stamina
-    assert class_base_stat(CLASS_PRIEST, 2, 10) == 29   # stam L10 = 20 + 9
+    assert class_base_stat(CLASS_PRIEST, 2, 10) == 23   # stam L10 (non-linear from CSV)
     assert class_base_stat(CLASS_PRIEST, 3, 1) == 22    # intellect
-    assert class_base_stat(CLASS_PRIEST, 3, 10) == 31   # int L10 = 22 + 9
+    assert class_base_stat(CLASS_PRIEST, 3, 10) == 33   # int L10 (non-linear from CSV)
     assert class_base_stat(CLASS_PRIEST, 4, 1) == 23    # spirit
-    # Warrior base stats at level 1: (23, 20, 22, 17, 19)
+    # Warrior base stats at level 1: (23, 20, 22, 20, 20) from CSV
     assert class_base_stat(CLASS_WARRIOR, 0, 1) == 23   # strength
-    assert class_base_stat(CLASS_WARRIOR, 0, 10) == 32   # str L10 = 23 + 9
+    assert class_base_stat(CLASS_WARRIOR, 0, 10) == 33   # str L10 (non-linear from CSV)
     assert class_base_stat(CLASS_WARRIOR, 2, 1) == 22   # stamina
-    # Rogue base stats at level 1: (18, 24, 20, 17, 19)
-    assert class_base_stat(CLASS_ROGUE, 1, 1) == 24     # agility
-    assert class_base_stat(CLASS_MAGE, 3, 1) == 24      # mage intellect
+    # Rogue base stats at level 1: (21, 23, 20, 20, 20) from CSV
+    assert class_base_stat(CLASS_ROGUE, 1, 1) == 23     # agility
+    assert class_base_stat(CLASS_MAGE, 3, 1) == 23      # mage intellect
     print(f"  11a: Base stats: Priest(stam=20,int=22,spi=23), Warrior(str=23), "
-          f"Rogue(agi=24), Mage(int=24) ✓")
+          f"Rogue(agi=23), Mage(int=23) ✓")
 
     # --- Test 11b: HP with bonus stamina (WotLK: first 20=1HP, above 20=10HP) ---
-    hp_base = player_max_hp(1)  # Priest L1: 72 + stam_hp(20)
+    hp_base = player_max_hp(1)  # Priest L1: BaseHP(52) + stam_hp(20) = 72
     hp_bonus = player_max_hp(1, bonus_stamina=5)  # +5 stam -> total 25 -> +50 HP more
-    # total_stam = 20+5 = 25, stam_hp = 20 + 5*10 = 70 -> 72+70 = 142
-    assert hp_bonus == 142, f"HP(1,+5stam) expected 142, got {hp_bonus}"
+    # total_stam = 20+5 = 25, stam_hp = 20 + 5*10 = 70 -> 52+70 = 122
+    assert hp_bonus == 122, f"HP(1,+5stam) expected 122, got {hp_bonus}"
     assert hp_bonus > hp_base, "Bonus stamina should increase HP"
     hp_flat = player_max_hp(1, bonus_hp=100)  # +100 flat HP
     assert hp_flat == hp_base + 100, f"Flat HP bonus should add directly"
@@ -1304,9 +1304,9 @@ def test_attribute_system():
           f"Warrior L1={hp_war}, L10={hp_war10} ✓")
 
     # --- Test 11c: Mana with bonus intellect (WotLK: first 20=1, above 20=15) ---
-    mana_base = player_max_mana(1)  # Priest: 123 + int_mana(22) = 173
-    mana_bonus = player_max_mana(1, bonus_intellect=10)  # total_int=32 -> 20+12*15=200 -> 323
-    assert mana_bonus == 323, f"Mana(1,+10int) expected 323, got {mana_bonus}"
+    mana_base = player_max_mana(1)  # Priest: BaseMana(73) + int_mana(22) = 73+20+30 = 123
+    mana_bonus = player_max_mana(1, bonus_intellect=10)  # total_int=32 -> 20+12*15=200 -> 73+200 = 273
+    assert mana_bonus == 273, f"Mana(1,+10int) expected 273, got {mana_bonus}"
     mana_flat = player_max_mana(1, bonus_mana=50)
     assert mana_flat == mana_base + 50, f"Flat mana bonus should add directly"
     # Non-mana classes (Warrior, Rogue, DK) return 0
@@ -1528,17 +1528,17 @@ def test_attribute_system():
     war_str = class_base_stat(CLASS_WARRIOR, 0, 1)  # 23
     war_agi = class_base_stat(CLASS_WARRIOR, 1, 1)  # 20
     war_ap = melee_attack_power(1, war_str, war_agi, CLASS_WARRIOR)
-    assert war_ap == int(1 * 3.0 + 23 * 2.0 - 20.0), f"Warrior AP expected 29, got {war_ap}"
+    assert war_ap == int(1 * 3.0 + war_str * 2.0 - 20.0), f"Warrior AP expected {int(1*3+war_str*2-20)}, got {war_ap}"
     # Rogue: level*2 + str + agi - 20
-    rog_str = class_base_stat(CLASS_ROGUE, 0, 1)  # 18
-    rog_agi = class_base_stat(CLASS_ROGUE, 1, 1)  # 24
+    rog_str = class_base_stat(CLASS_ROGUE, 0, 1)  # 21
+    rog_agi = class_base_stat(CLASS_ROGUE, 1, 1)  # 23
     rog_ap = melee_attack_power(1, rog_str, rog_agi, CLASS_ROGUE)
-    assert rog_ap == int(1 * 2.0 + 18 + 24 - 20.0), f"Rogue AP expected 24, got {rog_ap}"
+    assert rog_ap == int(1 * 2.0 + rog_str + rog_agi - 20.0), f"Rogue AP expected {int(1*2+rog_str+rog_agi-20)}, got {rog_ap}"
     # Priest: str - 10
-    pri_str = class_base_stat(CLASS_PRIEST, 0, 1)  # 15
+    pri_str = class_base_stat(CLASS_PRIEST, 0, 1)  # 20
     pri_agi = class_base_stat(CLASS_PRIEST, 1, 1)
     pri_ap = melee_attack_power(1, pri_str, pri_agi, CLASS_PRIEST)
-    assert pri_ap == int(15 - 10.0), f"Priest AP expected 5, got {pri_ap}"
+    assert pri_ap == int(pri_str - 10.0), f"Priest AP expected {int(pri_str - 10)}, got {pri_ap}"
     print(f"  11p: Attack Power: Warrior={war_ap}, Rogue={rog_ap}, Priest={pri_ap} ✓")
 
     # --- Test 11q: Melee crit from Agility ---
@@ -1547,9 +1547,9 @@ def test_attribute_system():
     assert war_crit > 0.0, f"Warrior melee crit should be > 0, got {war_crit}"
     war_crit_high = melee_crit_chance(1, 100, class_id=CLASS_WARRIOR)
     assert war_crit_high > war_crit, "Higher agi should increase melee crit"
-    # Rogue has negative base crit — needs high agi to overcome
-    rog_crit_low = melee_crit_chance(1, 24, class_id=CLASS_ROGUE)
-    assert rog_crit_low == 0.0, "Rogue L1 base agi clamps to 0% crit"
+    # Rogue at base agi should have positive crit from DBC base value
+    rog_crit_low = melee_crit_chance(1, class_base_stat(CLASS_ROGUE, 1, 1), class_id=CLASS_ROGUE)
+    assert rog_crit_low > 0.0, f"Rogue L1 base agi should have positive crit, got {rog_crit_low}"
     rog_crit_high = melee_crit_chance(1, 200, class_id=CLASS_ROGUE)
     assert rog_crit_high > 0.0, "Rogue with 200 agi should have melee crit"
     print(f"  11q: Melee crit: Warrior(agi=20)={war_crit:.2f}%, "
