@@ -1,8 +1,8 @@
 """
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
-Observation space: Box(23,) — 17 base dims + 6 quest dims.
-Action space: Discrete(12) — 11 base actions + 1 quest action.
+Observation space: Box(28,) — 22 base dims + 6 quest dims.
+Action space: Discrete(17) — 16 base actions + 1 quest action.
 Runs ~1000x faster than the real server.
 
 Usage:
@@ -45,10 +45,10 @@ class WoWSimEnv(gym.Env):
     """
     Simulated WoW environment with optional quest system.
 
-    Observation Space: Box(23,) — 17 base + 6 quest dimensions
-    Action Space: Discrete(12) — 11 base actions + quest interact
+    Observation Space: Box(28,) — 22 base + 6 quest dimensions
+    Action Space: Discrete(17) — 16 base actions + quest interact
 
-    Quest dimensions (indices 17-22) are always present but zero when
+    Quest dimensions (indices 22-27) are always present but zero when
     quests are disabled, keeping the interface stable for model transfer.
     """
 
@@ -60,9 +60,9 @@ class WoWSimEnv(gym.Env):
                  log_interval: int = 1, enable_quests: bool = False):
         super().__init__()
 
-        self.action_space = spaces.Discrete(12)
+        self.action_space = spaces.Discrete(17)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(23,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(28,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -281,7 +281,7 @@ class WoWSimEnv(gym.Env):
                             break
                     override_action = 0  # wait for target
 
-            elif is_casting and action in [1, 2, 3, 5, 6, 7, 9, 10, 11]:
+            elif is_casting and action in [1, 2, 3, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16]:
                 override_action = 0
             elif target_dead and dist_to_target < 3.0:
                 override_action = 7  # loot
@@ -294,10 +294,18 @@ class WoWSimEnv(gym.Env):
                 override_action = 0  # don't re-target in combat
             elif action == 6 and hp_pct > 0.85:
                 override_action = 0  # block heal at high HP
-            elif action == 10 and p.shield_remaining > 0:
-                override_action = 0  # block shield if already shielded
+            elif action == 13 and hp_pct > 0.85:
+                override_action = 0  # block Renew at high HP
+            elif action == 10 and (p.shield_remaining > 0 or p.shield_cooldown > 0):
+                override_action = 0  # block shield if already shielded or Weakened Soul
             elif action == 9 and self.sim.target and self.sim.target.dot_remaining > 0:
                 override_action = 0  # block SW:Pain if already active
+            elif action == 13 and p.hot_remaining > 0:
+                override_action = 0  # block Renew if already active
+            elif action == 15 and p.inner_fire_remaining > 0:
+                override_action = 0  # block Inner Fire if already active
+            elif action == 16 and p.fortitude_remaining > 0:
+                override_action = 0  # block Fortitude if already active
 
         # ─── Execute Action ─────────────────────────────────────────
         if override_action == 0:
@@ -324,6 +332,16 @@ class WoWSimEnv(gym.Env):
             self.sim.do_cast_pw_shield()
         elif override_action == 11:
             self.sim.do_quest_interact()
+        elif override_action == 12:
+            self.sim.do_cast_mind_blast()
+        elif override_action == 13:
+            self.sim.do_cast_renew()
+        elif override_action == 14:
+            self.sim.do_cast_holy_fire()
+        elif override_action == 15:
+            self.sim.do_cast_inner_fire()
+        elif override_action == 16:
+            self.sim.do_cast_fortitude()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -526,7 +544,7 @@ class WoWSimEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _build_obs(self, data: dict) -> np.ndarray:
-        """Build observation vector — 17 base dims + 6 quest dims = 23 total."""
+        """Build observation vector — 22 base dims + 6 quest dims = 28 total."""
         max_hp = max(1, data['max_hp'])
         hp_pct = data['hp'] / max_hp
         mana_pct = data['power'] / max(1, data['max_power'])
@@ -560,8 +578,13 @@ class WoWSimEnv(gym.Env):
 
         has_shield = 1.0 if data.get('has_shield') == 'true' else 0.0
         target_has_sw_pain = 1.0 if data.get('target_has_sw_pain') == 'true' else 0.0
+        has_renew = 1.0 if data.get('has_renew') == 'true' else 0.0
+        has_inner_fire = 1.0 if data.get('has_inner_fire') == 'true' else 0.0
+        has_fortitude = 1.0 if data.get('has_fortitude') == 'true' else 0.0
+        mind_blast_ready = 1.0 if data.get('mind_blast_ready') == 'true' else 0.0
+        target_has_holy_fire = 1.0 if data.get('target_has_holy_fire') == 'true' else 0.0
 
-        # Quest observations (dims 17-22) — always present, zero when quests disabled
+        # Quest observations (dims 22-27) — always present, zero when quests disabled
         quest_obs = self._compute_quest_obs(data)
 
         return np.array([
@@ -571,18 +594,20 @@ class WoWSimEnv(gym.Env):
             closest_mob_dist, closest_mob_angle, num_attackers,
             target_level, player_level,
             has_shield, target_has_sw_pain,
+            has_renew, has_inner_fire, has_fortitude,
+            mind_blast_ready, target_has_holy_fire,
             *quest_obs,
         ], dtype=np.float32)
 
     def _compute_quest_obs(self, data: dict):
         """Compute quest observation features (6 dimensions).
 
-        [17] has_active_quest        (0/1)
-        [18] quest_progress          (0-1, ratio of completed objectives)
-        [19] quest_npc_nearby        (0/1, relevant quest NPC exists)
-        [20] quest_npc_distance / 40 (0-1, normalized distance)
-        [21] quest_npc_angle / pi    (-1 to 1, relative angle)
-        [22] quests_completed / 10   (0-inf, total completed this episode)
+        [22] has_active_quest        (0/1)
+        [23] quest_progress          (0-1, ratio of completed objectives)
+        [24] quest_npc_nearby        (0/1, relevant quest NPC exists)
+        [25] quest_npc_distance / 40 (0-1, normalized distance)
+        [26] quest_npc_angle / pi    (-1 to 1, relative angle)
+        [27] quests_completed / 10   (0-inf, total completed this episode)
         """
         if not self._quest_db:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
