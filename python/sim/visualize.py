@@ -5,9 +5,22 @@ Opens an interactive window at startup.  Use the episode slider to browse
 through episodes, checkboxes to filter bots, scroll-wheel to zoom, and
 right-click-drag to pan.  A separate log window can be toggled on/off.
 
+By default only the top 5 episodes (by kills) are shown.  If the log
+directory contains subdirectories with .jsonl files, each subdirectory is
+treated as a separate training run and a run selector is shown.
+
 Usage:
     # Interactive viewer from training logs (primary mode)
     python -m sim.visualize --log-dir logs/sim_episodes/
+
+    # Show top 10 episodes by kills instead of default 5
+    python -m sim.visualize --log-dir logs/sim_episodes/ --top-kills 10
+
+    # Show all episodes (no filter)
+    python -m sim.visualize --log-dir logs/sim_episodes/ --top-kills 0
+
+    # Multi-run: point to parent dir with run subdirs
+    python -m sim.visualize --log-dir logs/all_runs/
 
     # Filter by bot / limit episodes
     python -m sim.visualize --log-dir logs/sim_episodes/ --bot SimBot0 --last 3
@@ -34,7 +47,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
-from matplotlib.widgets import Slider, CheckButtons, Button
+from matplotlib.widgets import Slider, CheckButtons, Button, RadioButtons
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(THIS_DIR)
@@ -187,6 +200,45 @@ def load_recordings_from_logs(log_dir: str, bot_name: str = None,
         recordings.append(rec)
 
     return recordings
+
+
+# ─── Run Discovery ────────────────────────────────────────────────────────
+
+def discover_runs(log_dir: str) -> dict:
+    """Discover training runs from a log directory.
+
+    If log_dir contains subdirectories with .jsonl files, each subdir is a
+    run.  If log_dir itself contains .jsonl files, it is treated as a single
+    run (named after the directory).
+
+    Returns:
+        Dict mapping run_name -> directory_path, sorted alphabetically.
+    """
+    runs = {}
+
+    # Check subdirectories first
+    if os.path.isdir(log_dir):
+        for entry in sorted(os.listdir(log_dir)):
+            sub = os.path.join(log_dir, entry)
+            if os.path.isdir(sub):
+                if any(f.endswith(".jsonl") for f in os.listdir(sub)):
+                    runs[entry] = sub
+
+    # If no subdirs with logs, treat the dir itself as a single run
+    if not runs and os.path.isdir(log_dir):
+        if any(f.endswith(".jsonl") for f in os.listdir(log_dir)):
+            name = os.path.basename(os.path.normpath(log_dir))
+            runs[name] = log_dir
+
+    return runs
+
+
+def _top_kills_recordings(recordings: list, top_n: int = 5) -> list:
+    """Return only the top N recordings sorted by total_kills descending."""
+    if top_n <= 0 or len(recordings) <= top_n:
+        return recordings
+    sorted_recs = sorted(recordings, key=lambda r: r.total_kills, reverse=True)
+    return sorted_recs[:top_n]
 
 
 # ─── Snapshot mobs from live sim ─────────────────────────────────────────
@@ -542,10 +594,29 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
 # ─── Interactive Viewer ──────────────────────────────────────────────────
 
 class InteractiveViewer:
-    """Interactive map viewer with episode slider, bot filters, zoom, and
-    a toggleable log window."""
+    """Interactive map viewer with episode slider, bot filters, zoom, run
+    selector, and a toggleable log window."""
 
-    def __init__(self, recordings, title="WoW Sim \u2014 Interactive Map"):
+    def __init__(self, recordings, title="WoW Sim \u2014 Interactive Map",
+                 runs=None, top_kills=5, bot_name=None):
+        """
+        Args:
+            recordings: List of BotRecording for the initially selected run.
+            title: Window title.
+            runs: Dict {run_name: dir_path} for run selection. None = no selector.
+            top_kills: Show only top N episodes by kills (0 = all).
+            bot_name: Bot name filter for loading (passed to load_recordings_from_logs).
+        """
+        self._runs = runs or {}
+        self._top_kills = top_kills
+        self._bot_name_filter = bot_name
+        self._run_names = sorted(self._runs.keys()) if self._runs else []
+        self._current_run_idx = 0
+
+        # Apply top-kills filter
+        if top_kills > 0:
+            recordings = _top_kills_recordings(recordings, top_kills)
+
         self.all_recordings = recordings
         self.title = title
 
@@ -621,17 +692,43 @@ class InteractiveViewer:
         self.zoom_slider.valtext.set_color("white")
         self.zoom_slider.on_changed(self._on_zoom_changed)
 
+        # ── Run selector (right side, top) ───────────────────────────
+        self._run_radio = None
+        right_top = 0.88
+        if len(self._run_names) > 1:
+            n_runs = len(self._run_names)
+            radio_h = min(max(0.04 * n_runs, 0.08), 0.35)
+            ax_run_label = self.fig.text(
+                0.89, right_top + 0.01, "Run:",
+                color="white", fontsize=10, fontweight="bold",
+                ha="center")
+            self._run_label_text = ax_run_label
+            ax_run = self.fig.add_axes(
+                [0.80, right_top - radio_h, 0.18, radio_h])
+            ax_run.set_facecolor("#1a1a2e")
+            for spine in ax_run.spines.values():
+                spine.set_color("#444")
+            self._run_radio = RadioButtons(
+                ax_run, self._run_names, active=self._current_run_idx)
+            for lbl in self._run_radio.labels:
+                lbl.set_color("white")
+                lbl.set_fontsize(8)
+            self._run_radio.on_clicked(self._on_run_changed)
+            right_top = right_top - radio_h - 0.03
+        else:
+            right_top = 0.88
+
         # ── Bot filter checkboxes (right side) ───────────────────────
         n_bots = len(self.bot_names)
-        check_h = min(max(0.045 * n_bots, 0.10), 0.60)
-        check_top = 0.84
-        ax_check = self.fig.add_axes(
+        check_h = min(max(0.045 * n_bots, 0.10), 0.40)
+        check_top = right_top
+        self._ax_check = self.fig.add_axes(
             [0.80, check_top - check_h, 0.18, check_h])
-        ax_check.set_facecolor("#1a1a2e")
-        for spine in ax_check.spines.values():
+        self._ax_check.set_facecolor("#1a1a2e")
+        for spine in self._ax_check.spines.values():
             spine.set_color("#444")
         self.check_buttons = CheckButtons(
-            ax_check, self.bot_names, [True] * n_bots)
+            self._ax_check, self.bot_names, [True] * n_bots)
         for lbl in self.check_buttons.labels:
             lbl.set_color("white")
             lbl.set_fontsize(9)
@@ -675,6 +772,51 @@ class InteractiveViewer:
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
     # ── Callbacks ────────────────────────────────────────────────────
+
+    def _on_run_changed(self, label):
+        """Switch to a different training run."""
+        if label not in self._runs:
+            return
+        idx = self._run_names.index(label)
+        if idx == self._current_run_idx:
+            return
+        self._current_run_idx = idx
+        run_dir = self._runs[label]
+
+        # Load new recordings
+        recordings = load_recordings_from_logs(
+            run_dir, bot_name=self._bot_name_filter)
+        if self._top_kills > 0:
+            recordings = _top_kills_recordings(recordings, self._top_kills)
+
+        self.all_recordings = recordings
+        self.bot_names = sorted(set(r.name for r in recordings))
+        self._group_by_episode()
+        self.visible_bots = set(self.bot_names)
+        self.current_ep_idx = 0
+        self._global_bounds = _get_map_bounds(recordings)
+        self._first_draw = True
+
+        # Update episode slider range
+        max_ep = max(self.num_episodes - 1, 0)
+        self.ep_slider.valmin = 0
+        self.ep_slider.valmax = max(max_ep, 1)
+        self.ep_slider.set_val(0)
+
+        # Rebuild bot checkboxes
+        self._ax_check.clear()
+        self._ax_check.set_facecolor("#1a1a2e")
+        for spine in self._ax_check.spines.values():
+            spine.set_color("#444")
+        n_bots = len(self.bot_names)
+        self.check_buttons = CheckButtons(
+            self._ax_check, self.bot_names, [True] * n_bots)
+        for lbl in self.check_buttons.labels:
+            lbl.set_color("white")
+            lbl.set_fontsize(9)
+        self.check_buttons.on_clicked(self._on_bot_toggled)
+
+        self._draw_map()
 
     def _on_episode_changed(self, val):
         self.current_ep_idx = int(val)
@@ -903,9 +1045,15 @@ class InteractiveViewer:
         else:
             ep_label = "No Data"
         n_vis = len(visible)
+        run_label = ""
+        if self._run_names:
+            run_label = f"  [{self._run_names[self._current_run_idx]}]"
+        top_label = ""
+        if self._top_kills > 0:
+            top_label = f"  (Top {self._top_kills} by kills)"
         self.ax_map.set_title(
-            f"{self.title}  \u2014  {ep_label}  ({n_vis} bot"
-            f"{'s' if n_vis != 1 else ''})",
+            f"{self.title}{run_label}  \u2014  {ep_label}{top_label}  "
+            f"({n_vis} bot{'s' if n_vis != 1 else ''})",
             color="white", fontsize=13, fontweight="bold", pad=8)
         self.ax_map.set_xlabel(
             "Y (East \u2192 West)", color="white", fontsize=10)
@@ -1034,11 +1182,16 @@ def main():
     # Primary mode: read from logs
     parser.add_argument("--log-dir", type=str,
                         default=r"C:\wowstuff\WoWKI_serv\python\sim_episodes",
-                        help="Path to episode log directory (JSONL files)")
+                        help="Path to episode log directory (JSONL files). "
+                             "If it contains subdirs with .jsonl files, each "
+                             "subdir is treated as a separate run.")
     parser.add_argument("--bot", type=str, default=None,
                         help="Show only this bot's episodes (default: all)")
     parser.add_argument("--last", type=int, default=None,
                         help="Show only the last N episodes per bot")
+    parser.add_argument("--top-kills", type=int, default=5,
+                        help="Show only top N episodes by kills (default: 5, "
+                             "0 = show all)")
 
     # Fallback mode: run sim directly
     parser.add_argument("--run", action="store_true",
@@ -1097,32 +1250,52 @@ def main():
             print(f">>> Filtering bot: {args.bot} <<<")
         if args.last:
             print(f">>> Last {args.last} episodes per bot <<<")
+        top_n = args.top_kills
+        if top_n > 0:
+            print(f">>> Showing top {top_n} episodes by kills <<<")
 
-        recordings = load_recordings_from_logs(
-            args.log_dir, bot_name=args.bot, last_n=args.last)
-
-        if not recordings:
+        # Discover runs (subdirs with .jsonl files)
+        runs = discover_runs(args.log_dir)
+        if not runs:
             print("No episodes found! Make sure training was run with "
                   "--log-dir.")
             print(f"Expected JSONL files in: {args.log_dir}")
             sys.exit(1)
 
-        print(f">>> Loaded {len(recordings)} episodes <<<")
-        for rec in recordings:
+        run_names = sorted(runs.keys())
+        print(f">>> Found {len(runs)} run(s): {', '.join(run_names)} <<<")
+
+        # Load the first run initially
+        first_run_dir = runs[run_names[0]]
+        recordings = load_recordings_from_logs(
+            first_run_dir, bot_name=args.bot, last_n=args.last)
+
+        if not recordings:
+            print(f"No episodes in run '{run_names[0]}'!")
+            sys.exit(1)
+
+        # Apply top-kills filter for printing
+        filtered = _top_kills_recordings(recordings, top_n) if top_n > 0 else recordings
+
+        print(f">>> Loaded {len(recordings)} episodes, showing "
+              f"{len(filtered)} (top by kills) <<<")
+        for rec in filtered:
             print(f"  {rec.name} ep{rec.episode}: {rec.total_kills} kills, "
                   f"Lv{rec.final_level}, {rec.total_xp} XP, "
                   f"{len(rec.trail)} trail points")
 
         # Static PNG export if requested
         if args.output:
-            n_eps = len(recordings)
-            plot_map(recordings,
-                     title=f"WoW Sim \u2014 {n_eps} Episodes from Logs",
+            n_eps = len(filtered)
+            plot_map(filtered,
+                     title=f"WoW Sim \u2014 Top {n_eps} Episodes by Kills",
                      output=args.output, show=False)
 
         # Interactive viewer (default)
         if not args.no_show:
-            viewer = InteractiveViewer(recordings)
+            viewer = InteractiveViewer(
+                recordings, runs=runs, top_kills=top_n,
+                bot_name=args.bot)
             viewer.show()
         elif not args.output:
             print("Nothing to do: --no-show without --output.")
