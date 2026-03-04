@@ -300,18 +300,27 @@ def test_level_system():
     assert player_max_mana(1) == 123, f"Mana(1) expected 123, got {player_max_mana(1)}"
     # player_max_mana(2) = BaseMana(79) + int_mana(22) = 79 + 20 + 42 (non-linear from CSV) = 141
     assert player_max_mana(2) == 141, f"Mana(2) expected 141, got {player_max_mana(2)}"
-    # Smite/Heal base damage unchanged (no SP)
+    # Smite/Heal base damage from DBC (Rank 1 with RealPointsPerLevel scaling)
+    # Smite: BasePoints=12, DieSides=5, RPL=0.5, MaxLevel=6
     min_d, max_d = smite_damage(1)
-    assert (min_d, max_d) == (13, 17)
+    assert (min_d, max_d) == (13, 17), f"Smite(1) expected (13,17), got ({min_d},{max_d})"
+    # L2: bonus = int(0.5 * (2-1)) = 0, so still 13-17
     min_d, max_d = smite_damage(2)
-    assert (min_d, max_d) == (23, 27)
+    assert (min_d, max_d) == (13, 17), f"Smite(2) expected (13,17), got ({min_d},{max_d})"
+    # L6 (MaxLevel): bonus = int(0.5 * 5) = 2
+    min_d, max_d = smite_damage(6)
+    assert (min_d, max_d) == (15, 19), f"Smite(6) expected (15,19), got ({min_d},{max_d})"
+    # L10 (above MaxLevel, capped): same as L6
+    min_d_10, max_d_10 = smite_damage(10)
+    assert (min_d_10, max_d_10) == (15, 19), f"Smite(10) should cap at MaxLevel=6"
+    # Lesser Heal: BasePoints=45, DieSides=11, RPL=0.9, MaxLevel=3
     min_h, max_h = heal_amount(1)
-    assert (min_h, max_h) == (46, 56)
+    assert (min_h, max_h) == (46, 56), f"Heal(1) expected (46,56), got ({min_h},{max_h})"
     min_h, max_h = heal_amount(2)
-    assert (min_h, max_h) == (51, 61)
-    # Spell functions with SP scaling
+    assert (min_h, max_h) == (46, 56), f"Heal(2) expected (46,56), got ({min_h},{max_h})"
+    # Spell functions with SP scaling (using spell_bonus_data coefficients)
     min_d_sp, max_d_sp = smite_damage(1, spell_power=100)
-    sp_bonus = int(100 * SP_COEFF_SMITE)  # 71
+    sp_bonus = int(100 * SP_COEFF_SMITE)  # 12
     assert (min_d_sp, max_d_sp) == (13 + sp_bonus, 17 + sp_bonus), \
         f"Smite+SP expected ({13+sp_bonus},{17+sp_bonus}), got ({min_d_sp},{max_d_sp})"
     print(f"  Stat scaling: HP, Mana, Smite, Heal, SP scaling ✓")
@@ -1374,16 +1383,18 @@ def test_attribute_system():
     print(f"  11f: Spirit mana regen: Priest={regen:.2f}/tick, +20spi={regen_bonus:.2f}/tick, "
           f"Mage={regen_mage:.2f}/tick ✓")
 
-    # --- Test 11g: Spell power scaling ---
-    # Smite: base (13,17) + SP*0.7143
-    d_min, d_max = smite_damage(1, spell_power=140)  # 140 * 0.7143 = 100
-    assert d_min == 113, f"Smite(1,SP=140) min expected 113, got {d_min}"
-    assert d_max == 117, f"Smite(1,SP=140) max expected 117, got {d_max}"
-    # Heal: base (46,56) + SP*0.8571
-    h_min, h_max = heal_amount(1, spell_power=140)  # 140*0.8571 = 119
-    assert h_min == 165, f"Heal(1,SP=140) min expected 165, got {h_min}"
+    # --- Test 11g: Spell power scaling (using spell_bonus_data coefficients) ---
+    # Smite: base (13,17) + SP*0.123
+    d_min, d_max = smite_damage(1, spell_power=140)  # 140 * 0.123 = 17
+    exp_sp = int(140 * SP_COEFF_SMITE)  # 17
+    assert d_min == 13 + exp_sp, f"Smite(1,SP=140) min expected {13+exp_sp}, got {d_min}"
+    assert d_max == 17 + exp_sp, f"Smite(1,SP=140) max expected {17+exp_sp}, got {d_max}"
+    # Heal: base (46,56) + SP*0.231
+    h_min, h_max = heal_amount(1, spell_power=140)  # 140*0.231 = 32
+    exp_h_sp = int(140 * SP_COEFF_HEAL)  # 32
+    assert h_min == 46 + exp_h_sp, f"Heal(1,SP=140) min expected {46+exp_h_sp}, got {h_min}"
     # SW:Pain: base 30 + SP*0.1833*6
-    swp = sw_pain_total(1, spell_power=100)  # 30 + 100*1.1 = 140
+    swp = sw_pain_total(1, spell_power=100)  # 30 + int(100*0.1833*6) = 30 + 109 = 139
     assert swp > 30, "SP should increase SW:Pain damage"
     # PW:Shield: base 44 + SP*0.8068
     pws = pw_shield_absorb(1, spell_power=100)  # 44 + 80 = 124
@@ -2706,6 +2717,162 @@ def test_eat_drink():
     print("  PASSED\n")
 
 
+def test_spell_learning():
+    """Test 17: Spell level gates, % mana costs, DBC-verified values."""
+    print("=== Test 17: Spell Learning & DBC Values ===")
+    from sim.formulas import (spell_mana_cost, base_mana_for_level,
+                              inner_fire_values, fortitude_stamina_bonus,
+                              holy_fire_damage, holy_fire_dot_total,
+                              mind_blast_damage, renew_total_heal)
+    from sim.constants import SPELL_LEVEL_REQ, SPELL_MANA_PCT
+
+    # --- 17a: Level requirements match trainer_spell.csv ---
+    expected_levels = {585: 1, 2050: 1, 1243: 1, 589: 4, 17: 6,
+                       139: 8, 8092: 10, 588: 12, 14914: 20}
+    for spell_id, level in expected_levels.items():
+        assert SPELL_LEVEL_REQ[spell_id] == level, \
+            f"Spell {spell_id} level req should be {level}, got {SPELL_LEVEL_REQ[spell_id]}"
+        assert SPELLS[spell_id].level_req == level, \
+            f"SpellDef {spell_id} level_req should be {level}"
+    print(f"  17a: Level requirements: {dict(sorted(expected_levels.items(), key=lambda x: x[1]))} ✓")
+
+    # --- 17b: % mana costs from Spell.dbc ---
+    expected_pct = {585: 9, 2050: 16, 589: 22, 17: 23, 1243: 27,
+                    139: 17, 8092: 17, 588: 14, 14914: 11}
+    for spell_id, pct in expected_pct.items():
+        assert SPELL_MANA_PCT[spell_id] == pct, \
+            f"Spell {spell_id} mana pct should be {pct}, got {SPELL_MANA_PCT[spell_id]}"
+    print(f"  17b: Mana cost percentages from DBC ✓")
+
+    # --- 17c: Actual mana costs at L1 (BaseMana=73) ---
+    bm = base_mana_for_level(1)
+    assert bm == 73, f"Priest BaseMana at L1 should be 73, got {bm}"
+    # Smite: 73 * 9 / 100 = 6
+    assert spell_mana_cost(585, 1) == 6, f"Smite mana@L1 should be 6"
+    # Lesser Heal: 73 * 16 / 100 = 11
+    assert spell_mana_cost(2050, 1) == 11, f"Lesser Heal mana@L1 should be 11"
+    # Mind Blast: 73 * 17 / 100 = 12
+    assert spell_mana_cost(8092, 1) == 12, f"Mind Blast mana@L1 should be 12"
+    print(f"  17c: Mana costs at L1 (BaseMana={bm}) verified ✓")
+
+    # --- 17d: Mana costs scale with level ---
+    bm10 = base_mana_for_level(10)
+    assert bm10 > bm, f"BaseMana should increase: L1={bm} < L10={bm10}"
+    cost_l1 = spell_mana_cost(585, 1)
+    cost_l10 = spell_mana_cost(585, 10)
+    assert cost_l10 > cost_l1, f"Smite cost should increase: L1={cost_l1} < L10={cost_l10}"
+    print(f"  17d: Mana scales: Smite L1={cost_l1}, L10={cost_l10} (BaseMana {bm}→{bm10}) ✓")
+
+    # --- 17e: Level gate blocks spells in combat_sim ---
+    sim = CombatSimulation(num_mobs=10, seed=42)
+    p = sim.player
+    assert p.level == 1
+
+    # Walk toward mobs and target one
+    for _ in range(50):
+        sim.do_move_forward()
+        sim.tick()
+    sim.do_target_nearest()
+    sim.tick()
+    # Even if no target, the level gate check comes first
+    # SW:Pain requires L4 — should fail at L1 (level check before target check)
+    result_swp = sim.do_cast_sw_pain()
+    assert result_swp is False, "SW:Pain should be blocked at L1 (needs L4)"
+    # Mind Blast requires L10 — should fail at L1
+    result_mb = sim.do_cast_mind_blast()
+    assert result_mb is False, "Mind Blast should be blocked at L1 (needs L10)"
+    # PW:Fortitude works at L1 (L1 req, self-cast, no target needed)
+    result_fort = sim.do_cast_fortitude()
+    assert result_fort is True, "PW:Fortitude should work at L1"
+    print(f"  17e: Level gate: SW:Pain/Mind Blast blocked at L1, Fort OK ✓")
+
+    # --- 17f: Level gate in action mask ---
+    env = WoWSimEnv(num_mobs=10, seed=42)
+    obs, _ = env.reset()
+    mask = env.action_masks()
+    # At L1: SW:Pain (action 9) should be masked (needs L4)
+    assert not mask[9], "SW:Pain (action 9) should be masked at L1"
+    # Shield (action 10) should be masked (needs L6)
+    assert not mask[10], "PW:Shield (action 10) should be masked at L1"
+    # Smite (action 5) — may be masked for other reasons (no target) but not level
+    # PW:Fortitude (action 16) is L1, should not be level-gated
+    # (may be masked if already active, but NOT for level)
+    print(f"  17f: Action mask level gates at L1: SW:Pain=masked, Shield=masked ✓")
+
+    # --- 17g: PW:Fortitude gives Stamina (not flat HP) ---
+    sim2 = CombatSimulation(num_mobs=5, seed=42)
+    p2 = sim2.player
+    sta_before = p2.total_stamina
+    hp_before = p2.max_hp
+    result = sim2.do_cast_fortitude()
+    assert result is True, "Fort should cast at L1"
+    sim2.tick()  # process GCD + instant spell
+    assert p2.fortitude_stamina_bonus == 3, \
+        f"Fort should give +3 Stamina, got {p2.fortitude_stamina_bonus}"
+    assert p2.total_stamina == sta_before + 3, \
+        f"Total stam should increase by 3: {sta_before} → {p2.total_stamina}"
+    assert p2.max_hp > hp_before, \
+        f"HP should increase from Stamina: {hp_before} → {p2.max_hp}"
+    print(f"  17g: PW:Fortitude: +3 Stamina, HP {hp_before}→{p2.max_hp} ✓")
+
+    # --- 17h: Inner Fire gives +315 Armor, NO spell power (R1) ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p3 = sim3.player
+    # Level up to 12 for Inner Fire
+    p3.level = 12
+    sim3.recalculate_stats()
+    armor_before = p3.total_armor
+    sp_before = p3.total_spell_power
+    sim3.do_cast_inner_fire()
+    sim3.tick()
+    armor_bonus, sp_bonus = inner_fire_values(12)
+    assert armor_bonus == 315, f"Inner Fire R1 armor should be 315, got {armor_bonus}"
+    assert sp_bonus == 0, f"Inner Fire R1 SP should be 0 (R1), got {sp_bonus}"
+    assert p3.total_armor >= armor_before + 315, \
+        f"Armor should increase by 315: {armor_before} → {p3.total_armor}"
+    assert p3.total_spell_power == sp_before, \
+        f"SP should not change from Inner Fire R1: {sp_before} → {p3.total_spell_power}"
+    print(f"  17h: Inner Fire R1: +315 Armor, +0 SP ✓")
+
+    # --- 17i: Holy Fire damage from DBC (102-128 direct, 21 DoT) ---
+    d_min, d_max = holy_fire_damage(20)  # L20 base (no SP)
+    assert d_min >= 102, f"Holy Fire min should be >=102, got {d_min}"
+    assert d_max >= 128, f"Holy Fire max should be >=128, got {d_max}"
+    dot = holy_fire_dot_total(20)
+    assert dot == 21, f"Holy Fire DoT total should be 21, got {dot}"
+    print(f"  17i: Holy Fire R1: {d_min}-{d_max} direct, {dot} DoT ✓")
+
+    # --- 17j: Mind Blast damage from DBC (RPL=0.6, MaxLevel=15) ---
+    # At L10: bonus = int(0.6 * 9) = 5, so 38+5+1=44 to 38+5+5=48
+    mb_min, mb_max = mind_blast_damage(10)  # L10, no SP
+    assert mb_min == 44, f"Mind Blast min@L10 should be 44, got {mb_min}"
+    assert mb_max == 48, f"Mind Blast max@L10 should be 48, got {mb_max}"
+    print(f"  17j: Mind Blast R1@L10: {mb_min}-{mb_max} ✓")
+
+    # --- 17k: Renew heal from DBC (45 total, no level scaling) ---
+    rn = renew_total_heal(8)  # L8, no SP
+    assert rn == 45, f"Renew total@L8 should be 45, got {rn}"
+    rn20 = renew_total_heal(20)  # L20, still 45 (no RPL)
+    assert rn20 == 45, f"Renew total@L20 should be 45 (no level scaling), got {rn20}"
+    print(f"  17k: Renew R1: {rn} heal (no level scaling) ✓")
+
+    # --- 17l: Buff durations (30min = 3600 ticks) ---
+    assert SPELLS[588].buff_duration == 3600, \
+        f"Inner Fire duration should be 3600 ticks, got {SPELLS[588].buff_duration}"
+    assert SPELLS[1243].buff_duration == 3600, \
+        f"Fortitude duration should be 3600 ticks, got {SPELLS[1243].buff_duration}"
+    print(f"  17l: Buff durations: Inner Fire=3600, Fort=3600 ticks (30min) ✓")
+
+    # --- 17m: Holy Fire DoT: 7 ticks @ 1s interval = 14 ticks total ---
+    hf_spell = SPELLS[14914]
+    assert hf_spell.dot_ticks == 14, f"HF dot_ticks should be 14, got {hf_spell.dot_ticks}"
+    assert hf_spell.dot_interval == 2, f"HF dot_interval should be 2 (1s), got {hf_spell.dot_interval}"
+    assert hf_spell.dot_damage == 21, f"HF dot_damage should be 21, got {hf_spell.dot_damage}"
+    print(f"  17m: Holy Fire DoT: {hf_spell.dot_damage} over {hf_spell.dot_ticks} ticks ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -2723,4 +2890,5 @@ if __name__ == "__main__":
     test_combat_resolution()
     test_action_masking()
     test_eat_drink()
+    test_spell_learning()
     print("=== ALL TESTS PASSED ===")

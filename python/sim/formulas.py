@@ -482,62 +482,135 @@ def spirit_hp_regen(level: int, total_spirit: int,
 
 # ─── Spell Damage / Heal Formulas ────────────────────────────────────
 
+def base_mana_for_level(level: int, class_id: int = CLASS_PRIEST) -> int:
+    """Get class BaseMana at given level from player_class_stats.csv.
+
+    Used for computing % mana costs (Spell.dbc ManaCostPercentage).
+    """
+    tbl = _c.PLAYER_CLASS_LEVEL_STATS
+    if tbl is not None:
+        key = (class_id, min(level, 80))
+        if key in tbl:
+            return tbl[key][1]  # BaseMana column
+    # Fallback: approximate from CLASS_BASE_HP_MANA
+    base_mana_data = _c.CLASS_BASE_HP_MANA.get(class_id, _c.CLASS_BASE_HP_MANA[CLASS_PRIEST])
+    mana_per_lvl = _c.CLASS_MANA_PER_LEVEL.get(class_id, 5)
+    return base_mana_data[1] + (level - 1) * mana_per_lvl
+
+
+def spell_mana_cost(spell_id: int, level: int,
+                    class_id: int = CLASS_PRIEST) -> int:
+    """Compute actual mana cost = BaseMana * ManaCostPct / 100.
+
+    Uses SPELL_MANA_PCT from Spell.dbc. Falls back to SpellDef.mana_cost
+    when pct is 0.
+    """
+    pct = _c.SPELL_MANA_PCT.get(spell_id, 0)
+    if pct > 0:
+        return int(base_mana_for_level(level, class_id) * pct / 100)
+    # Fallback: use flat cost from SpellDef
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    return spell.mana_cost if spell else 0
+
+
 def smite_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Smite damage range: base (13-17) + 10 per level + SP*coeff."""
-    bonus = (level - 1) * 10
+    """Smite damage range. DBC: BasePoints=12, DieSides=5, RealPointsPerLevel=0.5.
+
+    Damage = (12 + floor(0.5 * (level-1)) + 1) to (12 + floor(0.5 * (level-1)) + 5)
+           + SP * SP_COEFF_SMITE. Capped at MaxLevel=6 for per-level scaling.
+    """
+    rpl_levels = min(level, 6) - 1  # RealPointsPerLevel capped at MaxLevel
+    bonus = int(0.5 * rpl_levels)
     sp_bonus = int(spell_power * SP_COEFF_SMITE)
-    return (13 + bonus + sp_bonus, 17 + bonus + sp_bonus)
+    base_lo = 12 + bonus + 1  # BasePoints + floor(RPL) + 1
+    base_hi = 12 + bonus + 5  # BasePoints + floor(RPL) + DieSides
+    return (base_lo + sp_bonus, base_hi + sp_bonus)
 
 
 def heal_amount(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Lesser Heal range: base (46-56) + 5 per level + SP*coeff."""
-    bonus = (level - 1) * 5
+    """Lesser Heal range. DBC: BasePoints=45, DieSides=11, RPL=0.9, MaxLevel=3."""
+    rpl_levels = min(level, 3) - 1
+    bonus = int(0.9 * rpl_levels)
     sp_bonus = int(spell_power * SP_COEFF_HEAL)
-    return (46 + bonus + sp_bonus, 56 + bonus + sp_bonus)
+    return (45 + bonus + 1 + sp_bonus, 45 + bonus + 11 + sp_bonus)
 
 
 def mind_blast_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Mind Blast damage range: base (39-43) + 12 per level + SP*coeff."""
-    bonus = (level - 1) * 12
+    """Mind Blast damage range. DBC: BasePoints=38, DieSides=5, RPL=0.6, MaxLevel=15."""
+    rpl_levels = min(level, 15) - 1
+    bonus = int(0.6 * rpl_levels)
     sp_bonus = int(spell_power * SP_COEFF_MIND_BLAST)
-    return (39 + bonus + sp_bonus, 43 + bonus + sp_bonus)
+    return (38 + bonus + 1 + sp_bonus, 38 + bonus + 5 + sp_bonus)
 
 
 def renew_total_heal(level: int, spell_power: int = 0) -> int:
-    """Renew total HoT: base 45 + 8 per level + SP*coeff (total over 5 ticks)."""
-    return 45 + (level - 1) * 8 + int(spell_power * SP_COEFF_RENEW_TICK * 5)
+    """Renew total HoT. DBC: 9/tick x5 ticks = 45 base (RPL=0, no level scaling).
+
+    SP bonus = SP_COEFF_RENEW_TICK * 5 ticks.
+    """
+    return 45 + int(spell_power * SP_COEFF_RENEW_TICK * 5)
 
 
 def holy_fire_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Holy Fire direct damage: base (15-20) + 10 per level + SP*coeff."""
-    bonus = (level - 1) * 10
+    """Holy Fire direct damage. DBC: BasePoints=101, DieSides=27, RPL=1.5, MaxLevel=24."""
+    rpl_levels = min(level, 24) - 1
+    bonus = int(1.5 * rpl_levels)
     sp_bonus = int(spell_power * SP_COEFF_HOLY_FIRE)
-    return (15 + bonus + sp_bonus, 20 + bonus + sp_bonus)
+    return (101 + bonus + 1 + sp_bonus, 101 + bonus + 27 + sp_bonus)
 
 
 def holy_fire_dot_total(level: int, spell_power: int = 0) -> int:
-    """Holy Fire DoT total: base 12 + 5 per level + SP*coeff (2 ticks)."""
-    return 12 + (level - 1) * 5 + int(spell_power * SP_COEFF_HOLY_FIRE_DOT_TICK * 2)
+    """Holy Fire DoT total. DBC: 3/tick x7 ticks = 21 base.
+
+    SP bonus = SP_COEFF_HOLY_FIRE_DOT_TICK * 7 ticks.
+    """
+    return 21 + int(spell_power * SP_COEFF_HOLY_FIRE_DOT_TICK * 7)
 
 
 def sw_pain_total(level: int, spell_power: int = 0) -> int:
-    """SW:Pain total DoT damage: base 30 + SP*coeff (6 ticks)."""
+    """SW:Pain total DoT damage. DBC: 5/tick x6 ticks = 30 base.
+
+    SP bonus = SP_COEFF_SW_PAIN_TICK * 6 ticks.
+    """
     return 30 + int(spell_power * SP_COEFF_SW_PAIN_TICK * 6)
 
 
 def pw_shield_absorb(level: int, spell_power: int = 0) -> int:
-    """PW:Shield absorb amount: base 44 + SP*coeff."""
-    return 44 + int(spell_power * SP_COEFF_PW_SHIELD)
+    """PW:Shield absorb. DBC: BasePoints=43, DieSides=1, RPL=0.8, MaxLevel=11.
+
+    Absorb = 44 + floor(0.8 * (min(level,11)-1)) + SP*coeff.
+    """
+    rpl_levels = min(level, 11) - 1
+    bonus = int(0.8 * rpl_levels)
+    return 44 + bonus + int(spell_power * SP_COEFF_PW_SHIELD)
 
 
 def inner_fire_values(level: int) -> tuple[int, int]:
-    """Inner Fire: (armor, spell_power_bonus). Scales with level."""
-    return (10 + (level - 1) * 3, 2 + (level - 1) * 1)
+    """Inner Fire R1 from DBC: +315 Armor, NO spell power bonus.
+
+    DBC: BasePoints=314, DieSides=1, AuraName=22 (MOD_RESISTANCE), MiscValue=1 (Armor).
+    R1 has no spell power component (SP bonus starts at higher ranks).
+    Returns (armor_bonus, spell_power_bonus).
+    """
+    return (315, 0)
 
 
 def fortitude_hp_bonus(level: int) -> int:
-    """PW:Fortitude HP bonus: base 20 + 8 per level gained."""
-    return 20 + (level - 1) * 8
+    """Legacy: flat HP bonus. Kept for backward compat but no longer used.
+
+    PW:Fortitude now gives Stamina via fortitude_stamina_bonus().
+    """
+    return 0
+
+
+def fortitude_stamina_bonus(level: int) -> int:
+    """PW:Fortitude R1 Stamina bonus from DBC.
+
+    DBC: BasePoints=2, DieSides=1, AuraName=29 (MOD_STAT), MiscValue=2 (STAMINA).
+    +3 Stamina at all levels (Rank 1 has no per-level scaling, RPL=0).
+    """
+    return 3
 
 
 # ─── Combat Resolution Formulas (WotLK attack table) ─────────────────

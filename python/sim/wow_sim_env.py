@@ -33,6 +33,7 @@ import random
 from typing import Optional
 
 from sim.combat_sim import CombatSimulation, SPELLS
+from sim.formulas import spell_mana_cost
 
 # Reward per successfully looted item, indexed by WoW item quality
 QUALITY_LOOT_REWARD = {
@@ -238,13 +239,19 @@ class WoWSimEnv(gym.Env):
         for spell_id, action_id in self._SPELL_ACTION.items():
             spell = SPELLS[spell_id]
 
+            # Level gate: spell not yet learned
+            if p.level < spell.level_req:
+                mask[action_id] = False
+                continue
+
             # GCD blocks all spells
             if gcd_blocked:
                 mask[action_id] = False
                 continue
 
-            # Mana check
-            if p.mana < spell.mana_cost:
+            # Mana check (% of BaseMana from Spell.dbc)
+            cost = spell_mana_cost(spell_id, p.level, p.class_id)
+            if p.mana < cost:
                 mask[action_id] = False
                 continue
 

@@ -59,14 +59,17 @@ from sim.constants import (
     SP_COEFF_SMITE, SP_COEFF_HEAL, SP_COEFF_MIND_BLAST,
     SP_COEFF_SW_PAIN_TICK, SP_COEFF_PW_SHIELD, SP_COEFF_RENEW_TICK,
     SP_COEFF_HOLY_FIRE, SP_COEFF_HOLY_FIRE_DOT_TICK,
+    SPELL_LEVEL_REQ, SPELL_MANA_PCT,
 )
 
 from sim.formulas import (
     _rating_to_pct,
     class_base_stat, player_max_hp, player_max_mana,
+    base_mana_for_level, spell_mana_cost,
     smite_damage, heal_amount, mind_blast_damage,
     renew_total_heal, holy_fire_damage, holy_fire_dot_total,
-    sw_pain_total, pw_shield_absorb, inner_fire_values, fortitude_hp_bonus,
+    sw_pain_total, pw_shield_absorb, inner_fire_values,
+    fortitude_hp_bonus, fortitude_stamina_bonus,
     spell_crit_chance, melee_crit_chance, ranged_crit_chance,
     melee_haste_pct, ranged_haste_pct, spell_haste_pct,
     dodge_chance, parry_chance, block_chance,
@@ -567,17 +570,19 @@ class CombatSimulation:
         cls = p.class_id
         self.recalculate_gear_stats()
 
-        # ─── Primary stat totals (base + gear) ──────────────────────
+        # ─── Primary stat totals (base + gear + buffs) ───────────────
         p.total_strength = class_base_stat(cls, 0, p.level) + p.gear_strength
         p.total_agility = class_base_stat(cls, 1, p.level) + p.gear_agility
-        p.total_stamina = class_base_stat(cls, 2, p.level) + p.gear_stamina
+        # PW:Fortitude adds Stamina (DBC: AuraName=29 MOD_STAT, MiscValue=2)
+        fort_sta = p.fortitude_stamina_bonus if p.fortitude_remaining > 0 else 0
+        p.total_stamina = class_base_stat(cls, 2, p.level) + p.gear_stamina + fort_sta
         p.total_intellect = class_base_stat(cls, 3, p.level) + p.gear_intellect
         p.total_spirit = class_base_stat(cls, 4, p.level) + p.gear_spirit
 
         # ─── Max HP (preserve ratio) ────────────────────────────────
         old_max_hp = max(p.max_hp, 1)
-        fort_bonus = p.fortitude_hp_bonus if p.fortitude_remaining > 0 else 0
-        p.max_hp = player_max_hp(p.level, p.gear_stamina, p.gear_bonus_hp, cls) + fort_bonus
+        p.max_hp = player_max_hp(p.level, p.gear_stamina + fort_sta,
+                                 p.gear_bonus_hp, cls)
         hp_ratio = p.hp / old_max_hp
         p.hp = max(1, int(hp_ratio * p.max_hp))
 
@@ -1366,7 +1371,15 @@ class CombatSimulation:
         spell = SPELLS.get(spell_id)
         if spell is None:
             return False
-        if self.player.mana < spell.mana_cost:
+
+        # Level gate: spell not yet learned
+        if self.player.level < spell.level_req:
+            return False
+
+        # Mana cost: % of BaseMana (from Spell.dbc ManaCostPercentage)
+        mana_cost = spell_mana_cost(spell_id, self.player.level,
+                                    self.player.class_id)
+        if self.player.mana < mana_cost:
             return False
 
         # Spell-specific cooldown check
@@ -1404,8 +1417,8 @@ class CombatSimulation:
         if spell_id == 1243 and self.player.fortitude_remaining > 0:
             return False
 
-        # Spend mana
-        self.player.mana -= spell.mana_cost
+        # Spend mana (% of BaseMana)
+        self.player.mana -= mana_cost
 
         # GCD
         self.player.gcd_remaining = spell.gcd_ticks
@@ -1537,12 +1550,16 @@ class CombatSimulation:
             self.player.inner_fire_spellpower = sp_buff
             self.recalculate_stats()  # SP changed
 
-        elif spell_id == 1243:  # PW:Fortitude — max HP buff (no miss)
-            bonus = fortitude_hp_bonus(self.player.level)
+        elif spell_id == 1243:  # PW:Fortitude — Stamina buff (DBC: MOD_STAT)
+            sta_bonus = fortitude_stamina_bonus(self.player.level)
             self.player.fortitude_remaining = spell.buff_duration
-            self.player.fortitude_hp_bonus = bonus
-            self.recalculate_stats()  # HP changed
-            self.player.hp = min(self.player.hp + bonus, self.player.max_hp)
+            self.player.fortitude_stamina_bonus = sta_bonus
+            old_hp = self.player.hp
+            self.recalculate_stats()  # Stamina -> HP changes
+            # Heal for the HP increase (like WoW does on buff apply)
+            hp_gain = self.player.max_hp - old_hp
+            if hp_gain > 0:
+                self.player.hp = min(self.player.hp + hp_gain, self.player.max_hp)
 
     def _damage_mob(self, mob: Mob, damage: int):
         """Apply damage to a mob, handle death."""
@@ -1767,15 +1784,17 @@ class CombatSimulation:
             if p.inner_fire_remaining <= 0:
                 p.inner_fire_armor = 0
                 p.inner_fire_spellpower = 0
+                self.recalculate_stats()  # armor/SP changed
 
         # --- Buff: PW:Fortitude ---
         if p.fortitude_remaining > 0:
             p.fortitude_remaining -= 1
             if p.fortitude_remaining <= 0:
-                # Remove HP bonus
-                p.max_hp -= p.fortitude_hp_bonus
-                p.hp = min(p.hp, p.max_hp)
+                # Remove Stamina bonus -> recalculate HP
+                p.fortitude_stamina_bonus = 0
                 p.fortitude_hp_bonus = 0
+                self.recalculate_stats()
+                p.hp = min(p.hp, p.max_hp)
 
         # --- Regen ---
         if p.in_combat:

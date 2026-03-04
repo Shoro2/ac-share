@@ -842,14 +842,42 @@ from sim.dbc_loader import (  # noqa: E402
 
 
 # ─── WotLK Spell Power Coefficients (from spell_bonus_data DB) ──────
-SP_COEFF_SMITE = 0.7143           # 2.5s / 3.5
-SP_COEFF_HEAL = 0.8571            # 3.0s / 3.5
-SP_COEFF_MIND_BLAST = 0.4286      # 1.5s / 3.5
-SP_COEFF_SW_PAIN_TICK = 0.1833    # per tick (total ~1.1 over 6 ticks)
-SP_COEFF_PW_SHIELD = 0.8068       # absorb coefficient
-SP_COEFF_RENEW_TICK = 0.1         # per tick (~0.5 total over 5 ticks)
-SP_COEFF_HOLY_FIRE = 0.5711       # direct
-SP_COEFF_HOLY_FIRE_DOT_TICK = 0.024  # per tick
+# Spell power coefficients from AzerothCore spell_bonus_data table.
+# These override the generic cast_time/3.5 formula used in older versions.
+SP_COEFF_SMITE = 0.123            # spell_bonus_data direct_bonus
+SP_COEFF_HEAL = 0.231             # spell_bonus_data direct_bonus
+SP_COEFF_MIND_BLAST = 0.268       # spell_bonus_data direct_bonus
+SP_COEFF_SW_PAIN_TICK = 0.1833    # spell_bonus_data dot_bonus (per tick)
+SP_COEFF_PW_SHIELD = 0.8068       # not in spell_bonus_data, DBC BonusMult
+SP_COEFF_RENEW_TICK = 0.207       # spell_bonus_data dot_bonus (per tick)
+SP_COEFF_HOLY_FIRE = 0.571        # spell_bonus_data direct_bonus
+SP_COEFF_HOLY_FIRE_DOT_TICK = 0.0529  # spell_bonus_data dot_bonus (per tick)
+
+# Spell level requirements from trainer_spell table (Priest class trainer)
+SPELL_LEVEL_REQ = {
+    585: 1,     # Smite
+    2050: 1,    # Lesser Heal
+    1243: 1,    # PW:Fortitude
+    589: 4,     # SW:Pain
+    17: 6,      # PW:Shield
+    139: 8,     # Renew
+    8092: 10,   # Mind Blast
+    588: 12,    # Inner Fire
+    14914: 20,  # Holy Fire
+}
+
+# Spell mana cost as % of class base mana (from Spell.dbc ManaCostPercentage)
+SPELL_MANA_PCT = {
+    585: 9,     # Smite
+    2050: 16,   # Lesser Heal
+    589: 22,    # SW:Pain
+    17: 23,     # PW:Shield
+    1243: 27,   # PW:Fortitude
+    139: 17,    # Renew
+    8092: 17,   # Mind Blast
+    588: 14,    # Inner Fire
+    14914: 11,  # Holy Fire
+}
 
 
 # ─── Load DBC/CSV data at import time ────────────────────────────────

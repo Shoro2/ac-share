@@ -8,7 +8,10 @@ game data (spell definitions, mob templates, spawn positions, vendor data).
 
 from dataclasses import dataclass, field
 
-from sim.constants import CLASS_PRIEST, DEFAULT_BACKPACK_SLOTS
+from sim.constants import (
+    CLASS_PRIEST, DEFAULT_BACKPACK_SLOTS,
+    SPELL_LEVEL_REQ, SPELL_MANA_PCT,
+)
 
 
 @dataclass(slots=True)
@@ -41,7 +44,9 @@ class SpellDef:
     id: int
     name: str
     cast_ticks: int       # cast time in ticks (1 tick = 0.5s)
-    mana_cost: int
+    mana_cost: int        # legacy flat cost (used if mana_pct == 0)
+    level_req: int = 1    # min player level to learn/cast (from trainer_spell)
+    mana_pct: int = 0     # % of class base mana (from Spell.dbc ManaCostPercentage)
     min_damage: int = 0
     max_damage: int = 0
     min_heal: int = 0
@@ -64,72 +69,84 @@ class SpellDef:
     buff_duration: int = 0  # ticks
 
 
+# All values verified from Spell.dbc binary (WotLK 3.3.5 build 12340),
+# trainer_spell.csv (level requirements), and spell_bonus_data.csv (SP coefficients).
+# Mana costs use ManaCostPercentage from DBC — actual cost = BaseMana * pct / 100.
 SPELLS = {
     585: SpellDef(
         id=585, name="Smite",
-        cast_ticks=3, mana_cost=6,
-        min_damage=13, max_damage=17,
+        cast_ticks=3, mana_cost=6,  # fallback; DBC: 1.5s cast
+        level_req=SPELL_LEVEL_REQ[585], mana_pct=SPELL_MANA_PCT[585],
+        min_damage=13, max_damage=17,  # DBC: BasePoints=12, DieSides=5
         spell_range=30.0,
     ),
     2050: SpellDef(
         id=2050, name="Lesser Heal",
-        cast_ticks=3, mana_cost=11,
-        min_heal=46, max_heal=56,
+        cast_ticks=3, mana_cost=11,  # fallback; DBC: 1.5s cast
+        level_req=SPELL_LEVEL_REQ[2050], mana_pct=SPELL_MANA_PCT[2050],
+        min_heal=46, max_heal=56,  # DBC: BasePoints=45, DieSides=11
         spell_range=0.0,  # self-cast
     ),
     589: SpellDef(
         id=589, name="Shadow Word: Pain",
-        cast_ticks=0, mana_cost=25,  # instant
+        cast_ticks=0, mana_cost=25,  # fallback; instant
+        level_req=SPELL_LEVEL_REQ[589], mana_pct=SPELL_MANA_PCT[589],
         spell_range=30.0,
         is_dot=True,
-        dot_damage=30,     # total 30 over 18s = ~5 per tick
+        dot_damage=30,     # DBC: 5/tick x6 ticks = 30 total over 18s
         dot_ticks=36,      # 18s = 36 ticks
         dot_interval=6,    # tick every 3s
     ),
     17: SpellDef(
         id=17, name="Power Word: Shield",
-        cast_ticks=0, mana_cost=25,  # instant
+        cast_ticks=0, mana_cost=25,  # fallback; instant
+        level_req=SPELL_LEVEL_REQ[17], mana_pct=SPELL_MANA_PCT[17],
         is_shield=True,
-        shield_absorb=44,
+        shield_absorb=44,  # DBC: BasePoints=43, DieSides=1 (+0.8/lvl scaling)
         shield_duration=60,  # 30s = 60 ticks
     ),
     8092: SpellDef(
         id=8092, name="Mind Blast",
-        cast_ticks=3, mana_cost=50,  # 1.5s cast
-        min_damage=39, max_damage=43,
+        cast_ticks=3, mana_cost=50,  # fallback; DBC: 1.5s cast
+        level_req=SPELL_LEVEL_REQ[8092], mana_pct=SPELL_MANA_PCT[8092],
+        min_damage=39, max_damage=43,  # DBC: BasePoints=38, DieSides=5
         spell_range=30.0,
         cooldown_ticks=16,  # 8s = 16 ticks
     ),
     139: SpellDef(
         id=139, name="Renew",
-        cast_ticks=0, mana_cost=30,  # instant
+        cast_ticks=0, mana_cost=30,  # fallback; instant
+        level_req=SPELL_LEVEL_REQ[139], mana_pct=SPELL_MANA_PCT[139],
         is_hot=True,
-        hot_heal=45,       # total heal over 15s
+        hot_heal=45,       # DBC: 9/tick x5 ticks = 45 total over 15s
         hot_ticks=30,      # 15s = 30 ticks
         hot_interval=6,    # tick every 3s = 5 HoT ticks
     ),
     14914: SpellDef(
         id=14914, name="Holy Fire",
-        cast_ticks=4, mana_cost=40,  # 2.0s cast
-        min_damage=15, max_damage=20,
+        cast_ticks=4, mana_cost=40,  # fallback; DBC: 2.0s cast
+        level_req=SPELL_LEVEL_REQ[14914], mana_pct=SPELL_MANA_PCT[14914],
+        min_damage=102, max_damage=128,  # DBC: BasePoints=101, DieSides=27
         spell_range=30.0,
         is_dot=True,
-        dot_damage=12,     # total 12 over 6s
-        dot_ticks=12,      # 6s = 12 ticks
-        dot_interval=6,    # tick every 3s = 2 DoT ticks
+        dot_damage=21,     # DBC: 3/tick x7 ticks = 21 total over 7s
+        dot_ticks=14,      # 7s = 14 ticks
+        dot_interval=2,    # tick every 1s = 2 ticks
         cooldown_ticks=20,  # 10s = 20 ticks
     ),
     588: SpellDef(
         id=588, name="Inner Fire",
-        cast_ticks=0, mana_cost=20,  # instant
+        cast_ticks=0, mana_cost=20,  # fallback; instant
+        level_req=SPELL_LEVEL_REQ[588], mana_pct=SPELL_MANA_PCT[588],
         is_buff=True,
-        buff_duration=400,  # 200s ≈ 3.3 min = 400 ticks
+        buff_duration=3600,  # DBC: 30min = 1800s = 3600 ticks
     ),
     1243: SpellDef(
         id=1243, name="Power Word: Fortitude",
-        cast_ticks=0, mana_cost=30,  # instant
+        cast_ticks=0, mana_cost=30,  # fallback; instant
+        level_req=SPELL_LEVEL_REQ[1243], mana_pct=SPELL_MANA_PCT[1243],
         is_buff=True,
-        buff_duration=1200,  # 600s = 10 min = 1200 ticks
+        buff_duration=3600,  # DBC: 30min = 1800s = 3600 ticks
     ),
 }
 
@@ -315,9 +332,10 @@ class Player:
     inner_fire_remaining: int = 0  # ticks
     inner_fire_armor: int = 0
     inner_fire_spellpower: int = 0
-    # Buff: PW:Fortitude
+    # Buff: PW:Fortitude (DBC: +Stamina, AuraName=29 MOD_STAT, MiscValue=2)
     fortitude_remaining: int = 0   # ticks
-    fortitude_hp_bonus: int = 0
+    fortitude_hp_bonus: int = 0    # legacy (unused, kept for compat)
+    fortitude_stamina_bonus: int = 0  # DBC: +3 Stamina (Rank 1)
     # Accumulated rewards (consumed on read like real server)
     xp_gained: int = 0
     loot_copper: int = 0
