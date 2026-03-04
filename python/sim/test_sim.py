@@ -141,6 +141,13 @@ def test_gym_env():
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
+    # Check action_masks
+    mask = env.action_masks()
+    assert mask.shape == (17,), f"Mask shape: {mask.shape}"
+    assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
+    assert mask[0] == True, "Noop should always be valid"
+    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/17")
+
     # Step with each action
     for action in range(17):
         obs, reward, done, trunc, info = env.step(action)
@@ -2353,6 +2360,170 @@ def test_combat_resolution():
     print("  PASSED\n")
 
 
+def test_action_masking():
+    """Test the action masking system (replaces old override logic)."""
+    print("=== Test 15: Action Masking ===")
+
+    env = WoWSimEnv(seed=42)
+    obs, _ = env.reset()
+    sim = env.sim
+    p = sim.player
+
+    # --- 15a: Initial mask — basic validity ---
+    mask = env.action_masks()
+    assert mask.shape == (17,), f"Mask shape: {mask.shape}"
+    assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
+    assert mask[0] == True, "Noop should always be valid"
+    assert mask[1] == True, "Move forward should be valid when not casting"
+    assert mask[2] == True, "Turn left should be valid when not casting"
+    assert mask[3] == True, "Turn right should be valid when not casting"
+    print(f"  15a: Initial mask shape and basic validity OK ✓")
+
+    # --- 15b: Casting lock — only noop allowed ---
+    p.is_casting = True
+    p.cast_remaining = 3
+    mask = env.action_masks()
+    assert mask[0] == True, "Noop should be valid while casting"
+    for i in range(1, 17):
+        assert mask[i] == False, f"Action {i} should be masked while casting"
+    p.is_casting = False
+    p.cast_remaining = 0
+    print(f"  15b: Casting lock — only noop allowed ✓")
+
+    # --- 15c: Offensive spells need alive target in range ---
+    sim.target = None
+    mask = env.action_masks()
+    for action_id in [5, 9, 12, 14]:  # Smite, SW:Pain, Mind Blast, Holy Fire
+        assert mask[action_id] == False, \
+            f"Action {action_id} should be masked without target"
+
+    # Give a target in range
+    mob = sim.mobs[0]
+    p.x = mob.x + 5.0
+    p.y = mob.y
+    sim.do_target_nearest()
+    assert sim.target is not None and sim.target.alive
+    mask = env.action_masks()
+    # Smite should be valid (has target, in range, has mana)
+    if p.mana >= SPELLS[585].mana_cost and p.gcd_remaining == 0:
+        assert mask[5] == True, "Smite should be valid with alive target in range"
+    print(f"  15c: Offensive spells masked without target, valid with target ✓")
+
+    # --- 15d: Buff duplication — can't double-apply ---
+    p.shield_remaining = 10
+    mask = env.action_masks()
+    assert mask[10] == False, "PW:Shield should be masked when shield active"
+    p.shield_remaining = 0
+    p.shield_cooldown = 5
+    mask = env.action_masks()
+    assert mask[10] == False, "PW:Shield should be masked during Weakened Soul"
+    p.shield_cooldown = 0
+
+    p.inner_fire_remaining = 10
+    mask = env.action_masks()
+    assert mask[15] == False, "Inner Fire should be masked when already active"
+    p.inner_fire_remaining = 0
+
+    p.fortitude_remaining = 10
+    mask = env.action_masks()
+    assert mask[16] == False, "Fortitude should be masked when already active"
+    p.fortitude_remaining = 0
+
+    p.hot_remaining = 10
+    mask = env.action_masks()
+    assert mask[13] == False, "Renew should be masked when HoT active"
+    p.hot_remaining = 0
+
+    # SW:Pain blocked when DoT on target
+    if sim.target:
+        sim.target.dot_remaining = 10
+        mask = env.action_masks()
+        assert mask[9] == False, "SW:Pain should be masked when DoT on target"
+        sim.target.dot_remaining = 0
+    print(f"  15d: Buff/debuff duplication correctly masked ✓")
+
+    # --- 15e: Loot masked in combat, available out of combat ---
+    mob = sim.mobs[0]
+    p.x = mob.x + 2.0
+    p.y = mob.y
+    mob.hp = 0
+    mob.alive = False
+    mob.looted = False
+
+    # In combat — loot should be masked (fight first!)
+    p.in_combat = True
+    mask = env.action_masks()
+    assert mask[7] == False, "Loot should be masked while in combat"
+
+    # Out of combat — loot should be available (within range)
+    p.in_combat = False
+    mask = env.action_masks()
+    assert mask[7] == True, "Loot should be valid OOC with dead mob in range"
+    print(f"  15e: Loot masked in combat, valid OOC with corpse in range ✓")
+
+    # --- 15f: Loot masked when no dead mob in range ---
+    mob.looted = True  # already looted
+    mask = env.action_masks()
+    assert mask[7] == False, "Loot should be masked when no unlooted dead mob in range"
+    print(f"  15f: Loot masked when no lootable corpse nearby ✓")
+
+    # --- 15g: Mana check — spells masked when OOM ---
+    env2 = WoWSimEnv(seed=100)
+    obs2, _ = env2.reset()
+    p2 = env2.sim.player
+    p2.mana = 0  # OOM
+    mask = env2.action_masks()
+    for action_id in [5, 6, 9, 10, 12, 13, 14, 15, 16]:
+        assert mask[action_id] == False, \
+            f"Action {action_id} should be masked when OOM"
+    print(f"  15g: All spells masked when OOM ✓")
+
+    # --- 15h: GCD blocks all spells ---
+    env3 = WoWSimEnv(seed=200)
+    obs3, _ = env3.reset()
+    p3 = env3.sim.player
+    p3.gcd_remaining = 2
+    mask = env3.action_masks()
+    for action_id in [5, 6, 9, 10, 12, 13, 14, 15, 16]:
+        assert mask[action_id] == False, \
+            f"Action {action_id} should be masked during GCD"
+    # Movement should still be valid
+    assert mask[1] == True, "Movement should be valid during GCD"
+    p3.gcd_remaining = 0
+    print(f"  15h: GCD blocks all spells but allows movement ✓")
+
+    # --- 15i: Sell masked in combat / without inventory ---
+    env4 = WoWSimEnv(seed=300)
+    obs4, _ = env4.reset()
+    p4 = env4.sim.player
+    p4.in_combat = True
+    mask = env4.action_masks()
+    assert mask[8] == False, "Sell should be masked in combat"
+    p4.in_combat = False
+    assert len(p4.inventory) == 0
+    mask = env4.action_masks()
+    assert mask[8] == False, "Sell should be masked with empty inventory"
+    print(f"  15i: Sell correctly masked (combat / empty inventory) ✓")
+
+    # --- 15j: Quest interact masked without quest system ---
+    env5 = WoWSimEnv(seed=400, enable_quests=False)
+    obs5, _ = env5.reset()
+    mask = env5.action_masks()
+    assert mask[11] == False, "Quest interact should be masked when quests disabled"
+    print(f"  15j: Quest interact masked when quests disabled ✓")
+
+    # --- 15k: Stepping with masked actions still works (graceful fallback) ---
+    # The combat sim methods return False for invalid actions but don't crash
+    env6 = WoWSimEnv(seed=500)
+    obs6, _ = env6.reset()
+    env6.sim.player.mana = 0
+    obs6, reward, done, trunc, info = env6.step(5)  # try Smite with no mana
+    assert obs6.shape == (38,), "Step with invalid action should not crash"
+    print(f"  15k: Stepping with masked action is graceful (no crash) ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -2368,4 +2539,5 @@ if __name__ == "__main__":
     test_attribute_system()
     test_bag_system()
     test_combat_resolution()
+    test_action_masking()
     print("=== ALL TESTS PASSED ===")

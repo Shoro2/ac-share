@@ -49,11 +49,17 @@ _DEFAULT_DATA_ROOT = _detect_data_root()
 _DEFAULT_CREATURE_DATA = _detect_creature_data()
 _DEFAULT_LOG_DIR = os.path.join(PARENT_DIR, "sim_episodes")
 
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 from torch.utils.tensorboard import SummaryWriter
 from sim.wow_sim_env import WoWSimEnv
+
+
+def _mask_fn(env: WoWSimEnv):
+    """Extract action masks from the environment for MaskablePPO."""
+    return env.action_masks()
 
 
 class GameplayMetricsCallback(BaseCallback):
@@ -128,6 +134,7 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_final_level", stats.get("final_level", 1), step)
                 self._writer.add_scalar("gameplay/ep_loot_items", stats.get("loot_items", 0), step)
                 self._writer.add_scalar("gameplay/ep_loot_failed", stats.get("loot_failed", 0), step)
+                self._writer.add_scalar("gameplay/ep_loot_copper", stats.get("loot", 0), step)
                 self._writer.add_scalar("gameplay/ep_sell_copper", stats.get("sell_copper", 0), step)
                 self._writer.add_scalar("gameplay/ep_quests_completed", stats.get("quests_completed", 0), step)
                 self._writer.add_scalar("gameplay/ep_quest_xp", stats.get("quest_xp", 0), step)
@@ -194,10 +201,11 @@ def make_env(bot_name: str, seed: int, data_root: str = None,
              creature_csv_dir: str = None, log_dir: str = None,
              log_interval: int = 1, enable_quests: bool = False):
     def _init():
-        return WoWSimEnv(bot_name=bot_name, seed=seed, data_root=data_root,
-                         creature_csv_dir=creature_csv_dir,
-                         log_dir=log_dir, log_interval=log_interval,
-                         enable_quests=enable_quests)
+        env = WoWSimEnv(bot_name=bot_name, seed=seed, data_root=data_root,
+                        creature_csv_dir=creature_csv_dir,
+                        log_dir=log_dir, log_interval=log_interval,
+                        enable_quests=enable_quests)
+        return ActionMasker(env, _mask_fn)
     return _init
 
 
@@ -272,14 +280,14 @@ def main():
             print(f">>> Resuming from {args.resume} <<<")
             print(f">>> Overriding: lr={args.lr}, n_steps={args.n_steps}, "
                   f"batch_size={args.batch_size} <<<")
-            model = PPO.load(
+            model = MaskablePPO.load(
                 args.resume, env=env, tensorboard_log=log_dir,
                 learning_rate=args.lr,
                 n_steps=args.n_steps,
                 batch_size=args.batch_size,
             )
         else:
-            model = PPO(
+            model = MaskablePPO(
                 "MlpPolicy",
                 env,
                 verbose=1,

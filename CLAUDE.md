@@ -58,8 +58,8 @@ ac-share/
 │   ├── sim/                     <- ** MAIN FOCUS: Offline Simulation **
 │   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
 │   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
-│   │   ├── train_sim.py         <- PPO training on the sim (5 bots, no server needed)
-│   │   ├── test_sim.py          <- Validation tests (10 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading)
+│   │   ├── train_sim.py         <- MaskablePPO training on the sim (5 bots, action masking, no server needed)
+│   │   ├── test_sim.py          <- Validation tests (15 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, action masking)
 │   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
@@ -260,7 +260,7 @@ Quest dims (17-22) are always present but zero when quests are disabled (`enable
 1. **Vendor Mode**: If `free_slots < 2` and not in combat -> navigates to nearest vendor from NPC memory, sells automatically
 2. **Aggro Recovery**: In combat without target -> finds mob attacking the bot, targets it
 3. **Cast Guard**: During casting, movement/turning/other casts are suppressed
-4. **Loot Automation**: Dead target -> approaches, loots automatically at <=6 units
+4. **Loot Automation**: Dead target -> navigates to corpse via `do_move_to`, loots automatically at <=3 units
 5. **Range Management**: Stops forward movement at <25 units to target
 6. **Heal Block**: Heal is blocked at HP > 85%
 7. **Shield Block**: PW:Shield blocked if already shielded
@@ -520,7 +520,7 @@ Extended replacement for `wow_env.py` with optional quest system:
 - **Action Space**: `Discrete(17)` — 16 base actions + Quest Interact
 - **Obs Space**: `Box(38,)` — 22 base dims + 10 stat dims + 6 quest dims
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
-- **Similar Override Logic**: Aggro, Cast-Guard, Range-Management, Heal/Shield/DoT/Buff blocks
+- **Action Masking**: Invalid actions masked out (casting lock, GCD, mana, cooldowns, buff duplication, loot-in-combat). Bot learns strategic decisions (when to loot, heal timing, range, aggro). Vendor/quest NPC navigation remains as multi-step overrides.
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
 - **Stall Detection**: Truncates episode after 3,000 steps without kill XP (quest XP alone does not reset the counter)
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
@@ -664,8 +664,8 @@ Interactive map visualization for analyzing training episodes:
 
 ### train_sim.py — Sim Training
 
-- **5 bots** in `SubprocVecEnv`
-- **PPO** with `ent_coef=0.01`, `n_steps=512`, `batch_size=128`, `learning_rate=3e-4`, `gamma=0.97`, `n_epochs=8`
+- **5 bots** in `SubprocVecEnv` with `ActionMasker` wrapper
+- **MaskablePPO** (from `sb3_contrib`) with `ent_coef=0.01`, `n_steps=512`, `batch_size=128`, `learning_rate=3e-4`, `gamma=0.97`, `n_epochs=8`
 - **TensorBoard Logs** in `logs/PPO_2/`
 - **Episode Callbacks** with kills, XP, deaths, areas/zones/maps explored, levels gained, final level
 - **TensorBoard Metrics**: `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_maps_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`, `gameplay/ep_quests_completed`, `gameplay/ep_quest_xp`
@@ -680,7 +680,7 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-14 test functions:
+15 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
 2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
 3. **test_random_episode()**: 1000-step episode with random actions
@@ -695,6 +695,7 @@ Interactive map visualization for analyzing training episodes:
 12. **test_equipment_system()**: Equipment slots, equip/unequip, stat recalculation, dual-slot items (rings/trinkets), two-hand offhand clearing, combat-lock, item stats accumulation, upgrade detection with gear stats
 13. **test_bag_system()**: Bag equip/upgrade, capacity tracking, profession bag rejection, combat-lock, sell preserves bags, state_dict bag info, reset clears bags
 14. **test_combat_resolution()**: WotLK melee attack table (single-roll: miss/dodge/parry/block/crit/crushing/normal), spell miss with level difference (4%/5%/6%/17%), spell hit two-roll system, mob crit 200% damage, block damage reduction by block_value, hit rating reduces miss, heal spells never miss, consume_events combat counters
+15. **test_action_masking()**: Action masking system: mask shape/dtype, casting lock (only noop), offensive spells need target, buff duplication masks, loot masked in combat (fight first), loot available OOC, OOM masks all spells, GCD blocks spells but allows movement, sell/quest masking, graceful fallback for masked actions
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -849,7 +850,7 @@ The module consists of 2 files without its own header or CMakeLists:
 - Hardcoded spawn position (Northshire Abbey / Elwynn Forest) — sim always starts there
 - Hardcoded bot names (Bota-Bote, plus Autoai in test script)
 - Character must exist in the DB before `#spawn` works
-- Python environment is partially scripted (override logic) — learned policy depends on it
+- Sim env uses action masking (bot learns strategy); live env (`wow_env.py`) still uses override logic — behavioral gap during transfer
 - Terrain tiles are loaded on-demand, but only for Map 0 (Eastern Kingdoms) — map transfer not yet implemented
 - Exploration rewards not yet implemented in `wow_env.py` (only in sim)
 
@@ -930,7 +931,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **Episode Logger** | done | Zero-I/O JSONL logger, trail data, events, mob snapshots |
 | **Quest System** | done | CSV loading (~9500 quests from AzerothCore DB) + 3 hardcoded fallback quests, quest NPCs (~3170 from CSV), quest chains, obs/action space extended, rewards, TensorBoard metrics |
 | **Visualization** | done | Interactive map viewer with episode slider, zoom, bot filters, event log |
-| **Override Logic** | done | Vendor, aggro, cast guard, loot, range mgmt — in both envs |
+| **Action Masking (sim)** | done | Game-mechanic masks (casting, GCD, mana, cooldowns, buffs, loot-in-combat). Bot learns strategy (loot timing, heal, range, aggro). Vendor/quest nav remain as overrides. MaskablePPO from sb3_contrib. |
 | **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, override logic, shaped rewards |
 | **C++ AI Controller Module** | done | Bot spawning, TCP server, state publishing, command processing, per-player mob lists |
 | **auto_grind.py** | done | Hybrid runner with farm route + RL policy |

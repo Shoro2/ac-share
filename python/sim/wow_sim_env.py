@@ -5,11 +5,23 @@ Observation space: Box(38,) — 22 base dims + 10 stat dims + 6 quest dims.
 Action space: Discrete(17) — 16 base actions + 1 quest action.
 Runs ~1000x faster than the real server.
 
+Uses **action masking** instead of override logic: invalid actions are masked
+out so the bot can only choose from valid actions.  Game-mechanic constraints
+(casting lock, GCD, cooldowns, buff duplication, etc.) are hard-masked.
+Strategic decisions (when to loot, heal timing, range management, aggro
+recovery) are left to the bot to learn.
+
+Vendor and quest NPC navigation remain as multi-step overrides (too complex
+for the bot to learn pathfinding from scratch at this stage).
+
 Usage:
     env = WoWSimEnv()                        # single bot (no quests)
     env = WoWSimEnv(enable_quests=True)      # with quest system
     obs, info = env.reset()
     obs, reward, done, trunc, info = env.step(action)
+
+    # Action masking (for MaskablePPO from sb3_contrib):
+    masks = env.action_masks()               # np.ndarray(17,) bool
 """
 
 import gymnasium as gym
@@ -151,6 +163,148 @@ class WoWSimEnv(gym.Env):
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
         self._quest_nav_active = False     # True while bot is walking to quest NPC
 
+    # Spell ID -> action ID mapping for mask building
+    _SPELL_ACTION = {
+        585: 5,     # Smite
+        2050: 6,    # Lesser Heal
+        589: 9,     # SW:Pain
+        17: 10,     # PW:Shield
+        8092: 12,   # Mind Blast
+        139: 13,    # Renew
+        14914: 14,  # Holy Fire
+        588: 15,    # Inner Fire
+        1243: 16,   # PW:Fortitude
+    }
+    _OFFENSIVE_SPELLS = {585, 589, 8092, 14914}   # need alive target + range
+    _SELF_SPELLS = {2050, 17, 139, 588, 1243}     # self-cast, no target needed
+
+    def action_masks(self) -> np.ndarray:
+        """Return boolean mask: True = action allowed, False = masked.
+
+        Game-mechanic masks (action is physically impossible):
+        - Casting → only noop allowed
+        - GCD active → all spells masked
+        - Insufficient mana → that spell masked
+        - Spell on cooldown → that spell masked
+        - No alive target / out of range → offensive spells masked
+        - Buff already active → that buff masked
+        - No dead mob in loot range → loot masked
+        - In combat → loot masked (don't run to corpse mid-fight)
+        - Vendor/quest nav not active → sell/quest interact masked
+
+        Strategic decisions (bot must learn):
+        - When to loot vs keep fighting (loot only available OOC + in range)
+        - Heal timing (no HP threshold block)
+        - Range management (no auto-stop at 25 units)
+        - Aggro recovery (targeting in combat)
+        - Walking to corpse after kill
+        """
+        mask = np.ones(17, dtype=bool)
+        p = self.sim.player
+
+        # ── While casting: ONLY noop is valid ──
+        if p.is_casting:
+            mask[:] = False
+            mask[0] = True  # noop
+            return mask
+
+        in_combat = p.in_combat
+        target = self.sim.target
+        target_alive = target is not None and target.alive
+
+        # ── Movement (1-3): always allowed when not casting ──
+        # (already True)
+
+        # ── Target nearest (4): need alive mobs in range ──
+        has_targetable = any(
+            m.alive and self.sim._dist_to_mob(m) <= self.sim.TARGET_RANGE
+            for m in self.sim.mobs
+        )
+        if not has_targetable:
+            mask[4] = False
+
+        # ── Spell masks (5,6,9,10,12,13,14,15,16) ──
+        gcd_blocked = p.gcd_remaining > 0
+        for spell_id, action_id in self._SPELL_ACTION.items():
+            spell = SPELLS[spell_id]
+
+            # GCD blocks all spells
+            if gcd_blocked:
+                mask[action_id] = False
+                continue
+
+            # Mana check
+            if p.mana < spell.mana_cost:
+                mask[action_id] = False
+                continue
+
+            # Spell-specific cooldown
+            if p.spell_cooldowns.get(spell_id, 0) > 0:
+                mask[action_id] = False
+                continue
+
+            # Offensive spells: need alive target in range
+            if spell_id in self._OFFENSIVE_SPELLS:
+                if not target_alive:
+                    mask[action_id] = False
+                    continue
+                if self.sim._dist_to_mob(target) > spell.spell_range:
+                    mask[action_id] = False
+                    continue
+                # LOS check
+                if self.sim.terrain:
+                    if not self.sim.terrain.check_los(
+                        p.x, p.y, p.z, target.x, target.y, target.z
+                    ):
+                        mask[action_id] = False
+                        continue
+
+            # Buff/debuff duplication checks (game mechanic — can't double-apply)
+            if spell_id == 17 and (p.shield_remaining > 0 or p.shield_cooldown > 0):
+                mask[action_id] = False
+            elif spell_id == 589 and target is not None and target.dot_remaining > 0:
+                mask[action_id] = False
+            elif spell_id == 139 and p.hot_remaining > 0:
+                mask[action_id] = False
+            elif spell_id == 588 and p.inner_fire_remaining > 0:
+                mask[action_id] = False
+            elif spell_id == 1243 and p.fortitude_remaining > 0:
+                mask[action_id] = False
+
+        # ── Loot (7): need dead unlootable mob in range AND not in combat ──
+        # Key design: in combat → loot masked → bot fights first, loots later
+        has_lootable = False
+        if not in_combat:
+            for mob in self.sim.mobs:
+                if not mob.alive and not mob.looted:
+                    if self.sim._dist_to_mob(mob) <= self.sim.LOOT_RANGE:
+                        has_lootable = True
+                        break
+        if not has_lootable:
+            mask[7] = False
+
+        # ── Sell (8): only valid during vendor nav (override handles walk) ──
+        # Bot triggers action 8 to START vendor nav; once active, override walks there.
+        # Mask sell if: in combat, no inventory, or nav already active (wait for arrival)
+        if in_combat or len(p.inventory) == 0:
+            mask[8] = False
+        elif self._vendor_nav_active:
+            mask[8] = False  # already walking to vendor, wait
+
+        # ── Quest interact (11): only when quests enabled and NPC reachable ──
+        if not self._quest_db:
+            mask[11] = False
+        elif in_combat:
+            mask[11] = False
+        elif self._quest_nav_active:
+            mask[11] = False  # already walking to quest NPC, wait
+        else:
+            qnpc, _ = self.sim.get_best_quest_npc()
+            if qnpc is None:
+                mask[11] = False
+
+        return mask
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if seed is not None:
@@ -203,150 +357,92 @@ class WoWSimEnv(gym.Env):
     def step(self, action):
         self._step_count += 1
         p = self.sim.player
+        action = int(action)
 
-        # ─── Override Logic (matching wow_env.py exactly) ──────────
-        override_action = int(action)
-        nearby_mobs = self.last_state.get('nearby_mobs', []) if self.last_state else []
-        hp_pct = p.hp / max(1, p.max_hp)
-        dist_to_target = 9999.0
+        # ─── Vendor/Quest Navigation Overrides ──────────────────────
+        # These are multi-step macro actions: bot triggers action 8/11,
+        # then the override auto-walks to the NPC over multiple ticks.
+        # Combat interrupts navigation (aggro takes priority).
+        executed_action = action  # track what actually ran (for idle detection)
 
-        if self.sim.target and self.sim.target.alive:
-            dist_to_target = self.sim._dist_to_mob(self.sim.target)
+        if action == 8 and not p.in_combat and not self._vendor_nav_active:
+            self._vendor_nav_active = True
+        if action == 11 and not p.in_combat and not self._quest_nav_active:
+            self._quest_nav_active = True
 
-        in_combat = p.in_combat
-        target_alive = self.sim.target is not None and self.sim.target.alive
-        target_dead = self.sim.target is not None and not self.sim.target.alive
-        is_casting = p.is_casting
+        if p.in_combat and self._vendor_nav_active:
+            self._vendor_nav_active = False
+        if p.in_combat and self._quest_nav_active:
+            self._quest_nav_active = False
 
-        # Vendor navigation: AI triggers action 8 → bot auto-walks to vendor and sells
-        # Once _vendor_nav_active is set, override handles the multi-step journey.
-        # Combat interrupts vendor navigation (aggro takes priority).
-        if action == 8 and not in_combat and not self._vendor_nav_active:
-            self._vendor_nav_active = True  # AI decided to sell
+        nav_handled = False  # True when nav override consumed this tick
 
-        # Quest NPC navigation: AI triggers action 11 → bot auto-walks to quest NPC
-        # Same pattern as vendor navigation.
-        if action == 11 and not in_combat and not self._quest_nav_active:
-            self._quest_nav_active = True  # AI decided to interact with quest NPC
-
-        if in_combat and self._vendor_nav_active:
-            self._vendor_nav_active = False  # combat cancels vendor trip
-        if in_combat and self._quest_nav_active:
-            self._quest_nav_active = False  # combat cancels quest trip
-
-        if self._quest_nav_active and not in_combat:
+        if self._quest_nav_active and not p.in_combat:
             qnpc, _ = self.sim.get_best_quest_npc()
             if qnpc:
-                qdx = qnpc.x - p.x
-                qdy = qnpc.y - p.y
-                qnpc_dist = math.sqrt(qdx * qdx + qdy * qdy)
-                if qnpc_dist <= self.sim.QUEST_NPC_RANGE:
-                    override_action = 11  # close enough to interact
+                qdist = math.sqrt((qnpc.x - p.x) ** 2 + (qnpc.y - p.y) ** 2)
+                if qdist <= self.sim.QUEST_NPC_RANGE:
+                    self.sim.do_quest_interact()
                     self._quest_nav_active = False
+                    executed_action = 11
                 else:
                     self.sim.do_move_to(qnpc.x, qnpc.y)
-                    override_action = 0  # movement handled
+                    executed_action = 0
+                nav_handled = True
             else:
-                self._quest_nav_active = False  # no relevant quest NPC
+                self._quest_nav_active = False
 
-        if self._vendor_nav_active and not in_combat:
+        if self._vendor_nav_active and not p.in_combat and not nav_handled:
             vendor = self.sim.get_nearest_vendor()
             if vendor:
-                vdx = vendor.x - p.x
-                vdy = vendor.y - p.y
-                vendor_dist = math.sqrt(vdx * vdx + vdy * vdy)
-                if vendor_dist <= self.sim.SELL_RANGE:
-                    override_action = 8  # close enough to sell
-                    self._vendor_nav_active = False  # will sell this tick
+                vdist = math.sqrt((vendor.x - p.x) ** 2 + (vendor.y - p.y) ** 2)
+                if vdist <= self.sim.SELL_RANGE:
+                    self.sim.do_sell()
+                    self._vendor_nav_active = False
+                    executed_action = 8
                 else:
                     self.sim.do_move_to(vendor.x, vendor.y)
-                    override_action = 0  # movement handled
+                    executed_action = 0
+                nav_handled = True
             else:
-                self._vendor_nav_active = False  # no vendor found, abort
-        elif action == 8 and not self._vendor_nav_active:
-            override_action = 0  # block raw sell action (must go through nav)
+                self._vendor_nav_active = False
 
-        if (not self._vendor_nav_active and not self._quest_nav_active) or in_combat:
-            # Aggro check: in combat but no living target
-            if in_combat and not target_alive:
-                aggro_mob = None
-                min_dist = 9999.0
-                for mob_data in nearby_mobs:
-                    if mob_data.get('target', '0') != '0' and mob_data.get('attackable', 0) == 1 and mob_data['hp'] > 0:
-                        d = math.sqrt((mob_data['x'] - p.x) ** 2 + (mob_data['y'] - p.y) ** 2)
-                        if d < min_dist:
-                            min_dist = d
-                            aggro_mob = mob_data
-                if aggro_mob:
-                    # Find the actual mob object and target it
-                    uid = int(aggro_mob['guid'])
-                    for mob in self.sim.mobs:
-                        if mob.uid == uid:
-                            self.sim.target = mob
-                            break
-                    override_action = 0  # wait for target
-
-            elif is_casting and action in [1, 2, 3, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16]:
-                override_action = 0
-            elif target_dead and dist_to_target < 3.0:
-                override_action = 7  # loot
-            elif target_dead and dist_to_target >= 3.0:
-                override_action = 1  # walk to corpse
-            elif target_alive and dist_to_target < 25.0:
-                if action == 1:
-                    override_action = 0  # stop moving when in range
-            elif in_combat and target_alive and action == 4:
-                override_action = 0  # don't re-target in combat
-            elif action == 6 and hp_pct > 0.85:
-                override_action = 0  # block heal at high HP
-            elif action == 13 and hp_pct > 0.85:
-                override_action = 0  # block Renew at high HP
-            elif action == 10 and (p.shield_remaining > 0 or p.shield_cooldown > 0):
-                override_action = 0  # block shield if already shielded or Weakened Soul
-            elif action == 9 and self.sim.target and self.sim.target.dot_remaining > 0:
-                override_action = 0  # block SW:Pain if already active
-            elif action == 13 and p.hot_remaining > 0:
-                override_action = 0  # block Renew if already active
-            elif action == 15 and p.inner_fire_remaining > 0:
-                override_action = 0  # block Inner Fire if already active
-            elif action == 16 and p.fortitude_remaining > 0:
-                override_action = 0  # block Fortitude if already active
-
-        # ─── Execute Action ─────────────────────────────────────────
-        if override_action == 0:
-            self.sim.do_noop()
-        elif override_action == 1:
-            self.sim.do_move_forward()
-        elif override_action == 2:
-            self.sim.do_turn_left()
-        elif override_action == 3:
-            self.sim.do_turn_right()
-        elif override_action == 4:
-            self.sim.do_target_nearest()
-        elif override_action == 5:
-            self.sim.do_cast_smite()
-        elif override_action == 6:
-            self.sim.do_cast_heal()
-        elif override_action == 7:
-            self.sim.do_loot()
-        elif override_action == 8:
-            self.sim.do_sell()
-        elif override_action == 9:
-            self.sim.do_cast_sw_pain()
-        elif override_action == 10:
-            self.sim.do_cast_pw_shield()
-        elif override_action == 11:
-            self.sim.do_quest_interact()
-        elif override_action == 12:
-            self.sim.do_cast_mind_blast()
-        elif override_action == 13:
-            self.sim.do_cast_renew()
-        elif override_action == 14:
-            self.sim.do_cast_holy_fire()
-        elif override_action == 15:
-            self.sim.do_cast_inner_fire()
-        elif override_action == 16:
-            self.sim.do_cast_fortitude()
+        # ─── Execute Action (no overrides — masking handles validity) ──
+        if not nav_handled:
+            if action == 0:
+                self.sim.do_noop()
+            elif action == 1:
+                self.sim.do_move_forward()
+            elif action == 2:
+                self.sim.do_turn_left()
+            elif action == 3:
+                self.sim.do_turn_right()
+            elif action == 4:
+                self.sim.do_target_nearest()
+            elif action == 5:
+                self.sim.do_cast_smite()
+            elif action == 6:
+                self.sim.do_cast_heal()
+            elif action == 7:
+                self.sim.do_loot()
+            elif action == 8:
+                self.sim.do_sell()
+            elif action == 9:
+                self.sim.do_cast_sw_pain()
+            elif action == 10:
+                self.sim.do_cast_pw_shield()
+            elif action == 11:
+                self.sim.do_quest_interact()
+            elif action == 12:
+                self.sim.do_cast_mind_blast()
+            elif action == 13:
+                self.sim.do_cast_renew()
+            elif action == 14:
+                self.sim.do_cast_holy_fire()
+            elif action == 15:
+                self.sim.do_cast_inner_fire()
+            elif action == 16:
+                self.sim.do_cast_fortitude()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -372,7 +468,7 @@ class WoWSimEnv(gym.Env):
         reward -= 0.001
 
         # 2. Idle-Penalty (Noop without casting = wasted time)
-        if override_action == 0 and not is_casting_now:
+        if executed_action == 0 and not is_casting_now:
             reward -= 0.005
             self._idle_steps += 1
 
@@ -387,7 +483,7 @@ class WoWSimEnv(gym.Env):
 
         # 3b. Approach Shaping (potential-based — getting closer to target)
         if t_exists > 0.5:
-            curr_dist = dist_to_target
+            curr_dist = self.sim._dist_to_mob(self.sim.target) if self.sim.target else 9999.0
             if self._prev_target_dist is not None and self._prev_target_dist < 9000:
                 delta = self._prev_target_dist - curr_dist  # positive = closer
                 reward += max(-0.1, min(delta * 0.03, 0.15))
