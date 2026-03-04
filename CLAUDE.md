@@ -59,7 +59,7 @@ ac-share/
 │   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
 │   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
 │   │   ├── train_sim.py         <- MaskablePPO training on the sim (5 bots, action masking, no server needed)
-│   │   ├── test_sim.py          <- Validation tests (15 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, action masking)
+│   │   ├── test_sim.py          <- Validation tests (16 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, action masking, eat/drink)
 │   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
@@ -120,8 +120,8 @@ ac-share/
   |  WoWSimEnv (Gymnasium)     |          |          +--------v----------+
   |  python/sim/wow_sim_env    |          |          | train.py / etc.   |
   +----------------------------+          |          +-------------------+
-  | Action: Discrete(17)      |          |
-  | Obs:    Box(38,)           |          |
+  | Action: Discrete(18)      |          |
+  | Obs:    Box(39,)           |          |
   | Similar override logic     |          |
   | Sparse reward design       |<---------+  ** Same interface **
   +----------+-----------------+          |
@@ -310,6 +310,7 @@ Simulates the complete WoW 3.3.5 WotLK combat system in pure Python. All formula
 - **3D Terrain** (optional via `terrain` parameter): Z coordinates, walkability checks, LOS checks for spells
 - **State Dict**: Extends TCP JSON format with primary stats, combat ratings, and equipment summary
 - **Regen System**: HP regen 0.67/tick OOC (after 6s combat delay), Mana regen 2% of max_mana/tick while not casting, Spirit-based mana regen (5-second rule)
+- **Eat/Drink**: Regenerates 5% HP and 5% Mana per second (2.5%/tick). OOC only. Interrupted by movement, turning, taking damage, entering combat, or reaching full HP+Mana.
 
 **WotLK 3.3.5 Attribute System**:
 
@@ -517,15 +518,15 @@ Loads AzerothCore CSV exports for realistic item drops with full group/reference
 ### wow_sim_env.py — Gymnasium Sim Environment
 
 Extended replacement for `wow_env.py` with optional quest system:
-- **Action Space**: `Discrete(17)` — 16 base actions + Quest Interact
-- **Obs Space**: `Box(38,)` — 22 base dims + 10 stat dims + 6 quest dims
+- **Action Space**: `Discrete(18)` — 17 base actions + Quest Interact
+- **Obs Space**: `Box(39,)` — 23 base dims + 10 stat dims + 6 quest dims
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Action Masking**: Invalid actions masked out (casting lock, GCD, mana, cooldowns, buff duplication, loot-in-combat). Bot learns strategic decisions (when to loot, heal timing, range, aggro). Vendor/quest NPC navigation remains as multi-step overrides.
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
 - **Stall Detection**: Truncates episode after 3,000 steps without kill XP (quest XP alone does not reset the counter)
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
-**Action Space** — `Discrete(17)`:
+**Action Space** — `Discrete(18)`:
 | ID | Action |
 |---|---|
 | 0 | No-op (wait) |
@@ -545,8 +546,9 @@ Extended replacement for `wow_env.py` with optional quest system:
 | 14 | Cast Holy Fire (14914) |
 | 15 | Cast Inner Fire (588) — self-buff: armor + spell power |
 | 16 | Cast PW:Fortitude (1243) — self-buff: +HP |
+| 17 | Eat/Drink — regen 5% HP+Mana/s, OOC only, interrupted by movement/damage/full |
 
-**Observation Vector** — `Box(shape=(38,), dtype=float32)`:
+**Observation Vector** — `Box(shape=(39,), dtype=float32)`:
 
 | Index | Value | Range |
 |---|---|---|
@@ -572,24 +574,25 @@ Extended replacement for `wow_env.py` with optional quest system:
 | 19 | has_fortitude | 0/1 |
 | 20 | mind_blast_ready | 0/1 |
 | 21 | target_has_holy_fire | 0/1 |
-| 22 | spell_power / 200 | 0-inf |
-| 23 | spell_crit / 50 | 0-inf |
-| 24 | spell_haste / 50 | 0-inf |
-| 25 | total_armor / 2000 | 0-inf |
-| 26 | attack_power / 500 | 0-inf |
-| 27 | melee_crit / 50 | 0-inf |
-| 28 | dodge / 50 | 0-inf |
-| 29 | hit_spell / 50 | 0-inf |
-| 30 | expertise / 50 | 0-inf |
-| 31 | armor_pen / 100 | 0-inf |
-| 32 | has_active_quest | 0/1 |
-| 33 | quest_progress (objectives ratio) | 0-1 |
-| 34 | quest_npc_nearby | 0/1 |
-| 35 | quest_npc_distance / 40 | 0-1 |
-| 36 | quest_npc_angle / pi | -1 to 1 |
-| 37 | quests_completed / 10 | 0-inf |
+| 22 | is_eating | 0/1 |
+| 23 | spell_power / 200 | 0-inf |
+| 24 | spell_crit / 50 | 0-inf |
+| 25 | spell_haste / 50 | 0-inf |
+| 26 | total_armor / 2000 | 0-inf |
+| 27 | attack_power / 500 | 0-inf |
+| 28 | melee_crit / 50 | 0-inf |
+| 29 | dodge / 50 | 0-inf |
+| 30 | hit_spell / 50 | 0-inf |
+| 31 | expertise / 50 | 0-inf |
+| 32 | armor_pen / 100 | 0-inf |
+| 33 | has_active_quest | 0/1 |
+| 34 | quest_progress (objectives ratio) | 0-1 |
+| 35 | quest_npc_nearby | 0/1 |
+| 36 | quest_npc_distance / 40 | 0-1 |
+| 37 | quest_npc_angle / pi | -1 to 1 |
+| 38 | quests_completed / 10 | 0-inf |
 
-Stat dims (22-31) reflect gear + buffs and update as the bot equips items or levels. Quest dims (32-37) are always present but zero when quests are disabled (`enable_quests=False`).
+Stat dims (23-32) reflect gear + buffs and update as the bot equips items or levels. Quest dims (33-38) are always present but zero when quests are disabled (`enable_quests=False`).
 
 **Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1, enable_quests=False)`
 - `data_root`: Path to WoW `Data/` directory -> enables 3D terrain (`SimTerrain`) + area lookups (`WoW3DEnvironment` with AreaTable.dbc)
@@ -680,7 +683,7 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-15 test functions:
+16 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
 2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
 3. **test_random_episode()**: 1000-step episode with random actions
@@ -696,6 +699,7 @@ Interactive map visualization for analyzing training episodes:
 13. **test_bag_system()**: Bag equip/upgrade, capacity tracking, profession bag rejection, combat-lock, sell preserves bags, state_dict bag info, reset clears bags
 14. **test_combat_resolution()**: WotLK melee attack table (single-roll: miss/dodge/parry/block/crit/crushing/normal), spell miss with level difference (4%/5%/6%/17%), spell hit two-roll system, mob crit 200% damage, block damage reduction by block_value, hit rating reduces miss, heal spells never miss, consume_events combat counters
 15. **test_action_masking()**: Action masking system: mask shape/dtype, casting lock (only noop), offensive spells need target, buff duplication masks, loot masked in combat (fight first), loot available OOC, OOM masks all spells, GCD blocks spells but allows movement, sell/quest masking, graceful fallback for masked actions
+16. **test_eat_drink()**: Eat/drink action: regen rate (5% HP+Mana/s), auto-stop when full, can't eat when full/in combat/casting, movement/turn/damage/aggro interrupts, state_dict is_eating field, action masking (masked in combat/full, only noop while eating), obs vector is_eating dim
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -920,7 +924,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 9 Priest spells, WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, full combat resolution (melee attack table + spell miss/crit), dodge/parry/block, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
 | **WotLK Attribute System** | done | 5 primary stats, all combat ratings (hit/crit/haste/dodge/parry/block/expertise/ArP/resilience), spell power coefficients, DBC-derived formulas, diminishing returns |
 | **Equipment System** | done | 19 WoW equipment slots, equip/unequip with stat recalculation, combat-locked, two-hand offhand clearing, dual-slot logic (rings/trinkets), item stats from CSV |
-| **WoWSimEnv (Gym Interface)** | done | Discrete(17) actions, Box(38) obs (22 base + 10 stat + 6 quest), sparse rewards, stall detection |
+| **WoWSimEnv (Gym Interface)** | done | Discrete(18) actions, Box(39) obs (23 base + 10 stat + 6 quest), sparse rewards, stall detection |
 | **train_sim.py (PPO Training)** | done | 5 bots, SubprocVecEnv, TensorBoard, gameplay metrics, episode logging |
 | **Loot Table System** | done | LootDB CSV loader, AzerothCore group/reference logic, item scores + individual stat types, upgrade detection, sim integration with fallback |
 | **test_sim.py (Validation)** | done | 10+ tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables, vendor system, quest system, quest CSV loading, attribute system, equipment |

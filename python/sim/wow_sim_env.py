@@ -1,8 +1,8 @@
 """
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
-Observation space: Box(38,) — 22 base dims + 10 stat dims + 6 quest dims.
-Action space: Discrete(17) — 16 base actions + 1 quest action.
+Observation space: Box(39,) — 23 base dims + 10 stat dims + 6 quest dims.
+Action space: Discrete(18) — 17 base actions + 1 quest action.
 Runs ~1000x faster than the real server.
 
 Uses **action masking** instead of override logic: invalid actions are masked
@@ -21,7 +21,7 @@ Usage:
     obs, reward, done, trunc, info = env.step(action)
 
     # Action masking (for MaskablePPO from sb3_contrib):
-    masks = env.action_masks()               # np.ndarray(17,) bool
+    masks = env.action_masks()               # np.ndarray(18,) bool
 """
 
 import gymnasium as gym
@@ -57,14 +57,14 @@ class WoWSimEnv(gym.Env):
     """
     Simulated WoW environment with optional quest system.
 
-    Observation Space: Box(38,) — 22 base + 10 stat + 6 quest dimensions
-    Action Space: Discrete(17) — 16 base actions + quest interact
+    Observation Space: Box(39,) — 23 base + 10 stat + 6 quest dimensions
+    Action Space: Discrete(18) — 17 base actions + quest interact
 
-    Stat dimensions (indices 22-31):
-      [22] spell_power/200, [23] spell_crit/50, [24] spell_haste/50,
-      [25] total_armor/2000, [26] attack_power/500, [27] melee_crit/50,
-      [28] dodge/50, [29] hit_spell/50, [30] expertise/50, [31] armor_pen/100
-    Quest dimensions (indices 32-37) are always present but zero when
+    Stat dimensions (indices 23-32):
+      [23] spell_power/200, [24] spell_crit/50, [25] spell_haste/50,
+      [26] total_armor/2000, [27] attack_power/500, [28] melee_crit/50,
+      [29] dodge/50, [30] hit_spell/50, [31] expertise/50, [32] armor_pen/100
+    Quest dimensions (indices 33-38) are always present but zero when
     quests are disabled, keeping the interface stable for model transfer.
     """
 
@@ -76,9 +76,9 @@ class WoWSimEnv(gym.Env):
                  log_interval: int = 1, enable_quests: bool = False):
         super().__init__()
 
-        self.action_space = spaces.Discrete(17)
+        self.action_space = spaces.Discrete(18)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(38,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(39,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -184,6 +184,7 @@ class WoWSimEnv(gym.Env):
 
         Game-mechanic masks (action is physically impossible):
         - Casting → only noop allowed
+        - Eating → only noop allowed (eating auto-ticks, movement interrupts)
         - GCD active → all spells masked
         - Insufficient mana → that spell masked
         - Spell on cooldown → that spell masked
@@ -199,14 +200,22 @@ class WoWSimEnv(gym.Env):
         - Range management (no auto-stop at 25 units)
         - Aggro recovery (targeting in combat)
         - Walking to corpse after kill
+        - When to eat/drink vs keep going
         """
-        mask = np.ones(17, dtype=bool)
+        mask = np.ones(18, dtype=bool)
         p = self.sim.player
 
         # ── While casting: ONLY noop is valid ──
         if p.is_casting:
             mask[:] = False
             mask[0] = True  # noop
+            return mask
+
+        # ── While eating: ONLY noop is valid (regen ticks automatically) ──
+        # Any other action would interrupt eating — masking prevents accidental cancel
+        if p.is_eating:
+            mask[:] = False
+            mask[0] = True  # noop (continue eating)
             return mask
 
         in_combat = p.in_combat
@@ -303,6 +312,12 @@ class WoWSimEnv(gym.Env):
             qnpc, _ = self.sim.get_best_quest_npc()
             if qnpc is None:
                 mask[11] = False
+
+        # ── Eat/Drink (17): only OOC, not casting, not already eating, not full ──
+        if in_combat or p.is_casting:
+            mask[17] = False
+        elif p.hp >= p.max_hp and p.mana >= p.max_mana:
+            mask[17] = False  # already full, no point eating
 
         return mask
 
@@ -445,6 +460,8 @@ class WoWSimEnv(gym.Env):
                 self.sim.do_cast_inner_fire()
             elif action == 16:
                 self.sim.do_cast_fortitude()
+            elif action == 17:
+                self.sim.do_eat_drink()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -660,7 +677,7 @@ class WoWSimEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _build_obs(self, data: dict) -> np.ndarray:
-        """Build observation vector — 22 base + 10 stat + 6 quest = 38 total."""
+        """Build observation vector — 23 base + 10 stat + 6 quest = 39 total."""
         max_hp = max(1, data['max_hp'])
         hp_pct = data['hp'] / max_hp
         mana_pct = data['power'] / max(1, data['max_power'])
@@ -699,8 +716,9 @@ class WoWSimEnv(gym.Env):
         has_fortitude = 1.0 if data.get('has_fortitude') == 'true' else 0.0
         mind_blast_ready = 1.0 if data.get('mind_blast_ready') == 'true' else 0.0
         target_has_holy_fire = 1.0 if data.get('target_has_holy_fire') == 'true' else 0.0
+        is_eating = 1.0 if data.get('is_eating') == 'true' else 0.0
 
-        # Stat observations (dims 22-31) — comprehensive WotLK stats
+        # Stat observations (dims 23-32) — comprehensive WotLK stats
         stat_sp = data.get('spell_power', 0) / 200.0           # spell power / 200
         stat_spell_crit = data.get('spell_crit', 0) / 50.0     # spell crit% / 50
         stat_spell_haste = data.get('spell_haste', 0) / 50.0   # spell haste% / 50
@@ -712,7 +730,7 @@ class WoWSimEnv(gym.Env):
         stat_expertise = data.get('expertise', 0) / 50.0       # expertise% / 50
         stat_arp = data.get('armor_pen', 0) / 100.0            # ArP% / 100
 
-        # Quest observations (dims 32-37) — always present, zero when quests disabled
+        # Quest observations (dims 33-38) — always present, zero when quests disabled
         quest_obs = self._compute_quest_obs(data)
 
         return np.array([
@@ -724,6 +742,7 @@ class WoWSimEnv(gym.Env):
             has_shield, target_has_sw_pain,
             has_renew, has_inner_fire, has_fortitude,
             mind_blast_ready, target_has_holy_fire,
+            is_eating,
             stat_sp, stat_spell_crit, stat_spell_haste, stat_armor,
             stat_ap, stat_melee_crit, stat_dodge, stat_hit,
             stat_expertise, stat_arp,
@@ -733,12 +752,12 @@ class WoWSimEnv(gym.Env):
     def _compute_quest_obs(self, data: dict):
         """Compute quest observation features (6 dimensions).
 
-        [32] has_active_quest        (0/1)
-        [33] quest_progress          (0-1, ratio of completed objectives)
-        [34] quest_npc_nearby        (0/1, relevant quest NPC exists)
-        [35] quest_npc_distance / 40 (0-1, normalized distance)
-        [36] quest_npc_angle / pi    (-1 to 1, relative angle)
-        [37] quests_completed / 10   (0-inf, total completed this episode)
+        [33] has_active_quest        (0/1)
+        [34] quest_progress          (0-1, ratio of completed objectives)
+        [35] quest_npc_nearby        (0/1, relevant quest NPC exists)
+        [36] quest_npc_distance / 40 (0-1, normalized distance)
+        [37] quest_npc_angle / pi    (-1 to 1, relative angle)
+        [38] quests_completed / 10   (0-inf, total completed this episode)
         """
         if not self._quest_db:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

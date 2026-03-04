@@ -130,32 +130,32 @@ def test_gym_env():
     env = WoWSimEnv(num_mobs=10, seed=42)
 
     # Check spaces
-    assert env.observation_space.shape == (38,), f"Obs shape: {env.observation_space.shape}"
-    assert env.action_space.n == 17, f"Action space: {env.action_space.n}"
+    assert env.observation_space.shape == (39,), f"Obs shape: {env.observation_space.shape}"
+    assert env.action_space.n == 18, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
     # Reset
     obs, info = env.reset()
-    assert obs.shape == (38,), f"Obs shape after reset: {obs.shape}"
+    assert obs.shape == (39,), f"Obs shape after reset: {obs.shape}"
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
     # Check action_masks
     mask = env.action_masks()
-    assert mask.shape == (17,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (18,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
-    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/17")
+    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/18")
 
     # Step with each action
-    for action in range(17):
+    for action in range(18):
         obs, reward, done, trunc, info = env.step(action)
-        assert obs.shape == (38,)
+        assert obs.shape == (39,)
         if done:
             obs, info = env.reset()
 
-    print(f"  All 17 actions executed successfully")
+    print(f"  All 18 actions executed successfully")
     print("  PASSED\n")
 
 
@@ -1103,8 +1103,8 @@ def test_quest_system():
     # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
-    assert obs.shape == (38,), f"Expected obs(28,), got {obs.shape}"
-    assert env.action_space.n == 17, f"Expected 17 actions, got {env.action_space.n}"
+    assert obs.shape == (39,), f"Expected obs(39,), got {obs.shape}"
+    assert env.action_space.n == 18, f"Expected 18 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
     assert obs[28] > 0 or obs[26] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
@@ -1495,16 +1495,18 @@ def test_attribute_system():
     # --- Test 11m: Gear obs in WoWSimEnv ---
     env = WoWSimEnv(num_mobs=5, seed=42)
     obs, _ = env.reset()
-    # Stat obs at indices 22-31 (10 dims: SP, spell_crit, spell_haste, armor,
+    # obs[22] = is_eating (0/1)
+    # Stat obs at indices 23-32 (10 dims: SP, spell_crit, spell_haste, armor,
     # AP, melee_crit, dodge, hit, expertise, ArP)
-    assert obs[22] == 0.0, f"SP obs should be 0 with no gear, got {obs[22]}"
-    assert obs[23] >= 0.0, f"Spell crit obs should be >= 0, got {obs[23]}"
-    assert obs[24] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[24]}"
-    assert obs[25] >= 0.0, f"Armor obs should be >= 0, got {obs[25]}"  # agi*2 gives base armor
-    assert obs[26] >= 0.0, f"AP obs should be >= 0, got {obs[26]}"
-    assert obs[27] >= 0.0, f"Melee crit obs should be >= 0, got {obs[27]}"
-    assert obs[28] >= 0.0, f"Dodge obs should be >= 0, got {obs[28]}"
-    print(f"  11m: Stat obs [22:32]={obs[22:32]} ✓")
+    assert obs[22] == 0.0, f"is_eating obs should be 0 at start, got {obs[22]}"
+    assert obs[23] == 0.0, f"SP obs should be 0 with no gear, got {obs[23]}"
+    assert obs[24] >= 0.0, f"Spell crit obs should be >= 0, got {obs[24]}"
+    assert obs[25] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[25]}"
+    assert obs[26] >= 0.0, f"Armor obs should be >= 0, got {obs[26]}"  # agi*2 gives base armor
+    assert obs[27] >= 0.0, f"AP obs should be >= 0, got {obs[27]}"
+    assert obs[28] >= 0.0, f"Melee crit obs should be >= 0, got {obs[28]}"
+    assert obs[29] >= 0.0, f"Dodge obs should be >= 0, got {obs[29]}"
+    print(f"  11m: Stat obs [23:33]={obs[23:33]} ✓")
 
     # --- Test 11n: Equipment persists across ticks ---
     sim4 = CombatSimulation(num_mobs=5, seed=42)
@@ -2371,7 +2373,7 @@ def test_action_masking():
 
     # --- 15a: Initial mask — basic validity ---
     mask = env.action_masks()
-    assert mask.shape == (17,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (18,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
     assert mask[1] == True, "Move forward should be valid when not casting"
@@ -2518,8 +2520,188 @@ def test_action_masking():
     obs6, _ = env6.reset()
     env6.sim.player.mana = 0
     obs6, reward, done, trunc, info = env6.step(5)  # try Smite with no mana
-    assert obs6.shape == (38,), "Step with invalid action should not crash"
+    assert obs6.shape == (39,), "Step with invalid action should not crash"
     print(f"  15k: Stepping with masked action is graceful (no crash) ✓")
+
+    print("  PASSED\n")
+
+
+def test_eat_drink():
+    """Test eat/drink action: regen, interrupts, masking."""
+    print("=== Test 16: Eat/Drink System ===")
+
+    # --- 16a: Basic eat/drink starts and regens HP/Mana ---
+    sim = CombatSimulation(num_mobs=5, seed=42)
+    p = sim.player
+    p.hp = int(p.max_hp * 0.5)
+    p.mana = int(p.max_mana * 0.5)
+    hp_before = p.hp
+    mana_before = p.mana
+    assert not p.is_eating
+    result = sim.do_eat_drink()
+    assert result, "do_eat_drink should return True"
+    assert p.is_eating, "Player should be eating"
+    sim.tick()
+    assert p.hp > hp_before, f"HP should increase: {hp_before} -> {p.hp}"
+    assert p.mana > mana_before, f"Mana should increase: {mana_before} -> {p.mana}"
+    print(f"  16a: Eat/drink regens: HP {hp_before}→{p.hp}, Mana {mana_before}→{p.mana} ✓")
+
+    # --- 16b: Regen rate is ~2.5% per tick (5% per second, 0.5s per tick) ---
+    sim2 = CombatSimulation(num_mobs=5, seed=42)
+    p2 = sim2.player
+    p2.hp = 1
+    p2.mana = 1
+    sim2.do_eat_drink()
+    sim2.tick()
+    expected_hp_regen = max(1, int(p2.max_hp * 0.025))
+    expected_mana_regen = max(1, int(p2.max_mana * 0.025))
+    # HP should be 1 + expected (plus any OOC regen from tick)
+    assert p2.hp >= 1 + expected_hp_regen, \
+        f"HP regen per tick: expected >= {expected_hp_regen}, got {p2.hp - 1}"
+    print(f"  16b: Regen rate: HP +{p2.hp - 1}/tick, Mana +{p2.mana - 1}/tick "
+          f"(expected ~{expected_hp_regen}/{expected_mana_regen}) ✓")
+
+    # --- 16c: Auto-stops when HP+Mana are full ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p3 = sim3.player
+    p3.hp = p3.max_hp - 1
+    p3.mana = p3.max_mana - 1
+    sim3.do_eat_drink()
+    assert p3.is_eating
+    sim3.tick()
+    assert p3.hp == p3.max_hp, "HP should be full"
+    assert p3.mana == p3.max_mana, "Mana should be full"
+    assert not p3.is_eating, "Should stop eating when full"
+    print(f"  16c: Auto-stop when full: HP={p3.hp}/{p3.max_hp}, eating={p3.is_eating} ✓")
+
+    # --- 16d: Can't eat when already full ---
+    sim4 = CombatSimulation(num_mobs=5, seed=42)
+    result = sim4.do_eat_drink()
+    assert not result, "Should not start eating when already full"
+    assert not sim4.player.is_eating
+    print(f"  16d: Can't eat when full ✓")
+
+    # --- 16e: Movement interrupts eating ---
+    sim5 = CombatSimulation(num_mobs=5, seed=42)
+    sim5.player.hp = int(sim5.player.max_hp * 0.5)
+    sim5.do_eat_drink()
+    assert sim5.player.is_eating
+    sim5.do_move_forward()
+    assert not sim5.player.is_eating, "move_forward should interrupt eating"
+    print(f"  16e: move_forward interrupts eating ✓")
+
+    # --- 16f: Turn interrupts eating ---
+    sim6 = CombatSimulation(num_mobs=5, seed=42)
+    sim6.player.hp = int(sim6.player.max_hp * 0.5)
+    sim6.do_eat_drink()
+    sim6.do_turn_left()
+    assert not sim6.player.is_eating, "turn_left should interrupt eating"
+
+    sim6b = CombatSimulation(num_mobs=5, seed=42)
+    sim6b.player.hp = int(sim6b.player.max_hp * 0.5)
+    sim6b.do_eat_drink()
+    sim6b.do_turn_right()
+    assert not sim6b.player.is_eating, "turn_right should interrupt eating"
+    print(f"  16f: Turning interrupts eating ✓")
+
+    # --- 16g: Damage interrupts eating ---
+    sim7 = CombatSimulation(num_mobs=5, seed=42)
+    sim7.player.hp = int(sim7.player.max_hp * 0.5)
+    sim7.do_eat_drink()
+    assert sim7.player.is_eating
+    sim7._damage_player(5)
+    assert not sim7.player.is_eating, "Damage should interrupt eating"
+    print(f"  16g: Damage interrupts eating ✓")
+
+    # --- 16h: Combat (mob aggro) interrupts eating ---
+    sim8 = CombatSimulation(num_mobs=5, seed=42)
+    sim8.player.hp = int(sim8.player.max_hp * 0.5)
+    # Move player right on top of a mob to trigger aggro on next tick
+    mob = sim8.mobs[0]
+    sim8.player.x = mob.x
+    sim8.player.y = mob.y
+    sim8.do_eat_drink()
+    assert sim8.player.is_eating
+    sim8.tick()  # mob should aggro and interrupt eating
+    assert sim8.player.in_combat, "Player should be in combat after aggro"
+    assert not sim8.player.is_eating, "Combat should interrupt eating"
+    print(f"  16h: Mob aggro interrupts eating ✓")
+
+    # --- 16i: Can't eat while in combat ---
+    sim9 = CombatSimulation(num_mobs=5, seed=42)
+    sim9.player.in_combat = True
+    sim9.player.hp = int(sim9.player.max_hp * 0.5)
+    result = sim9.do_eat_drink()
+    assert not result, "Should not start eating in combat"
+    assert not sim9.player.is_eating
+    print(f"  16i: Can't eat in combat ✓")
+
+    # --- 16j: Can't eat while casting ---
+    sim10 = CombatSimulation(num_mobs=5, seed=42)
+    sim10.player.is_casting = True
+    sim10.player.hp = int(sim10.player.max_hp * 0.5)
+    result = sim10.do_eat_drink()
+    assert not result, "Should not start eating while casting"
+    print(f"  16j: Can't eat while casting ✓")
+
+    # --- 16k: State dict includes is_eating ---
+    sim11 = CombatSimulation(num_mobs=5, seed=42)
+    sim11.player.hp = int(sim11.player.max_hp * 0.5)
+    state = sim11.get_state_dict()
+    assert state["is_eating"] == "false"
+    sim11.do_eat_drink()
+    state = sim11.get_state_dict()
+    assert state["is_eating"] == "true"
+    print(f"  16k: State dict is_eating field ✓")
+
+    # --- 16l: WoWSimEnv action masking for eat/drink ---
+    env = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env.reset()
+    mask = env.action_masks()
+    # At full HP+Mana, eat/drink (action 17) should be masked
+    assert not mask[17], "Eat/drink should be masked when full HP+Mana"
+
+    # Damage player, eat should now be available
+    env.sim.player.hp = int(env.sim.player.max_hp * 0.5)
+    mask2 = env.action_masks()
+    assert mask2[17], "Eat/drink should be valid when HP is low"
+
+    # In combat, eat should be masked
+    env.sim.player.in_combat = True
+    mask3 = env.action_masks()
+    assert not mask3[17], "Eat/drink should be masked in combat"
+    env.sim.player.in_combat = False
+    print(f"  16l: Action masking for eat/drink ✓")
+
+    # --- 16m: While eating, only noop is allowed ---
+    env2 = WoWSimEnv(num_mobs=5, seed=42)
+    env2.reset()
+    env2.sim.player.hp = int(env2.sim.player.max_hp * 0.5)
+    env2.sim.do_eat_drink()
+    assert env2.sim.player.is_eating
+    mask4 = env2.action_masks()
+    assert mask4[0], "Noop should be valid while eating"
+    assert mask4.sum() == 1, f"Only noop valid while eating, but {mask4.sum()} actions valid"
+    print(f"  16m: Only noop allowed while eating ✓")
+
+    # --- 16n: Obs vector includes is_eating ---
+    env3 = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env3.reset()
+    assert obs[22] == 0.0, f"is_eating should be 0, got {obs[22]}"
+    env3.sim.player.hp = int(env3.sim.player.max_hp * 0.5)
+    env3.sim.do_eat_drink()
+    obs2 = env3._build_obs(env3.sim.get_state_dict())
+    assert obs2[22] == 1.0, f"is_eating should be 1 while eating, got {obs2[22]}"
+    print(f"  16n: Obs vector is_eating at index 22 ✓")
+
+    # --- 16o: do_move_to interrupts eating ---
+    sim12 = CombatSimulation(num_mobs=5, seed=42)
+    sim12.player.hp = int(sim12.player.max_hp * 0.5)
+    sim12.do_eat_drink()
+    assert sim12.player.is_eating
+    sim12.do_move_to(sim12.player.x + 10, sim12.player.y)
+    assert not sim12.player.is_eating, "do_move_to should interrupt eating"
+    print(f"  16o: do_move_to interrupts eating ✓")
 
     print("  PASSED\n")
 
@@ -2540,4 +2722,5 @@ if __name__ == "__main__":
     test_bag_system()
     test_combat_resolution()
     test_action_masking()
+    test_eat_drink()
     print("=== ALL TESTS PASSED ===")

@@ -1105,6 +1105,8 @@ class CombatSimulation:
         if self.player.is_casting:
             return
         p = self.player
+        if p.is_eating:
+            p.is_eating = False
         new_x = p.x + math.cos(p.orientation) * self.MOVE_SPEED
         new_y = p.y + math.sin(p.orientation) * self.MOVE_SPEED
 
@@ -1121,6 +1123,8 @@ class CombatSimulation:
     def do_turn_left(self):
         if self.player.is_casting:
             return
+        if self.player.is_eating:
+            self.player.is_eating = False
         self.player.orientation += self.TURN_AMOUNT
         if self.player.orientation > math.pi:
             self.player.orientation -= 2 * math.pi
@@ -1128,6 +1132,8 @@ class CombatSimulation:
     def do_turn_right(self):
         if self.player.is_casting:
             return
+        if self.player.is_eating:
+            self.player.is_eating = False
         self.player.orientation -= self.TURN_AMOUNT
         if self.player.orientation < -math.pi:
             self.player.orientation += 2 * math.pi
@@ -1142,6 +1148,8 @@ class CombatSimulation:
         if self.player.is_casting:
             return False
         p = self.player
+        if p.is_eating:
+            p.is_eating = False
         dx = tx - p.x
         dy = ty - p.y
         dist = math.sqrt(dx * dx + dy * dy)
@@ -1215,6 +1223,25 @@ class CombatSimulation:
     def do_cast_fortitude(self) -> bool:
         """Cast Power Word: Fortitude (instant self-buff)."""
         return self._start_cast(1243)
+
+    def do_eat_drink(self) -> bool:
+        """Start eating/drinking. Regenerates 5% HP and Mana per second.
+
+        Only works out of combat. Interrupted by movement, taking damage,
+        entering combat, or reaching full HP and Mana.
+        """
+        p = self.player
+        if p.in_combat or p.is_casting or p.is_eating:
+            return False
+        # Don't start if already full
+        if p.hp >= p.max_hp and p.mana >= p.max_mana:
+            return False
+        p.is_eating = True
+        return True
+
+    def _interrupt_eating(self):
+        """Cancel the eat/drink state."""
+        self.player.is_eating = False
 
     def do_loot(self) -> bool:
         """Loot nearest dead mob within range.
@@ -1610,6 +1637,8 @@ class CombatSimulation:
                     mob.in_combat = True
                     mob.target_player = True
                     p.in_combat = True
+                    if p.is_eating:
+                        p.is_eating = False
                 else:
                     # Far non-combat mob: only process DoTs then skip
                     if mob.dot_remaining > 0:
@@ -1781,6 +1810,20 @@ class CombatSimulation:
             p.mana = min(p.max_mana, p.mana + regen)
             p.mana_regen_accumulator -= regen
 
+        # --- Eat/Drink regen (5% HP + 5% Mana per second = 2.5% per tick) ---
+        if p.is_eating:
+            # Auto-interrupt if in combat (shouldn't happen, but safety check)
+            if p.in_combat:
+                p.is_eating = False
+            else:
+                hp_regen = int(p.max_hp * 0.025)
+                mana_regen = int(p.max_mana * 0.025)
+                p.hp = min(p.max_hp, p.hp + max(1, hp_regen))
+                p.mana = min(p.max_mana, p.mana + max(1, mana_regen))
+                # Stop eating when both HP and Mana are full
+                if p.hp >= p.max_hp and p.mana >= p.max_mana:
+                    p.is_eating = False
+
     def _damage_player(self, damage: int, attacker: 'Mob | None' = None):
         """Apply damage to player, considering armor mitigation and shield.
 
@@ -1791,6 +1834,9 @@ class CombatSimulation:
           mitigation = dr / (1 + dr), capped at 75%
         """
         p = self.player
+        # Taking damage interrupts eating
+        if p.is_eating:
+            p.is_eating = False
         # total_armor is pre-computed in recalculate_stats (gear + agi*2 + inner fire)
         if p.total_armor > 0:
             if attacker is not None:
@@ -1984,6 +2030,7 @@ class CombatSimulation:
             "holy_fire_ready": "true" if p.spell_cooldowns.get(14914, 0) <= 0 else "false",
             "target_has_sw_pain": "true" if t_info.get("has_sw_pain") else "false",
             "target_has_holy_fire": "true" if t_info.get("has_holy_fire") else "false",
+            "is_eating": "true" if p.is_eating else "false",
             "nearby_mobs": [
                 {
                     "guid": str(m["uid"]),
