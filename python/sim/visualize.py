@@ -669,24 +669,32 @@ class InteractiveViewer:
             lvl = max(r.final_level for r in recs)
             bots = ", ".join(r.name for r in recs)
             self._ep_labels.append(
-                f"Ep{k}: {kills} kills, Lv{lvl} ({bots})")
+                f"Ep{k}: {kills}k Lv{lvl}")
 
     # ── Figure setup ─────────────────────────────────────────────────
 
     def _setup_figure(self):
-        self.fig = plt.figure(figsize=(16, 10))
+        self.fig = plt.figure(figsize=(18, 10))
         self.fig.set_facecolor("#1a1a2e")
         self.fig.canvas.manager.set_window_title(self.title)
 
-        # ── Main map axes ────────────────────────────────────────────
-        self.ax_map = self.fig.add_axes([0.05, 0.12, 0.72, 0.82])
-        self.ax_map.set_facecolor("#16213e")
+        # ── Layout constants ──────────────────────────────────────────
+        # Left sidebar for episodes, main map in center, right panel
+        left_w = 0.13
+        right_w = 0.15
+        map_left = left_w + 0.01
+        map_w = 1.0 - map_left - right_w - 0.02
+        map_bottom = 0.06
+        map_h = 0.88
+        right_x = 1.0 - right_w - 0.01
 
-        # ── Episode selector (left side, below map) ──────────────────
-        ep_labels = self._ep_labels if self._ep_labels else ["(no episodes)"]
-        n_eps = len(ep_labels)
-        ep_h = min(max(0.025 * n_eps, 0.05), 0.35)
-        self._ax_ep = self.fig.add_axes([0.05, 0.96 - ep_h, 0.72, ep_h])
+        # ── Episode selector (left sidebar) ───────────────────────────
+        self.fig.text(left_w / 2, 0.96, "Episodes",
+                      color="white", fontsize=10, fontweight="bold",
+                      ha="center")
+        ep_labels = self._ep_labels if self._ep_labels else ["(none)"]
+        self._ax_ep = self.fig.add_axes(
+            [0.00, map_bottom, left_w, map_h])
         self._ax_ep.set_facecolor("#1a1a2e")
         for spine in self._ax_ep.spines.values():
             spine.set_color("#444")
@@ -698,8 +706,14 @@ class InteractiveViewer:
             lbl.set_fontfamily("monospace")
         self._ep_radio.on_clicked(self._on_episode_selected)
 
-        # ── Zoom slider (bottom) ─────────────────────────────────────
-        ax_zoom = self.fig.add_axes([0.15, 0.02, 0.55, 0.03])
+        # ── Main map axes ────────────────────────────────────────────
+        self.ax_map = self.fig.add_axes(
+            [map_left, map_bottom, map_w, map_h])
+        self.ax_map.set_facecolor("#16213e")
+
+        # ── Zoom slider (bottom, under map) ───────────────────────────
+        ax_zoom = self.fig.add_axes(
+            [map_left + 0.05, 0.01, map_w - 0.10, 0.03])
         ax_zoom.set_facecolor("#2a2a4e")
         self.zoom_slider = Slider(
             ax_zoom, "Zoom", 0.1, 10.0,
@@ -711,17 +725,16 @@ class InteractiveViewer:
 
         # ── Run selector (right side, top) ───────────────────────────
         self._run_radio = None
-        right_top = 0.88
+        right_top = 0.92
         if len(self._run_names) > 1:
             n_runs = len(self._run_names)
-            radio_h = min(max(0.04 * n_runs, 0.08), 0.35)
-            ax_run_label = self.fig.text(
-                0.89, right_top + 0.01, "Run:",
+            radio_h = min(max(0.04 * n_runs, 0.08), 0.30)
+            self.fig.text(
+                right_x + right_w / 2, right_top + 0.01, "Run:",
                 color="white", fontsize=10, fontweight="bold",
                 ha="center")
-            self._run_label_text = ax_run_label
             ax_run = self.fig.add_axes(
-                [0.80, right_top - radio_h, 0.18, radio_h])
+                [right_x, right_top - radio_h, right_w, radio_h])
             ax_run.set_facecolor("#1a1a2e")
             for spine in ax_run.spines.values():
                 spine.set_color("#444")
@@ -732,15 +745,13 @@ class InteractiveViewer:
                 lbl.set_fontsize(8)
             self._run_radio.on_clicked(self._on_run_changed)
             right_top = right_top - radio_h - 0.03
-        else:
-            right_top = 0.88
 
         # ── Bot filter checkboxes (right side) ───────────────────────
         n_bots = len(self.bot_names)
         check_h = min(max(0.045 * n_bots, 0.10), 0.40)
         check_top = right_top
         self._ax_check = self.fig.add_axes(
-            [0.80, check_top - check_h, 0.18, check_h])
+            [right_x, check_top - check_h, right_w, check_h])
         self._ax_check.set_facecolor("#1a1a2e")
         for spine in self._ax_check.spines.values():
             spine.set_color("#444")
@@ -753,14 +764,16 @@ class InteractiveViewer:
 
         # ── All / None buttons ───────────────────────────────────────
         btn_y = check_top + 0.01
-        ax_all = self.fig.add_axes([0.80, btn_y, 0.08, 0.03])
+        ax_all = self.fig.add_axes(
+            [right_x, btn_y, right_w * 0.48, 0.03])
         self.btn_all = Button(ax_all, "All",
                               color="#2a2a4e", hovercolor="#3a3a5e")
         self.btn_all.label.set_color("white")
         self.btn_all.label.set_fontsize(8)
         self.btn_all.on_clicked(self._select_all_bots)
 
-        ax_none = self.fig.add_axes([0.89, btn_y, 0.08, 0.03])
+        ax_none = self.fig.add_axes(
+            [right_x + right_w * 0.52, btn_y, right_w * 0.48, 0.03])
         self.btn_none = Button(ax_none, "None",
                                color="#2a2a4e", hovercolor="#3a3a5e")
         self.btn_none.label.set_color("white")
@@ -769,13 +782,15 @@ class InteractiveViewer:
 
         # ── Log toggle + Reset view buttons ──────────────────────────
         btn_bottom = check_top - check_h - 0.06
-        ax_log = self.fig.add_axes([0.80, btn_bottom, 0.18, 0.04])
+        ax_log = self.fig.add_axes(
+            [right_x, btn_bottom, right_w, 0.04])
         self.btn_log = Button(ax_log, "Show Log",
                               color="#2a2a4e", hovercolor="#3a3a5e")
         self.btn_log.label.set_color("white")
         self.btn_log.on_clicked(self._toggle_log)
 
-        ax_reset = self.fig.add_axes([0.80, btn_bottom - 0.05, 0.18, 0.04])
+        ax_reset = self.fig.add_axes(
+            [right_x, btn_bottom - 0.05, right_w, 0.04])
         self.btn_reset = Button(ax_reset, "Reset View",
                                 color="#2a2a4e", hovercolor="#3a3a5e")
         self.btn_reset.label.set_color("white")
