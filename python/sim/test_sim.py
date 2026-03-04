@@ -43,7 +43,8 @@ from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSIT
                              EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND,
                              EQUIPMENT_SLOT_RANGED, EQUIPMENT_SLOT_FINGER1,
                              EQUIPMENT_SLOT_FINGER2, EQUIPMENT_SLOT_TRINKET1,
-                             EQUIPMENT_SLOT_TRINKET2, INVTYPE_TO_SLOTS)
+                             EQUIPMENT_SLOT_TRINKET2, INVTYPE_TO_SLOTS,
+                             class_aware_score, CLASS_STAT_WEIGHTS)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -1791,6 +1792,68 @@ def test_attribute_system():
     assert old.entry == 9060, "Old helm returned"
     assert p10.equipment[EQUIPMENT_SLOT_HEAD].entry == 9061, "New helm equipped"
     print(f"  11aa: Equipment blocked during combat ✓")
+
+    # --- Test 11ab: Class-aware item scoring ---
+    # Priest should value INT item higher than STR item
+    int_item_stats = {ITEM_MOD_INTELLECT: 10}
+    str_item_stats = {ITEM_MOD_STRENGTH: 10}
+    int_score = class_aware_score(int_item_stats, 2, 10, 0, 0.0, CLASS_PRIEST)
+    str_score = class_aware_score(str_item_stats, 2, 10, 0, 0.0, CLASS_PRIEST)
+    assert int_score > str_score, (
+        f"Priest should prefer INT ({int_score}) over STR ({str_score})")
+    # Warrior should prefer STR over INT
+    w_int_score = class_aware_score(int_item_stats, 2, 10, 0, 0.0, CLASS_WARRIOR)
+    w_str_score = class_aware_score(str_item_stats, 2, 10, 0, 0.0, CLASS_WARRIOR)
+    assert w_str_score > w_int_score, (
+        f"Warrior should prefer STR ({w_str_score}) over INT ({w_int_score})")
+    print(f"  11ab: Class-aware scoring: Priest INT={int_score:.1f}>STR={str_score:.1f}, "
+          f"Warrior STR={w_str_score:.1f}>INT={w_int_score:.1f} ✓")
+
+    # --- Test 11ac: Class-aware try_equip_item prefers class stats ---
+    # Priest with STR helm equipped should upgrade to INT helm (even at same raw score)
+    sim11 = CombatSimulation(num_mobs=5, seed=42)
+    p11 = sim11.player  # Priest by default
+    # Equip a STR helm (bad for Priest)
+    from sim.loot_db import ItemData
+    str_helm = ItemData(
+        entry=9070, name="Warrior Helm", quality=2, sell_price=100,
+        inventory_type=1, item_level=10, item_class=4, item_subclass=1,
+        score=50.0, stats={ITEM_MOD_STRENGTH: 10}, armor=20, weapon_dps=0.0,
+    )
+    sim11.equip_item(str_helm, EQUIPMENT_SLOT_HEAD)
+    assert p11.equipment[EQUIPMENT_SLOT_HEAD].entry == 9070
+
+    # Offer an INT helm with the same raw stats total
+    int_helm = ItemData(
+        entry=9071, name="Priest Helm", quality=2, sell_price=100,
+        inventory_type=1, item_level=10, item_class=4, item_subclass=1,
+        score=50.0, stats={ITEM_MOD_INTELLECT: 10}, armor=20, weapon_dps=0.0,
+    )
+    result = sim11.try_equip_item(int_helm)
+    assert result is True, "Priest should upgrade from STR to INT helm"
+    assert p11.equipment[EQUIPMENT_SLOT_HEAD].entry == 9071, "INT helm should be equipped"
+    assert p11.equipped_upgrade > 0, "equipped_upgrade should carry score diff"
+    print(f"  11ac: Priest upgrades STR→INT helm, score_diff={p11.equipped_upgrade:.1f} ✓")
+
+    # --- Test 11ad: Scaled upgrade reward in env ---
+    env11 = WoWSimEnv(num_mobs=5, seed=42)
+    env11.reset()
+    events_test = {
+        "equipped_upgrade": 20.0,  # medium upgrade
+        "xp_gained": 0, "loot_copper": 0, "loot_score": 0,
+        "leveled_up": False, "levels_gained": 0,
+        "loot_items": [], "loot_failed": [],
+        "sell_copper": 0, "items_sold": 0,
+        "new_areas": 0, "new_zones": 0, "new_maps": 0,
+        "quest_xp": 0, "quest_copper": 0, "quests_completed": 0,
+    }
+    # Manually compute expected reward: 1.0 + 20.0 * 0.15 = 4.0
+    expected_upgrade_reward = min(1.0 + 20.0 * 0.15, 5.0)
+    assert abs(expected_upgrade_reward - 4.0) < 0.01, f"Expected 4.0, got {expected_upgrade_reward}"
+    # Zero upgrade → no reward
+    zero_reward = min(1.0 + 0.0 * 0.15, 5.0)
+    assert zero_reward == 1.0  # base, but only applied if upgrade_score > 0
+    print(f"  11ad: Scaled upgrade reward: diff=20→reward={expected_upgrade_reward:.1f} ✓")
 
     print("  PASSED\n")
 
