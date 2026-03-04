@@ -210,7 +210,7 @@ class WoWSimEnv(gym.Env):
         hp_pct = p.hp / max(1, p.max_hp)
         dist_to_target = 9999.0
 
-        if self.sim.target and self.sim.target.alive:
+        if self.sim.target:
             dist_to_target = self.sim._dist_to_mob(self.sim.target)
 
         in_combat = p.in_combat
@@ -291,7 +291,8 @@ class WoWSimEnv(gym.Env):
             elif target_dead and dist_to_target < 3.0:
                 override_action = 7  # loot
             elif target_dead and dist_to_target >= 3.0:
-                override_action = 1  # walk to corpse
+                self.sim.do_move_to(self.sim.target.x, self.sim.target.y)
+                override_action = 0  # walking to corpse (move_to handles direction)
             elif target_alive and dist_to_target < 25.0:
                 if action == 1:
                     override_action = 0  # stop moving when in range

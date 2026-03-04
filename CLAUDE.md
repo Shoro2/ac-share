@@ -59,7 +59,7 @@ ac-share/
 │   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
 │   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
 │   │   ├── train_sim.py         <- PPO training on the sim (5 bots, no server needed)
-│   │   ├── test_sim.py          <- Validation tests (10 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading)
+│   │   ├── test_sim.py          <- Validation tests (15 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, loot override)
 │   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
@@ -260,7 +260,7 @@ Quest dims (17-22) are always present but zero when quests are disabled (`enable
 1. **Vendor Mode**: If `free_slots < 2` and not in combat -> navigates to nearest vendor from NPC memory, sells automatically
 2. **Aggro Recovery**: In combat without target -> finds mob attacking the bot, targets it
 3. **Cast Guard**: During casting, movement/turning/other casts are suppressed
-4. **Loot Automation**: Dead target -> approaches, loots automatically at <=6 units
+4. **Loot Automation**: Dead target -> navigates to corpse via `do_move_to`, loots automatically at <=3 units
 5. **Range Management**: Stops forward movement at <25 units to target
 6. **Heal Block**: Heal is blocked at HP > 85%
 7. **Shield Block**: PW:Shield blocked if already shielded
@@ -680,7 +680,7 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-14 test functions:
+15 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
 2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
 3. **test_random_episode()**: 1000-step episode with random actions
@@ -695,6 +695,7 @@ Interactive map visualization for analyzing training episodes:
 12. **test_equipment_system()**: Equipment slots, equip/unequip, stat recalculation, dual-slot items (rings/trinkets), two-hand offhand clearing, combat-lock, item stats accumulation, upgrade detection with gear stats
 13. **test_bag_system()**: Bag equip/upgrade, capacity tracking, profession bag rejection, combat-lock, sell preserves bags, state_dict bag info, reset clears bags
 14. **test_combat_resolution()**: WotLK melee attack table (single-roll: miss/dodge/parry/block/crit/crushing/normal), spell miss with level difference (4%/5%/6%/17%), spell hit two-roll system, mob crit 200% damage, block damage reduction by block_value, hit rating reduces miss, heal spells never miss, consume_events combat counters
+15. **test_loot_override()**: Gym env auto-loot override with dead targets: dist_to_target for dead targets, walk-to-corpse via do_move_to, auto-loot within 3 units
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 

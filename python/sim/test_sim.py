@@ -2353,6 +2353,97 @@ def test_combat_resolution():
     print("  PASSED\n")
 
 
+def test_loot_override():
+    """Test that the gym env auto-loot override works correctly with dead targets."""
+    print("=== Test 15: Loot Override ===")
+
+    env = WoWSimEnv(seed=42)
+    obs, _ = env.reset()
+    sim = env.sim
+    p = sim.player
+
+    # --- 15a: Kill a mob and verify auto-loot triggers ---
+    # Position player next to a mob
+    mob = sim.mobs[0]
+    p.x = mob.x + 2.0
+    p.y = mob.y
+    sim.do_target_nearest()
+    assert sim.target is not None, "Should have a target"
+    assert sim.target.alive, "Target should be alive"
+
+    # Kill the target directly
+    sim.target.hp = 0
+    sim.target.alive = False
+    sim.target.in_combat = False
+    p.in_combat = False
+
+    # Player is within 3 units of dead target — override should loot
+    dist = sim._dist_to_mob(sim.target)
+    assert dist < 3.0, f"Should be within 3 units of dead mob, got {dist:.1f}"
+
+    # Step with any action — override should convert to loot (action 7)
+    initial_loot_items = env._ep_loot_items
+    obs, reward, terminated, truncated, info = env.step(0)  # noop, but override should loot
+    events_looted = env._ep_loot_items > initial_loot_items or sim.target.looted
+    assert sim.target.looted, "Dead mob within 3 units should be auto-looted"
+    print(f"  15a: Auto-loot override works for dead target within range ✓")
+
+    # --- 15b: Dead target far away — bot walks toward it, not random direction ---
+    env2 = WoWSimEnv(seed=123)
+    obs2, _ = env2.reset()
+    sim2 = env2.sim
+    p2 = sim2.player
+    mob2 = sim2.mobs[0]
+    p2.x = mob2.x + 8.0  # 8 units away — out of 3-unit auto-loot range
+    p2.y = mob2.y
+    sim2.do_target_nearest()
+    assert sim2.target is not None
+
+    # Kill target at distance
+    sim2.target.hp = 0
+    sim2.target.alive = False
+    sim2.target.in_combat = False
+    p2.in_combat = False
+
+    dist_before = sim2._dist_to_mob(sim2.target)
+    assert dist_before >= 3.0, f"Should be >= 3 units away, got {dist_before:.1f}"
+
+    # Step — override should walk toward corpse via do_move_to
+    obs2, _, _, _, _ = env2.step(4)  # try to target, but override should walk to corpse
+    dist_after = sim2._dist_to_mob(sim2.target)
+    # Bot should be moving closer to corpse (do_move_to navigates toward target)
+    assert dist_after < dist_before, \
+        f"Bot should walk toward corpse, not away (dist {dist_before:.1f} → {dist_after:.1f})"
+    print(f"  15b: Dead target at distance — bot walks toward corpse "
+          f"(dist {dist_before:.1f} → {dist_after:.1f}) ✓")
+
+    # --- 15c: dist_to_target works for both alive and dead targets ---
+    env3 = WoWSimEnv(seed=456)
+    obs3, _ = env3.reset()
+    sim3 = env3.sim
+    p3 = sim3.player
+    mob3 = sim3.mobs[0]
+    p3.x = mob3.x + 2.0
+    p3.y = mob3.y
+    sim3.do_target_nearest()
+    assert sim3.target is not None
+
+    # Distance should be ~2 units while alive
+    alive_dist = sim3._dist_to_mob(sim3.target)
+    assert alive_dist < 3.0, f"Alive target dist should be ~2, got {alive_dist:.1f}"
+
+    # Kill target — distance should still be calculable
+    sim3.target.hp = 0
+    sim3.target.alive = False
+    dead_dist = sim3._dist_to_mob(sim3.target)
+    assert abs(dead_dist - alive_dist) < 0.1, \
+        f"Dead target dist ({dead_dist:.1f}) should match alive dist ({alive_dist:.1f})"
+    print(f"  15c: dist_to_target consistent for alive ({alive_dist:.1f}) "
+          f"and dead ({dead_dist:.1f}) targets ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -2368,4 +2459,5 @@ if __name__ == "__main__":
     test_attribute_system()
     test_bag_system()
     test_combat_resolution()
+    test_loot_override()
     print("=== ALL TESTS PASSED ===")

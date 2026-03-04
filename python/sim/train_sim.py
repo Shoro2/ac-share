@@ -128,6 +128,7 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_final_level", stats.get("final_level", 1), step)
                 self._writer.add_scalar("gameplay/ep_loot_items", stats.get("loot_items", 0), step)
                 self._writer.add_scalar("gameplay/ep_loot_failed", stats.get("loot_failed", 0), step)
+                self._writer.add_scalar("gameplay/ep_loot_copper", stats.get("loot", 0), step)
                 self._writer.add_scalar("gameplay/ep_sell_copper", stats.get("sell_copper", 0), step)
                 self._writer.add_scalar("gameplay/ep_quests_completed", stats.get("quests_completed", 0), step)
                 self._writer.add_scalar("gameplay/ep_quest_xp", stats.get("quest_xp", 0), step)
