@@ -402,6 +402,15 @@ class Player:
     combat_timer: int = 0       # ticks since last combat action (for OOC regen)
     ooc_regen_accumulator: float = 0.0
     mana_regen_accumulator: float = 0.0
+    # Combat event counters (consume-on-read, for reward/obs signals)
+    dodges: int = 0           # mob attacks dodged this tick
+    parries: int = 0          # mob attacks parried this tick
+    blocks: int = 0           # mob attacks blocked this tick
+    mob_misses: int = 0       # mob attacks that missed this tick
+    mob_crits: int = 0        # mob attacks that crit this tick
+    mob_crushings: int = 0    # crushing blows received this tick
+    spell_misses: int = 0     # player spells that missed this tick
+    spell_crits: int = 0      # player spells that crit this tick
     # Quest tracking (consume-on-read)
     quest_xp_gained: int = 0            # XP from quest turn-ins this tick
     quest_copper_gained: int = 0        # copper from quest turn-ins this tick

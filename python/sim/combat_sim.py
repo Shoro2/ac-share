@@ -74,6 +74,11 @@ from sim.formulas import (
     expertise_pct, armor_penetration_pct, resilience_pct,
     hit_chance_melee, hit_chance_ranged, hit_chance_spell,
     spirit_mana_regen,
+    # Combat resolution
+    resolve_mob_melee_attack, resolve_spell_hit,
+    MELEE_MISS, MELEE_DODGE, MELEE_PARRY, MELEE_BLOCK,
+    MELEE_CRIT, MELEE_NORMAL, MELEE_CRUSHING,
+    SPELL_MISS, SPELL_HIT, SPELL_CRIT,
 )
 
 from sim.models import (
@@ -1393,29 +1398,61 @@ class CombatSimulation:
 
         return True
 
+    def _resolve_offensive_spell(self, mob_level: int) -> str:
+        """Resolve hit/miss/crit for an offensive spell against a mob.
+
+        Uses two-roll system: first miss check, then crit check.
+        Level difference increases miss chance; hit rating reduces it.
+        """
+        p = self.player
+        outcome = resolve_spell_hit(
+            player_level=p.level,
+            mob_level=mob_level,
+            hit_bonus_pct=p.total_hit_spell,
+            spell_crit_pct=p.total_spell_crit,
+            roll_hit=self.rng.random() * 100.0,
+            roll_crit=self.rng.random() * 100.0,
+        )
+        if outcome == SPELL_MISS:
+            p.spell_misses += 1
+        elif outcome == SPELL_CRIT:
+            p.spell_crits += 1
+        return outcome
+
     def _apply_spell(self, spell_id: int):
-        """Apply spell effect when cast completes. Uses total_spell_power for scaling."""
+        """Apply spell effect when cast completes. Uses total_spell_power for scaling.
+
+        Offensive spells now use the WotLK two-roll system:
+        1. Miss check (based on level diff, reduced by hit rating)
+        2. Crit check (from Intellect + crit rating)
+        """
         spell = SPELLS[spell_id]
         sp = self.player.total_spell_power
-        crit_pct = self.player.total_spell_crit
 
         if spell_id == 585:  # Smite — level-scaled + SP
             if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return  # spell missed, no damage
                 min_dmg, max_dmg = smite_damage(self.player.level, sp)
                 dmg = self.rng.randint(min_dmg, max_dmg)
-                if self.rng.random() * 100 < crit_pct:
+                if outcome == SPELL_CRIT:
                     dmg = int(dmg * 1.5)  # spell crit = 150%
                 self._damage_mob(self.target, dmg)
 
-        elif spell_id == 2050:  # Lesser Heal — level-scaled + SP
+        elif spell_id == 2050:  # Lesser Heal — level-scaled + SP (no miss on friendly)
             min_h, max_h = heal_amount(self.player.level, sp)
             heal = self.rng.randint(min_h, max_h)
-            if self.rng.random() * 100 < crit_pct:
+            if self.rng.random() * 100 < self.player.total_spell_crit:
                 heal = int(heal * 1.5)  # healing crit = 150%
+                self.player.spell_crits += 1
             self.player.hp = min(self.player.max_hp, self.player.hp + heal)
 
-        elif spell_id == 589:  # SW:Pain — SP-scaled DoT
+        elif spell_id == 589:  # SW:Pain — SP-scaled DoT (miss check on application)
             if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return  # DoT not applied
                 total_dmg = sw_pain_total(self.player.level, sp)
                 total_ticks = spell.dot_ticks // spell.dot_interval
                 dmg_per_tick = total_dmg // max(1, total_ticks)
@@ -1423,7 +1460,7 @@ class CombatSimulation:
                 self.target.dot_timer = spell.dot_interval
                 self.target.dot_damage_per_tick = dmg_per_tick
 
-        elif spell_id == 17:  # PW:Shield — SP-scaled absorb
+        elif spell_id == 17:  # PW:Shield — SP-scaled absorb (no miss on friendly)
             absorb = pw_shield_absorb(self.player.level, sp)
             self.player.shield_absorb = absorb
             self.player.shield_remaining = spell.shield_duration
@@ -1431,13 +1468,16 @@ class CombatSimulation:
 
         elif spell_id == 8092:  # Mind Blast — level-scaled + SP
             if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return
                 min_dmg, max_dmg = mind_blast_damage(self.player.level, sp)
                 dmg = self.rng.randint(min_dmg, max_dmg)
-                if self.rng.random() * 100 < crit_pct:
+                if outcome == SPELL_CRIT:
                     dmg = int(dmg * 1.5)
                 self._damage_mob(self.target, dmg)
 
-        elif spell_id == 139:  # Renew — SP-scaled HoT
+        elif spell_id == 139:  # Renew — SP-scaled HoT (no miss on friendly)
             total = renew_total_heal(self.player.level, sp)
             total_ticks = spell.hot_ticks // spell.hot_interval  # 5
             heal_per = total // max(1, total_ticks)
@@ -1447,12 +1487,15 @@ class CombatSimulation:
 
         elif spell_id == 14914:  # Holy Fire — direct + SP-scaled DoT (slot 2)
             if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return  # both direct and DoT miss
                 min_dmg, max_dmg = holy_fire_damage(self.player.level, sp)
                 dmg = self.rng.randint(min_dmg, max_dmg)
-                if self.rng.random() * 100 < crit_pct:
+                if outcome == SPELL_CRIT:
                     dmg = int(dmg * 1.5)
                 self._damage_mob(self.target, dmg)
-                # DoT component on slot 2
+                # DoT component on slot 2 (always applied if spell hits)
                 dot_total = holy_fire_dot_total(self.player.level, sp)
                 dot_ticks_count = spell.dot_ticks // spell.dot_interval  # 2
                 dot_per = dot_total // max(1, dot_ticks_count)
@@ -1460,14 +1503,14 @@ class CombatSimulation:
                 self.target.dot2_timer = spell.dot_interval
                 self.target.dot2_damage_per_tick = dot_per
 
-        elif spell_id == 588:  # Inner Fire — armor + spellpower buff
+        elif spell_id == 588:  # Inner Fire — armor + spellpower buff (no miss)
             armor, sp_buff = inner_fire_values(self.player.level)
             self.player.inner_fire_remaining = spell.buff_duration
             self.player.inner_fire_armor = armor
             self.player.inner_fire_spellpower = sp_buff
             self.recalculate_stats()  # SP changed
 
-        elif spell_id == 1243:  # PW:Fortitude — max HP buff
+        elif spell_id == 1243:  # PW:Fortitude — max HP buff (no miss)
             bonus = fortitude_hp_bonus(self.player.level)
             self.player.fortitude_remaining = spell.buff_duration
             self.player.fortitude_hp_bonus = bonus
@@ -1610,12 +1653,43 @@ class CombatSimulation:
                     _dy = mob.y - py
                     dist = _sqrt(_dx * _dx + _dy * _dy)
 
-                # Melee attack
+                # Melee attack (WotLK single-roll attack table)
                 if dist <= 5.0:
                     mob.attack_timer -= 1
                     if mob.attack_timer <= 0:
                         dmg = self.rng.randint(mob.template.min_damage, mob.template.max_damage)
-                        self._damage_player(dmg)
+                        roll = self.rng.random() * 100.0
+                        outcome = resolve_mob_melee_attack(
+                            attacker_level=mob.level,
+                            defender_level=p.level,
+                            defender_dodge=p.total_dodge,
+                            defender_parry=p.total_parry,
+                            defender_block=p.total_block,
+                            defender_defense_bonus=p.total_defense,
+                            defender_resilience_pct=p.total_resilience,
+                            roll=roll,
+                        )
+                        if outcome == MELEE_MISS:
+                            p.mob_misses += 1
+                        elif outcome == MELEE_DODGE:
+                            p.dodges += 1
+                        elif outcome == MELEE_PARRY:
+                            p.parries += 1
+                        elif outcome == MELEE_BLOCK:
+                            p.blocks += 1
+                            # Block reduces damage by block_value, not a full avoid
+                            dmg = max(0, dmg - p.total_block_value)
+                            self._damage_player(dmg, mob)
+                        elif outcome == MELEE_CRIT:
+                            p.mob_crits += 1
+                            dmg = int(dmg * 2.0)  # mob crit = 200% damage
+                            self._damage_player(dmg, mob)
+                        elif outcome == MELEE_CRUSHING:
+                            p.mob_crushings += 1
+                            dmg = int(dmg * 1.5)  # crushing = 150% damage
+                            self._damage_player(dmg, mob)
+                        else:  # MELEE_NORMAL
+                            self._damage_player(dmg, mob)
                         mob.attack_timer = mob.template.attack_speed
                         p.combat_timer = 0
 
@@ -1707,7 +1781,7 @@ class CombatSimulation:
             p.mana = min(p.max_mana, p.mana + regen)
             p.mana_regen_accumulator -= regen
 
-    def _damage_player(self, damage: int):
+    def _damage_player(self, damage: int, attacker: 'Mob | None' = None):
         """Apply damage to player, considering armor mitigation and shield.
 
         Armor mitigation uses the WotLK formula from Unit::CalcArmorReducedDamage
@@ -1719,10 +1793,12 @@ class CombatSimulation:
         p = self.player
         # total_armor is pre-computed in recalculate_stats (gear + agi*2 + inner fire)
         if p.total_armor > 0:
-            mob_level = 1  # approximate attacker level
-            if self.target and self.target.alive:
+            if attacker is not None:
+                mob_level = attacker.level
+            elif self.target and self.target.alive:
                 mob_level = self.target.level
             else:
+                mob_level = 1
                 for m in self.mobs:
                     if m.alive and m.target_player:
                         mob_level = m.level
@@ -2058,6 +2134,15 @@ class CombatSimulation:
             "quest_xp": p.quest_xp_gained,
             "quest_copper": p.quest_copper_gained,
             "quests_completed": p.quests_completed_tick,
+            # Combat event counters
+            "dodges": p.dodges,
+            "parries": p.parries,
+            "blocks": p.blocks,
+            "mob_misses": p.mob_misses,
+            "mob_crits": p.mob_crits,
+            "mob_crushings": p.mob_crushings,
+            "spell_misses": p.spell_misses,
+            "spell_crits": p.spell_crits,
         }
         p.xp_gained = 0
         p.loot_copper = 0
@@ -2072,6 +2157,15 @@ class CombatSimulation:
         p.quest_xp_gained = 0
         p.quest_copper_gained = 0
         p.quests_completed_tick = 0
+        # Reset combat event counters
+        p.dodges = 0
+        p.parries = 0
+        p.blocks = 0
+        p.mob_misses = 0
+        p.mob_crits = 0
+        p.mob_crushings = 0
+        p.spell_misses = 0
+        p.spell_crits = 0
         self._new_areas = 0
         self._new_zones = 0
         self._new_maps = 0
