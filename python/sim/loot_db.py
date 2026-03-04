@@ -32,7 +32,7 @@ class ItemData:
     name: str
     quality: int           # 0=Poor(grey), 1=Common, 2=Uncommon, 3=Rare, 4=Epic
     sell_price: int        # copper
-    inventory_type: int    # 0=non-equip, 1=Head, 2=Neck, ..., 14=Shield, etc.
+    inventory_type: int    # 0=non-equip, 1=Head, 2=Neck, ..., 14=Shield, 18=Bag, etc.
     item_level: int
     item_class: int        # 0=Consumable, 2=Weapon, 4=Armor, ...
     item_subclass: int
@@ -41,6 +41,8 @@ class ItemData:
     stats: dict            # {stat_type_int: value}, e.g. {7: 5, 5: 3} = +5 Stam, +3 Int
     armor: int             # armor value for armor items
     weapon_dps: float      # (dmg_min+dmg_max)/2 / speed for weapons
+    container_slots: int = 0   # bag slot count (6, 8, 10, ..., 20) for InventoryType=18
+    bag_family: int = 0        # 0=normal bag, >0=profession-specific (ammo, herbs, etc.)
 
 
 @dataclass(slots=True)
@@ -130,6 +132,8 @@ class LootDB:
                     stats=stats,
                     armor=armor,
                     weapon_dps=weapon_dps,
+                    container_slots=int(row.get('ContainerSlots', 0)),
+                    bag_family=int(row.get('BagFamily', 0)),
                 )
 
     @staticmethod

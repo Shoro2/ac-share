@@ -20,7 +20,7 @@ import os
 import random
 from typing import Optional
 
-from sim.combat_sim import CombatSimulation, SPELLS, INVENTORY_SLOTS
+from sim.combat_sim import CombatSimulation, SPELLS
 
 # Reward per successfully looted item, indexed by WoW item quality
 QUALITY_LOOT_REWARD = {
@@ -440,12 +440,13 @@ class WoWSimEnv(gym.Env):
         self._ep_loot_failed += len(loot_failed)
 
         # 8. Sold items at vendor — reward scales with inventory fullness
-        #    Selling a full inventory (30/30 items) = massive bonus
-        #    Selling nearly empty inventory (2/30 items) = barely worth the trip
+        #    Selling a full inventory = massive bonus
+        #    Selling nearly empty inventory = barely worth the trip
         sell_copper = events.get("sell_copper", 0)
         items_sold = events.get("items_sold", 0)
         if items_sold > 0:
-            fullness = items_sold / INVENTORY_SLOTS  # 0.0 to 1.0
+            total_slots = self.sim.player.total_bag_slots
+            fullness = items_sold / max(total_slots, 1)  # 0.0 to 1.0
             # Base reward 1.0 at minimal sell, up to 8.0 at full inventory
             sell_reward = 1.0 + 7.0 * fullness
             reward += sell_reward
