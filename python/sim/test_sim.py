@@ -1747,6 +1747,51 @@ def test_attribute_system():
     assert INVTYPE_TO_SLOTS[17] == [EQUIPMENT_SLOT_MAINHAND], "Two-Hand = Main Hand"
     print(f"  11z: INVTYPE_TO_SLOTS mapping correct ✓")
 
+    # --- Test 11aa: Equipment blocked during combat ---
+    sim10 = CombatSimulation(num_mobs=5, seed=42)
+    p10 = sim10.player
+    combat_helm = ItemData(
+        entry=9060, name="Combat Helm", quality=2, sell_price=50,
+        inventory_type=1, item_level=10, item_class=4, item_subclass=1,
+        score=50.0,
+        stats={ITEM_MOD_STAMINA: 8}, armor=15, weapon_dps=0.0,
+    )
+    # Equip outside combat — should work
+    success, _ = sim10.equip_item(combat_helm)
+    assert success, "Equip should work outside combat"
+    assert EQUIPMENT_SLOT_HEAD in p10.equipment
+
+    # Enter combat
+    p10.in_combat = True
+
+    # Try equip during combat — should fail
+    combat_helm2 = ItemData(
+        entry=9061, name="Better Helm", quality=3, sell_price=100,
+        inventory_type=1, item_level=15, item_class=4, item_subclass=1,
+        score=80.0,
+        stats={ITEM_MOD_STAMINA: 15}, armor=25, weapon_dps=0.0,
+    )
+    success2, _ = sim10.equip_item(combat_helm2)
+    assert not success2, "Equip should be blocked during combat"
+    assert p10.equipment[EQUIPMENT_SLOT_HEAD].entry == 9060, "Original helm still equipped"
+
+    # try_equip_item should also fail (it goes through equip_item)
+    result = sim10.try_equip_item(combat_helm2)
+    assert not result, "try_equip_item should be blocked during combat"
+
+    # Unequip during combat — should fail
+    removed = sim10.unequip_item(EQUIPMENT_SLOT_HEAD)
+    assert removed is None, "Unequip should be blocked during combat"
+    assert EQUIPMENT_SLOT_HEAD in p10.equipment, "Helm still equipped"
+
+    # Leave combat — equip should work again
+    p10.in_combat = False
+    success3, old = sim10.equip_item(combat_helm2)
+    assert success3, "Equip should work after leaving combat"
+    assert old.entry == 9060, "Old helm returned"
+    assert p10.equipment[EQUIPMENT_SLOT_HEAD].entry == 9061, "New helm equipped"
+    print(f"  11aa: Equipment blocked during combat ✓")
+
     print("  PASSED\n")
 
 
