@@ -131,6 +131,9 @@ class GameplayMetricsCallback(BaseCallback):
                 self._writer.add_scalar("gameplay/ep_sell_copper", stats.get("sell_copper", 0), step)
                 self._writer.add_scalar("gameplay/ep_quests_completed", stats.get("quests_completed", 0), step)
                 self._writer.add_scalar("gameplay/ep_quest_xp", stats.get("quest_xp", 0), step)
+                self._writer.add_scalar("gameplay/ep_equipped_items", stats.get("equipped_items", 0), step)
+                self._writer.add_scalar("gameplay/ep_equipped_bags", stats.get("equipped_bags", 0), step)
+                self._writer.add_scalar("gameplay/ep_total_bag_slots", stats.get("total_bag_slots", 16), step)
 
                 # Exploration reward breakdown
                 self._writer.add_scalar("reward_breakdown/explore", stats.get("rw_explore", 0), step)
@@ -154,11 +157,14 @@ class GameplayMetricsCallback(BaseCallback):
                 sold = stats.get('sell_copper', 0)
                 quests = stats.get('quests_completed', 0)
                 idle = stats.get('idle_ratio', 0)
+                equip = stats.get('equipped_items', 0)
+                bags = stats.get('equipped_bags', 0)
                 print(f"  [Episode {self._episode_count}] "
                       f"reward={stats['reward']:.1f} kills={stats['kills']} "
                       f"xp={stats['xp']} deaths={stats['death']} "
                       f"dmg={dmg} areas={areas} idle={idle:.0%} "
                       f"sold={sold} quests={quests} "
+                      f"equip={equip} bags={bags} "
                       f"len={stats['length']}")
 
         return True
