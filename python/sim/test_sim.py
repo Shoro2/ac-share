@@ -22,7 +22,23 @@ if PARENT_DIR not in sys.path:
 from sim.combat_sim import (CombatSimulation, SPELLS, MOB_TEMPLATES, SPAWN_POSITIONS,
                              XP_TABLE, base_xp_gain, get_gray_level,
                              player_max_hp, player_max_mana, smite_damage, heal_amount,
-                             INVENTORY_SLOTS, VENDOR_DATA, InventoryItem)
+                             INVENTORY_SLOTS, VENDOR_DATA, InventoryItem, EquippedItem,
+                             spell_crit_chance, spell_haste_pct, spirit_mana_regen,
+                             sw_pain_total, pw_shield_absorb, class_base_stat,
+                             CLASS_BASE_STATS, CLASS_PRIEST, CLASS_WARRIOR, CLASS_ROGUE,
+                             CLASS_MAGE, CLASS_HUNTER, CLASS_PALADIN, CLASS_DRUID,
+                             ITEM_MOD_STAMINA, ITEM_MOD_INTELLECT, ITEM_MOD_SPIRIT,
+                             ITEM_MOD_STRENGTH, ITEM_MOD_AGILITY, ITEM_MOD_ATTACK_POWER,
+                             ITEM_MOD_SPELL_POWER, ITEM_MOD_CRIT_RATING,
+                             ITEM_MOD_HASTE_RATING, ITEM_MOD_MANA_REGENERATION,
+                             ITEM_MOD_DODGE_RATING, ITEM_MOD_PARRY_RATING,
+                             ITEM_MOD_DEFENSE_SKILL_RATING, ITEM_MOD_EXPERTISE_RATING,
+                             ITEM_MOD_ARMOR_PENETRATION_RATING, ITEM_MOD_RESILIENCE_RATING,
+                             ITEM_MOD_HEALTH_REGEN,
+                             SP_COEFF_SMITE, SP_COEFF_HEAL,
+                             melee_attack_power, ranged_attack_power,
+                             melee_crit_chance, dodge_chance, parry_chance,
+                             hit_chance_spell, expertise_pct, armor_penetration_pct)
 from sim.wow_sim_env import WoWSimEnv
 
 
@@ -31,10 +47,12 @@ def test_combat_engine():
     print("=== Test 1: Combat Engine ===")
     sim = CombatSimulation(num_mobs=10, seed=42)
 
-    # Check initial state
+    # Check initial state (WotLK: base + stamina/intellect contribution)
     p = sim.player
-    assert p.hp == 72, f"Expected HP=72, got {p.hp}"
-    assert p.mana == 123, f"Expected Mana=123, got {p.mana}"
+    expected_hp = player_max_hp(1)   # 72 + stam_hp(20) = 92
+    expected_mana = player_max_mana(1)  # 123 + int_mana(22) = 173
+    assert p.hp == expected_hp, f"Expected HP={expected_hp}, got {p.hp}"
+    assert p.mana == expected_mana, f"Expected Mana={expected_mana}, got {p.mana}"
     assert p.level == 1
     print(f"  Player: HP={p.hp}/{p.max_hp}, Mana={p.mana}/{p.max_mana}")
     print(f"  Position: ({p.x:.1f}, {p.y:.1f}), Orientation={p.orientation:.2f}")
@@ -96,21 +114,21 @@ def test_gym_env():
     env = WoWSimEnv(num_mobs=10, seed=42)
 
     # Check spaces
-    assert env.observation_space.shape == (28,), f"Obs shape: {env.observation_space.shape}"
+    assert env.observation_space.shape == (38,), f"Obs shape: {env.observation_space.shape}"
     assert env.action_space.n == 17, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
     # Reset
     obs, info = env.reset()
-    assert obs.shape == (28,), f"Obs shape after reset: {obs.shape}"
+    assert obs.shape == (38,), f"Obs shape after reset: {obs.shape}"
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
     # Step with each action
     for action in range(17):
         obs, reward, done, trunc, info = env.step(action)
-        assert obs.shape == (28,)
+        assert obs.shape == (38,)
         if done:
             obs, info = env.reset()
 
@@ -248,12 +266,18 @@ def test_level_system():
     assert xp == 0, f"L10 vs L3 (gray) expected 0, got {xp}"
     print(f"  XP L10 vs L3 (gray): {xp} ✓")
 
-    # --- Stat scaling ---
-    assert player_max_hp(1) == 72
-    assert player_max_hp(2) == 122
-    assert player_max_hp(10) == 522
-    assert player_max_mana(1) == 123
-    assert player_max_mana(2) == 128
+    # --- Stat scaling (WotLK: includes base stamina/intellect contribution) ---
+    # player_max_hp(1) = 72 + stam_hp(priest_base_stam(20,1)=20) = 72 + 20 = 92
+    assert player_max_hp(1) == 92, f"HP(1) expected 92, got {player_max_hp(1)}"
+    # player_max_hp(2) = 122 + stam_hp(21) = 122 + 20 + 10 = 152
+    assert player_max_hp(2) == 152, f"HP(2) expected 152, got {player_max_hp(2)}"
+    # player_max_hp(10) = 522 + stam_hp(29) = 522 + 20 + 90 = 632
+    assert player_max_hp(10) == 632, f"HP(10) expected 632, got {player_max_hp(10)}"
+    # player_max_mana(1) = 123 + int_mana(priest_base_int(22,1)=22) = 123 + 20 + 30 = 173
+    assert player_max_mana(1) == 173, f"Mana(1) expected 173, got {player_max_mana(1)}"
+    # player_max_mana(2) = 128 + int_mana(23) = 128 + 20 + 45 = 193
+    assert player_max_mana(2) == 193, f"Mana(2) expected 193, got {player_max_mana(2)}"
+    # Smite/Heal base damage unchanged (no SP)
     min_d, max_d = smite_damage(1)
     assert (min_d, max_d) == (13, 17)
     min_d, max_d = smite_damage(2)
@@ -262,7 +286,12 @@ def test_level_system():
     assert (min_h, max_h) == (46, 56)
     min_h, max_h = heal_amount(2)
     assert (min_h, max_h) == (51, 61)
-    print(f"  Stat scaling: HP, Mana, Smite, Heal ✓")
+    # Spell functions with SP scaling
+    min_d_sp, max_d_sp = smite_damage(1, spell_power=100)
+    sp_bonus = int(100 * SP_COEFF_SMITE)  # 71
+    assert (min_d_sp, max_d_sp) == (13 + sp_bonus, 17 + sp_bonus), \
+        f"Smite+SP expected ({13+sp_bonus},{17+sp_bonus}), got ({min_d_sp},{max_d_sp})"
+    print(f"  Stat scaling: HP, Mana, Smite, Heal, SP scaling ✓")
 
     # --- Level-up in simulation ---
     sim = CombatSimulation(num_mobs=10, seed=42)
@@ -279,10 +308,12 @@ def test_level_system():
     p.xp_gained += 50
     sim._check_level_up()
 
+    expected_hp_l2 = player_max_hp(2)   # 152
+    expected_mana_l2 = player_max_mana(2)  # 193
     assert p.level == 2, f"Expected level 2 after 449 XP, got {p.level}"
-    assert p.max_hp == 122, f"Expected max_hp=122, got {p.max_hp}"
-    assert p.hp == 122, "HP should be full after level-up"
-    assert p.max_mana == 128, f"Expected max_mana=128, got {p.max_mana}"
+    assert p.max_hp == expected_hp_l2, f"Expected max_hp={expected_hp_l2}, got {p.max_hp}"
+    assert p.hp == expected_hp_l2, "HP should be full after level-up"
+    assert p.max_mana == expected_mana_l2, f"Expected max_mana={expected_mana_l2}, got {p.max_mana}"
     assert p.leveled_up is True
     assert p.levels_gained == 1
     print(f"  Level-up: L1→L2 at XP=449, HP={p.max_hp}, Mana={p.max_mana} ✓")
@@ -1048,12 +1079,12 @@ def test_quest_system():
     # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
-    assert obs.shape == (28,), f"Expected obs(28,), got {obs.shape}"
+    assert obs.shape == (38,), f"Expected obs(28,), got {obs.shape}"
     assert env.action_space.n == 17, f"Expected 17 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
-    assert obs[24] > 0 or obs[22] == 0.0, "Quest NPC obs should reflect nearby NPCs"
+    assert obs[28] > 0 or obs[26] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
-          f"quest_dims={obs[22:28]} ✓")
+          f"quest_dims={obs[26:32]} ✓")
 
     # --- Test 9l: Quest reward in env ---
     # Set up: accept quest, complete it, turn in, check reward
@@ -1217,6 +1248,338 @@ def test_quest_csv_loading():
     print("  PASSED\n")
 
 
+def test_attribute_system():
+    """Test WotLK 3.3.5 attribute system: stats, equipment, spell scaling, armor."""
+    print("=== Test 11: Attribute & Equipment System ===")
+
+    # --- Test 11a: Base stat formulas (WotLK — all classes) ---
+    # stat_index: 0=str, 1=agi, 2=stam, 3=int, 4=spi
+    # Priest base stats at level 1: (15, 17, 20, 22, 23)
+    assert class_base_stat(CLASS_PRIEST, 2, 1) == 20   # stamina
+    assert class_base_stat(CLASS_PRIEST, 2, 10) == 29   # stam L10 = 20 + 9
+    assert class_base_stat(CLASS_PRIEST, 3, 1) == 22    # intellect
+    assert class_base_stat(CLASS_PRIEST, 3, 10) == 31   # int L10 = 22 + 9
+    assert class_base_stat(CLASS_PRIEST, 4, 1) == 23    # spirit
+    # Warrior base stats at level 1: (23, 20, 22, 17, 19)
+    assert class_base_stat(CLASS_WARRIOR, 0, 1) == 23   # strength
+    assert class_base_stat(CLASS_WARRIOR, 0, 10) == 32   # str L10 = 23 + 9
+    assert class_base_stat(CLASS_WARRIOR, 2, 1) == 22   # stamina
+    # Rogue base stats at level 1: (18, 24, 20, 17, 19)
+    assert class_base_stat(CLASS_ROGUE, 1, 1) == 24     # agility
+    assert class_base_stat(CLASS_MAGE, 3, 1) == 24      # mage intellect
+    print(f"  11a: Base stats: Priest(stam=20,int=22,spi=23), Warrior(str=23), "
+          f"Rogue(agi=24), Mage(int=24) ✓")
+
+    # --- Test 11b: HP with bonus stamina (WotLK: first 20=1HP, above 20=10HP) ---
+    hp_base = player_max_hp(1)  # Priest L1: 72 + stam_hp(20)
+    hp_bonus = player_max_hp(1, bonus_stamina=5)  # +5 stam -> total 25 -> +50 HP more
+    # total_stam = 20+5 = 25, stam_hp = 20 + 5*10 = 70 -> 72+70 = 142
+    assert hp_bonus == 142, f"HP(1,+5stam) expected 142, got {hp_bonus}"
+    assert hp_bonus > hp_base, "Bonus stamina should increase HP"
+    hp_flat = player_max_hp(1, bonus_hp=100)  # +100 flat HP
+    assert hp_flat == hp_base + 100, f"Flat HP bonus should add directly"
+    # Warrior has more base HP and HP/level
+    hp_war = player_max_hp(1, class_id=CLASS_WARRIOR)
+    hp_war10 = player_max_hp(10, class_id=CLASS_WARRIOR)
+    assert hp_war > 0, "Warrior should have base HP"
+    assert hp_war10 > hp_war, "Warrior HP should scale with level"
+    print(f"  11b: HP formulas: Priest base={hp_base}, +5stam={hp_bonus}, "
+          f"Warrior L1={hp_war}, L10={hp_war10} ✓")
+
+    # --- Test 11c: Mana with bonus intellect (WotLK: first 20=1, above 20=15) ---
+    mana_base = player_max_mana(1)  # Priest: 123 + int_mana(22) = 173
+    mana_bonus = player_max_mana(1, bonus_intellect=10)  # total_int=32 -> 20+12*15=200 -> 323
+    assert mana_bonus == 323, f"Mana(1,+10int) expected 323, got {mana_bonus}"
+    mana_flat = player_max_mana(1, bonus_mana=50)
+    assert mana_flat == mana_base + 50, f"Flat mana bonus should add directly"
+    # Non-mana classes (Warrior, Rogue, DK) return 0
+    assert player_max_mana(1, class_id=CLASS_WARRIOR) == 0, "Warrior should have 0 mana"
+    assert player_max_mana(1, class_id=CLASS_ROGUE) == 0, "Rogue should have 0 mana"
+    # Mage has more base mana than Priest
+    mana_mage = player_max_mana(1, class_id=CLASS_MAGE)
+    assert mana_mage > 0, "Mage should have mana"
+    print(f"  11c: Mana formulas: Priest={mana_base}, +10int={mana_bonus}, "
+          f"Warrior=0, Mage={mana_mage} ✓")
+
+    # --- Test 11d: Spell crit from Intellect (NOT from SP!) ---
+    crit_l1 = spell_crit_chance(1)  # Priest default
+    assert crit_l1 > 0.0, f"Base spell crit should be > 0, got {crit_l1}"
+    crit_l1_int = spell_crit_chance(1, bonus_intellect=50)
+    assert crit_l1_int > crit_l1, "More Int should increase spell crit"
+    crit_l1_rating = spell_crit_chance(1, bonus_crit_rating=50)
+    assert crit_l1_rating > crit_l1, "Crit rating should increase spell crit"
+    # Mage should have different spell crit than Priest
+    crit_mage = spell_crit_chance(1, class_id=CLASS_MAGE)
+    assert crit_mage > 0.0, "Mage should have base spell crit"
+    # Warriors should have 0 spell crit
+    crit_war = spell_crit_chance(1, class_id=CLASS_WARRIOR)
+    assert crit_war == 0.0, f"Warrior spell crit should be 0, got {crit_war}"
+    print(f"  11d: Spell crit: Priest={crit_l1:.2f}%, Mage={crit_mage:.2f}%, "
+          f"Warrior={crit_war:.2f}%, +50int={crit_l1_int:.2f}% ✓")
+
+    # --- Test 11e: Spell haste from rating ---
+    assert spell_haste_pct(1, 0) == 0.0, "No haste without rating"
+    haste = spell_haste_pct(1, bonus_haste_rating=50)
+    assert haste > 0.0, "Haste rating should give haste %"
+    # Higher level needs more rating for same %
+    haste_l80 = spell_haste_pct(80, bonus_haste_rating=50)
+    assert haste_l80 < haste, "Haste should be harder to get at higher levels"
+    print(f"  11e: Haste: L1+50rat={haste:.2f}%, L80+50rat={haste_l80:.2f}% ✓")
+
+    # --- Test 11f: Spirit mana regen ---
+    regen = spirit_mana_regen(1)  # Priest default
+    assert regen > 0.0, "Base spirit regen should be > 0"
+    regen_bonus = spirit_mana_regen(1, bonus_spirit=20)
+    assert regen_bonus > regen, "More spirit should increase regen"
+    # Mage has different regen coefficient
+    regen_mage = spirit_mana_regen(1, class_id=CLASS_MAGE)
+    assert regen_mage > 0.0, "Mage should have spirit mana regen"
+    print(f"  11f: Spirit mana regen: Priest={regen:.2f}/tick, +20spi={regen_bonus:.2f}/tick, "
+          f"Mage={regen_mage:.2f}/tick ✓")
+
+    # --- Test 11g: Spell power scaling ---
+    # Smite: base (13,17) + SP*0.7143
+    d_min, d_max = smite_damage(1, spell_power=140)  # 140 * 0.7143 = 100
+    assert d_min == 113, f"Smite(1,SP=140) min expected 113, got {d_min}"
+    assert d_max == 117, f"Smite(1,SP=140) max expected 117, got {d_max}"
+    # Heal: base (46,56) + SP*0.8571
+    h_min, h_max = heal_amount(1, spell_power=140)  # 140*0.8571 = 119
+    assert h_min == 165, f"Heal(1,SP=140) min expected 165, got {h_min}"
+    # SW:Pain: base 30 + SP*0.1833*6
+    swp = sw_pain_total(1, spell_power=100)  # 30 + 100*1.1 = 140
+    assert swp > 30, "SP should increase SW:Pain damage"
+    # PW:Shield: base 44 + SP*0.8068
+    pws = pw_shield_absorb(1, spell_power=100)  # 44 + 80 = 124
+    assert pws > 44, "SP should increase PW:Shield absorb"
+    print(f"  11g: SP scaling: Smite({d_min}-{d_max}), Heal({h_min}-{h_max}), "
+          f"SWP={swp}, PWS={pws} ✓")
+
+    # --- Test 11h: Equipment system — equip items and verify stat recalculation ---
+    sim = CombatSimulation(num_mobs=5, seed=42)
+    p = sim.player
+    old_hp = p.max_hp
+    old_mana = p.max_mana
+
+    # Equip a chest piece with +10 Stamina, +8 Intellect, +5 Spirit
+    chest = EquippedItem(
+        entry=9001, name="Test Robe", inventory_type=20, score=50.0,
+        stats={ITEM_MOD_STAMINA: 10, ITEM_MOD_INTELLECT: 8, ITEM_MOD_SPIRIT: 5},
+        armor=30,
+    )
+    p.equipment[20] = chest
+    p.equipped_scores[20] = 50.0
+    sim.recalculate_stats()
+
+    assert p.gear_stamina == 10, f"Expected gear_stamina=10, got {p.gear_stamina}"
+    assert p.gear_intellect == 8, f"Expected gear_intellect=8, got {p.gear_intellect}"
+    assert p.gear_spirit == 5, f"Expected gear_spirit=5, got {p.gear_spirit}"
+    assert p.gear_armor == 30, f"Expected gear_armor=30, got {p.gear_armor}"
+    assert p.max_hp > old_hp, f"HP should increase with +Stam gear: {old_hp} -> {p.max_hp}"
+    assert p.max_mana > old_mana, f"Mana should increase with +Int gear: {old_mana} -> {p.max_mana}"
+    print(f"  11h: Equipment: HP {old_hp}→{p.max_hp}, Mana {old_mana}→{p.max_mana}, "
+          f"armor={p.gear_armor} ✓")
+
+    # --- Test 11i: Spell Power from gear affects spells ---
+    old_sp = p.total_spell_power
+    sp_wand = EquippedItem(
+        entry=9002, name="SP Wand", inventory_type=26, score=40.0,
+        stats={ITEM_MOD_SPELL_POWER: 50},
+    )
+    p.equipment[26] = sp_wand
+    p.equipped_scores[26] = 40.0
+    sim.recalculate_stats()
+    assert p.total_spell_power == 50, f"Expected SP=50, got {p.total_spell_power}"
+    assert p.gear_spell_power == 50, f"Expected gear_sp=50, got {p.gear_spell_power}"
+    print(f"  11i: Spell Power from gear: {old_sp}→{p.total_spell_power} ✓")
+
+    # --- Test 11j: try_equip_item upgrades and triggers stat recalc ---
+    sim2 = CombatSimulation(num_mobs=5, seed=99)
+    p2 = sim2.player
+    from sim.loot_db import ItemData
+    item = ItemData(
+        entry=5001, name="Upgrade Helm", quality=2, sell_price=100,
+        inventory_type=1, item_level=10, item_class=4, item_subclass=1,
+        score=60.0,
+        stats={ITEM_MOD_STAMINA: 8, ITEM_MOD_INTELLECT: 6},
+        armor=20, weapon_dps=0.0,
+    )
+    old_hp2 = p2.max_hp
+    result = sim2.try_equip_item(item)
+    assert result is True, "Should equip upgrade"
+    assert p2.equipment[1].entry == 5001, "Item should be in head slot"
+    assert p2.max_hp > old_hp2, "HP should increase after equip"
+    assert p2.gear_stamina == 8, f"gear_stamina should be 8, got {p2.gear_stamina}"
+
+    # Lower score item should not replace
+    worse = ItemData(
+        entry=5002, name="Worse Helm", quality=1, sell_price=50,
+        inventory_type=1, item_level=5, item_class=4, item_subclass=1,
+        score=30.0, stats={ITEM_MOD_STAMINA: 2}, armor=5, weapon_dps=0.0,
+    )
+    result2 = sim2.try_equip_item(worse)
+    assert result2 is False, "Should not equip worse item"
+    assert p2.equipment[1].entry == 5001, "Original item should still be equipped"
+    print(f"  11j: try_equip_item: upgrade=True, downgrade=False ✓")
+
+    # --- Test 11k: Armor mitigation (WotLK formula) ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p3 = sim3.player
+    # Give player some armor gear
+    p3.equipment[5] = EquippedItem(
+        entry=9003, name="Armor Chest", inventory_type=5, score=40.0,
+        stats={}, armor=100,
+    )
+    sim3.recalculate_stats()
+    assert p3.gear_armor == 100
+
+    # Damage player and check mitigation is applied
+    p3.hp = p3.max_hp
+    full_hp = p3.hp
+    sim3._damage_player(50)
+    damage_taken = full_hp - p3.hp
+    assert damage_taken < 50, f"Armor should reduce damage: took {damage_taken} of 50"
+    assert damage_taken > 0, "Should still take some damage"
+    print(f"  11k: Armor mitigation: 50 raw → {damage_taken} taken (armor={p3.gear_armor}) ✓")
+
+    # --- Test 11l: Gear stats in state_dict ---
+    state = sim2.get_state_dict()
+    assert "spell_power" in state, "State dict should include spell_power"
+    assert "spell_crit" in state, "State dict should include spell_crit"
+    assert "gear_armor" in state, "State dict should include gear_armor"
+    assert "attack_power" in state, "State dict should include attack_power"
+    assert "melee_crit" in state, "State dict should include melee_crit"
+    assert "dodge" in state, "State dict should include dodge"
+    assert "hit_spell" in state, "State dict should include hit_spell"
+    assert state["gear_stamina"] == 8, f"State dict gear_stamina should be 8"
+    print(f"  11l: Gear stats in state_dict: SP={state['spell_power']}, "
+          f"crit={state['spell_crit']:.1f}, AP={state['attack_power']}, "
+          f"dodge={state['dodge']:.1f} ✓")
+
+    # --- Test 11m: Gear obs in WoWSimEnv ---
+    env = WoWSimEnv(num_mobs=5, seed=42)
+    obs, _ = env.reset()
+    # Stat obs at indices 22-31 (10 dims: SP, spell_crit, spell_haste, armor,
+    # AP, melee_crit, dodge, hit, expertise, ArP)
+    assert obs[22] == 0.0, f"SP obs should be 0 with no gear, got {obs[22]}"
+    assert obs[23] >= 0.0, f"Spell crit obs should be >= 0, got {obs[23]}"
+    assert obs[24] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[24]}"
+    assert obs[25] >= 0.0, f"Armor obs should be >= 0, got {obs[25]}"  # agi*2 gives base armor
+    assert obs[26] >= 0.0, f"AP obs should be >= 0, got {obs[26]}"
+    assert obs[27] >= 0.0, f"Melee crit obs should be >= 0, got {obs[27]}"
+    assert obs[28] >= 0.0, f"Dodge obs should be >= 0, got {obs[28]}"
+    print(f"  11m: Stat obs [22:32]={obs[22:32]} ✓")
+
+    # --- Test 11n: Equipment persists across ticks ---
+    sim4 = CombatSimulation(num_mobs=5, seed=42)
+    sim4.player.equipment[5] = EquippedItem(
+        entry=9004, name="Persist Chest", inventory_type=5, score=45.0,
+        stats={ITEM_MOD_STAMINA: 5, ITEM_MOD_SPELL_POWER: 20}, armor=25,
+    )
+    sim4.recalculate_stats()
+    hp_before = sim4.player.max_hp
+    sp_before = sim4.player.total_spell_power
+    for _ in range(20):
+        sim4.tick()
+    assert sim4.player.max_hp == hp_before, "HP should not change across ticks"
+    assert sim4.player.total_spell_power == sp_before, "SP should not change across ticks"
+    print(f"  11n: Stats persist across ticks: HP={hp_before}, SP={sp_before} ✓")
+
+    # --- Test 11o: Equipment reset on sim reset ---
+    sim4.reset()
+    assert len(sim4.player.equipment) == 0, "Equipment should be cleared on reset"
+    assert sim4.player.gear_stamina == 0, "Gear stats should be 0 after reset"
+    assert sim4.player.total_spell_power == 0, "SP should be 0 after reset"
+    assert sim4.player.max_hp == player_max_hp(1), \
+        f"HP should be base after reset: {sim4.player.max_hp} vs {player_max_hp(1)}"
+    print(f"  11o: Reset clears equipment and stats ✓")
+
+    # --- Test 11p: Melee Attack Power by class ---
+    # Warrior: level*3 + str*2 - 20
+    war_str = class_base_stat(CLASS_WARRIOR, 0, 1)  # 23
+    war_agi = class_base_stat(CLASS_WARRIOR, 1, 1)  # 20
+    war_ap = melee_attack_power(1, war_str, war_agi, CLASS_WARRIOR)
+    assert war_ap == int(1 * 3.0 + 23 * 2.0 - 20.0), f"Warrior AP expected 29, got {war_ap}"
+    # Rogue: level*2 + str + agi - 20
+    rog_str = class_base_stat(CLASS_ROGUE, 0, 1)  # 18
+    rog_agi = class_base_stat(CLASS_ROGUE, 1, 1)  # 24
+    rog_ap = melee_attack_power(1, rog_str, rog_agi, CLASS_ROGUE)
+    assert rog_ap == int(1 * 2.0 + 18 + 24 - 20.0), f"Rogue AP expected 24, got {rog_ap}"
+    # Priest: str - 10
+    pri_str = class_base_stat(CLASS_PRIEST, 0, 1)  # 15
+    pri_agi = class_base_stat(CLASS_PRIEST, 1, 1)
+    pri_ap = melee_attack_power(1, pri_str, pri_agi, CLASS_PRIEST)
+    assert pri_ap == int(15 - 10.0), f"Priest AP expected 5, got {pri_ap}"
+    print(f"  11p: Attack Power: Warrior={war_ap}, Rogue={rog_ap}, Priest={pri_ap} ✓")
+
+    # --- Test 11q: Melee crit from Agility ---
+    # Warrior at L1 (base crit 0.0, simpler)
+    war_crit = melee_crit_chance(1, 20, class_id=CLASS_WARRIOR)
+    assert war_crit > 0.0, f"Warrior melee crit should be > 0, got {war_crit}"
+    war_crit_high = melee_crit_chance(1, 100, class_id=CLASS_WARRIOR)
+    assert war_crit_high > war_crit, "Higher agi should increase melee crit"
+    # Rogue has negative base crit — needs high agi to overcome
+    rog_crit_low = melee_crit_chance(1, 24, class_id=CLASS_ROGUE)
+    assert rog_crit_low == 0.0, "Rogue L1 base agi clamps to 0% crit"
+    rog_crit_high = melee_crit_chance(1, 200, class_id=CLASS_ROGUE)
+    assert rog_crit_high > 0.0, "Rogue with 200 agi should have melee crit"
+    print(f"  11q: Melee crit: Warrior(agi=20)={war_crit:.2f}%, "
+          f"Rogue(agi=200)={rog_crit_high:.2f}% ✓")
+
+    # --- Test 11r: Dodge with diminishing returns ---
+    # Tank class should get reasonable dodge
+    war_dodge = dodge_chance(80, 200, dodge_rating=100, class_id=CLASS_WARRIOR)
+    assert war_dodge > 5.0, f"Warrior dodge should be > 5%, got {war_dodge:.2f}%"
+    # Diminishing returns: doubling dodge rating should NOT double bonus
+    war_dodge2 = dodge_chance(80, 200, dodge_rating=200, class_id=CLASS_WARRIOR)
+    dodge_gain1 = war_dodge - dodge_chance(80, 200, class_id=CLASS_WARRIOR)
+    dodge_gain2 = war_dodge2 - dodge_chance(80, 200, class_id=CLASS_WARRIOR)
+    assert dodge_gain2 < dodge_gain1 * 2, "Dodge should have diminishing returns"
+    print(f"  11r: Dodge: Warrior(L80,agi=200,dr=100)={war_dodge:.2f}%, "
+          f"DR check: +100r={dodge_gain1:.2f}%, +200r={dodge_gain2:.2f}% ✓")
+
+    # --- Test 11s: Parry for melee classes, 0 for casters ---
+    war_parry = parry_chance(80, parry_rating=100, class_id=CLASS_WARRIOR)
+    assert war_parry > 5.0, f"Warrior should have parry > 5%, got {war_parry}"
+    pri_parry = parry_chance(80, parry_rating=100, class_id=CLASS_PRIEST)
+    assert pri_parry == 0.0, f"Priest should have 0 parry, got {pri_parry}"
+    print(f"  11s: Parry: Warrior(L80,pr=100)={war_parry:.2f}%, Priest=0.0% ✓")
+
+    # --- Test 11t: Hit, Expertise, Armor Penetration ---
+    hit = hit_chance_spell(80, hit_rating=100)
+    assert hit > 0.0, "Hit rating should give hit %"
+    exp = expertise_pct(80, expertise_rating=100)
+    assert exp > 0.0, "Expertise rating should give expertise %"
+    arp = armor_penetration_pct(80, arp_rating=100)
+    assert arp > 0.0, "ArP rating should give ArP %"
+    assert arp <= 100.0, "ArP should be capped at 100%"
+    print(f"  11t: Hit(100r)={hit:.2f}%, Expertise(100r)={exp:.2f}%, ArP(100r)={arp:.2f}% ✓")
+
+    # --- Test 11u: Equipment with melee stats recalculates correctly ---
+    sim5 = CombatSimulation(num_mobs=5, seed=42)
+    p5 = sim5.player
+    melee_gear = EquippedItem(
+        entry=9010, name="Test Sword", inventory_type=21, score=80.0,
+        stats={ITEM_MOD_STRENGTH: 15, ITEM_MOD_AGILITY: 10,
+               ITEM_MOD_ATTACK_POWER: 30, ITEM_MOD_DODGE_RATING: 20,
+               ITEM_MOD_EXPERTISE_RATING: 15},
+        armor=0,
+    )
+    p5.equipment[21] = melee_gear
+    p5.equipped_scores[21] = 80.0
+    sim5.recalculate_stats()
+    assert p5.gear_strength == 15, f"gear_strength should be 15, got {p5.gear_strength}"
+    assert p5.gear_agility == 10, f"gear_agility should be 10, got {p5.gear_agility}"
+    assert p5.gear_attack_power == 30, f"gear_ap should be 30, got {p5.gear_attack_power}"
+    assert p5.gear_dodge_rating == 20, f"gear_dodge_rating should be 20, got {p5.gear_dodge_rating}"
+    assert p5.total_attack_power > 0, f"Total AP should be > 0, got {p5.total_attack_power}"
+    assert p5.total_dodge > 0, f"Total dodge should be > 0, got {p5.total_dodge}"
+    assert p5.total_expertise > 0, f"Total expertise should be > 0, got {p5.total_expertise}"
+    print(f"  11u: Melee gear: AP={p5.total_attack_power}, dodge={p5.total_dodge:.2f}%, "
+          f"expertise={p5.total_expertise:.2f}% ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -1229,4 +1592,5 @@ if __name__ == "__main__":
     test_vendor_system()
     test_quest_system()
     test_quest_csv_loading()
+    test_attribute_system()
     print("=== ALL TESTS PASSED ===")

@@ -1,7 +1,7 @@
 """
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
-Observation space: Box(28,) — 22 base dims + 6 quest dims.
+Observation space: Box(38,) — 22 base dims + 10 stat dims + 6 quest dims.
 Action space: Discrete(17) — 16 base actions + 1 quest action.
 Runs ~1000x faster than the real server.
 
@@ -45,10 +45,14 @@ class WoWSimEnv(gym.Env):
     """
     Simulated WoW environment with optional quest system.
 
-    Observation Space: Box(28,) — 22 base + 6 quest dimensions
+    Observation Space: Box(38,) — 22 base + 10 stat + 6 quest dimensions
     Action Space: Discrete(17) — 16 base actions + quest interact
 
-    Quest dimensions (indices 22-27) are always present but zero when
+    Stat dimensions (indices 22-31):
+      [22] spell_power/200, [23] spell_crit/50, [24] spell_haste/50,
+      [25] total_armor/2000, [26] attack_power/500, [27] melee_crit/50,
+      [28] dodge/50, [29] hit_spell/50, [30] expertise/50, [31] armor_pen/100
+    Quest dimensions (indices 32-37) are always present but zero when
     quests are disabled, keeping the interface stable for model transfer.
     """
 
@@ -62,7 +66,7 @@ class WoWSimEnv(gym.Env):
 
         self.action_space = spaces.Discrete(17)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(28,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(38,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -544,7 +548,7 @@ class WoWSimEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _build_obs(self, data: dict) -> np.ndarray:
-        """Build observation vector — 22 base dims + 6 quest dims = 28 total."""
+        """Build observation vector — 22 base + 10 stat + 6 quest = 38 total."""
         max_hp = max(1, data['max_hp'])
         hp_pct = data['hp'] / max_hp
         mana_pct = data['power'] / max(1, data['max_power'])
@@ -584,7 +588,19 @@ class WoWSimEnv(gym.Env):
         mind_blast_ready = 1.0 if data.get('mind_blast_ready') == 'true' else 0.0
         target_has_holy_fire = 1.0 if data.get('target_has_holy_fire') == 'true' else 0.0
 
-        # Quest observations (dims 22-27) — always present, zero when quests disabled
+        # Stat observations (dims 22-31) — comprehensive WotLK stats
+        stat_sp = data.get('spell_power', 0) / 200.0           # spell power / 200
+        stat_spell_crit = data.get('spell_crit', 0) / 50.0     # spell crit% / 50
+        stat_spell_haste = data.get('spell_haste', 0) / 50.0   # spell haste% / 50
+        stat_armor = data.get('total_armor', 0) / 2000.0       # armor / 2000
+        stat_ap = data.get('attack_power', 0) / 500.0          # AP / 500
+        stat_melee_crit = data.get('melee_crit', 0) / 50.0     # melee crit% / 50
+        stat_dodge = data.get('dodge', 0) / 50.0               # dodge% / 50
+        stat_hit = data.get('hit_spell', 0) / 50.0             # spell hit% / 50
+        stat_expertise = data.get('expertise', 0) / 50.0       # expertise% / 50
+        stat_arp = data.get('armor_pen', 0) / 100.0            # ArP% / 100
+
+        # Quest observations (dims 32-37) — always present, zero when quests disabled
         quest_obs = self._compute_quest_obs(data)
 
         return np.array([
@@ -596,18 +612,21 @@ class WoWSimEnv(gym.Env):
             has_shield, target_has_sw_pain,
             has_renew, has_inner_fire, has_fortitude,
             mind_blast_ready, target_has_holy_fire,
+            stat_sp, stat_spell_crit, stat_spell_haste, stat_armor,
+            stat_ap, stat_melee_crit, stat_dodge, stat_hit,
+            stat_expertise, stat_arp,
             *quest_obs,
         ], dtype=np.float32)
 
     def _compute_quest_obs(self, data: dict):
         """Compute quest observation features (6 dimensions).
 
-        [22] has_active_quest        (0/1)
-        [23] quest_progress          (0-1, ratio of completed objectives)
-        [24] quest_npc_nearby        (0/1, relevant quest NPC exists)
-        [25] quest_npc_distance / 40 (0-1, normalized distance)
-        [26] quest_npc_angle / pi    (-1 to 1, relative angle)
-        [27] quests_completed / 10   (0-inf, total completed this episode)
+        [32] has_active_quest        (0/1)
+        [33] quest_progress          (0-1, ratio of completed objectives)
+        [34] quest_npc_nearby        (0/1, relevant quest NPC exists)
+        [35] quest_npc_distance / 40 (0-1, normalized distance)
+        [36] quest_npc_angle / pi    (-1 to 1, relative angle)
+        [37] quests_completed / 10   (0-inf, total completed this episode)
         """
         if not self._quest_db:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
