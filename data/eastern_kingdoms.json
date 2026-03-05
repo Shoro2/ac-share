@@ -1,0 +1,9 @@
+{
+  "x_min": -15422.916015625,
+  "y_min": -6318.75,
+  "x_max": 3837.499755859375,
+  "y_max": 3449.999755859375,
+  "map_id": 0,
+  "description": "WoW world coordinate bounds for ../data/eastern_kingdoms.png",
+  "usage": "--map-image ../data/eastern_kingdoms.png --map-bounds \"-15422.916015625,-6318.75,3837.499755859375,3449.999755859375\""
+}
