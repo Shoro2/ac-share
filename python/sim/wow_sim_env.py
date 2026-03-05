@@ -46,6 +46,7 @@ from sim.constants import (
     FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
     FAMILY_DEVOURING_PLAGUE, FAMILY_PSYCHIC_SCREAM, FAMILY_SHADOW_PROTECTION,
     FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD, FAMILY_HOLY_NOVA, FAMILY_DISPEL_MAGIC,
+    FAMILY_MIND_FLAY, FAMILY_VAMPIRIC_TOUCH, FAMILY_DISPERSION,
 )
 
 # Reward per successfully looted item, indexed by WoW item quality
@@ -90,9 +91,9 @@ class WoWSimEnv(gym.Env):
                  log_interval: int = 1, enable_quests: bool = False):
         super().__init__()
 
-        self.action_space = spaces.Discrete(26)
+        self.action_space = spaces.Discrete(30)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(45,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(49,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -197,13 +198,17 @@ class WoWSimEnv(gym.Env):
         FAMILY_FEAR_WARD: 23,           # Fear Ward
         FAMILY_HOLY_NOVA: 24,           # Holy Nova
         FAMILY_DISPEL_MAGIC: 25,        # Dispel Magic
+        FAMILY_MIND_FLAY: 26,           # Mind Flay (talent-granted)
+        FAMILY_VAMPIRIC_TOUCH: 27,      # Vampiric Touch (talent-granted)
+        FAMILY_DISPERSION: 28,          # Dispersion (talent-granted)
     }
     _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE,
-                           FAMILY_DEVOURING_PLAGUE}
+                           FAMILY_DEVOURING_PLAGUE, FAMILY_MIND_FLAY, FAMILY_VAMPIRIC_TOUCH}
     _AOE_FAMILIES = {FAMILY_HOLY_NOVA, FAMILY_PSYCHIC_SCREAM}
     _SELF_FAMILIES = {FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_PW_SHIELD, FAMILY_RENEW,
                       FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
-                      FAMILY_SHADOW_PROTECTION, FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD}
+                      FAMILY_SHADOW_PROTECTION, FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD,
+                      FAMILY_DISPERSION}
 
     def action_masks(self) -> np.ndarray:
         """Return boolean mask: True = action allowed, False = masked.
@@ -313,6 +318,17 @@ class WoWSimEnv(gym.Env):
                     mask[action_id] = False
                     continue
 
+            # Talent-gated spells: mask if talent not learned
+            if family_id == FAMILY_MIND_FLAY and self.sim._get_talent_points("mind_flay") < 1:
+                mask[action_id] = False
+                continue
+            elif family_id == FAMILY_VAMPIRIC_TOUCH and self.sim._get_talent_points("vampiric_touch") < 1:
+                mask[action_id] = False
+                continue
+            elif family_id == FAMILY_DISPERSION and self.sim._get_talent_points("dispersion") < 1:
+                mask[action_id] = False
+                continue
+
             # Buff/debuff duplication checks (game mechanic — can't double-apply)
             if family_id == FAMILY_PW_SHIELD and (p.shield_remaining > 0 or p.shield_cooldown > 0):
                 mask[action_id] = False
@@ -331,6 +347,12 @@ class WoWSimEnv(gym.Env):
             elif family_id == FAMILY_DIVINE_SPIRIT and p.divine_spirit_remaining > 0:
                 mask[action_id] = False
             elif family_id == FAMILY_FEAR_WARD and p.fear_ward_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_VAMPIRIC_TOUCH and target is not None and target.dot4_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_MIND_FLAY and p.channel_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_DISPERSION and p.dispersion_remaining > 0:
                 mask[action_id] = False
 
         # ── Loot (7): need dead unlootable mob in range AND not in combat ──
@@ -370,6 +392,12 @@ class WoWSimEnv(gym.Env):
             mask[17] = False
         elif p.hp >= p.max_hp and p.mana >= p.max_mana:
             mask[17] = False  # already full, no point eating
+
+        # ── Shadowform toggle (29): need talent, not casting, not on GCD ──
+        if self.sim._get_talent_points("shadowform") < 1:
+            mask[29] = False
+        elif p.is_casting or p.gcd_remaining > 0:
+            mask[29] = False
 
         return mask
 
@@ -535,6 +563,14 @@ class WoWSimEnv(gym.Env):
                 self.sim.do_cast_holy_nova()
             elif action == 25:
                 self.sim.do_cast_dispel_magic()
+            elif action == 26:
+                self.sim.do_cast_mind_flay()
+            elif action == 27:
+                self.sim.do_cast_vampiric_touch()
+            elif action == 28:
+                self.sim.do_cast_dispersion()
+            elif action == 29:
+                self.sim.do_toggle_shadowform()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -816,7 +852,13 @@ class WoWSimEnv(gym.Env):
         psychic_scream_ready = 1.0 if data.get('psychic_scream_ready') == 'true' else 0.0
         num_feared = sum(1 for m in self.sim.mobs if m.alive and m.feared) / 5.0
 
-        # Stat observations (dims 23-32) — comprehensive WotLK stats
+        # Talent-related obs (dims 29-32)
+        target_has_vt = 1.0 if data.get('target_has_vampiric_touch') == 'true' else 0.0
+        shadowform_active = 1.0 if data.get('shadowform_active') == 'true' else 0.0
+        dispersion_active = 1.0 if data.get('dispersion_active') == 'true' else 0.0
+        is_channeling = 1.0 if data.get('is_channeling') == 'true' else 0.0
+
+        # Stat observations (dims 33-42) — comprehensive WotLK stats
         stat_sp = data.get('spell_power', 0) / 200.0           # spell power / 200
         stat_spell_crit = data.get('spell_crit', 0) / 50.0     # spell crit% / 50
         stat_spell_haste = data.get('spell_haste', 0) / 50.0   # spell haste% / 50
@@ -843,6 +885,7 @@ class WoWSimEnv(gym.Env):
             is_eating,
             target_has_dp, has_shadow_prot, has_divine_spirit,
             has_fear_ward, psychic_scream_ready, num_feared,
+            target_has_vt, shadowform_active, dispersion_active, is_channeling,
             stat_sp, stat_spell_crit, stat_spell_haste, stat_armor,
             stat_ap, stat_melee_crit, stat_dodge, stat_hit,
             stat_expertise, stat_arp,

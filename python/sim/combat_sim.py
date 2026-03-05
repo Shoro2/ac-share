@@ -59,12 +59,14 @@ from sim.constants import (
     SP_COEFF_SMITE, SP_COEFF_HEAL, SP_COEFF_MIND_BLAST,
     SP_COEFF_SW_PAIN_TICK, SP_COEFF_PW_SHIELD, SP_COEFF_RENEW_TICK,
     SP_COEFF_HOLY_FIRE, SP_COEFF_HOLY_FIRE_DOT_TICK,
+    SP_COEFF_MIND_FLAY_TICK, SP_COEFF_VAMPIRIC_TOUCH_TICK,
     SPELL_LEVEL_REQ, SPELL_MANA_PCT,
     get_best_rank, FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL,
     FAMILY_SW_PAIN, FAMILY_PW_SHIELD, FAMILY_MIND_BLAST,
     FAMILY_RENEW, FAMILY_HOLY_FIRE, FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
     FAMILY_DEVOURING_PLAGUE, FAMILY_PSYCHIC_SCREAM, FAMILY_SHADOW_PROTECTION,
     FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD, FAMILY_HOLY_NOVA, FAMILY_DISPEL_MAGIC,
+    FAMILY_MIND_FLAY, FAMILY_VAMPIRIC_TOUCH, FAMILY_DISPERSION,
     SP_COEFF_HOLY_NOVA_HEAL,
     ALL_RANKED_SPELL_IDS,
 )
@@ -99,6 +101,8 @@ from sim.models import (
     InventoryItem, VendorNPC, QuestNPC, VENDOR_DATA,
     INVENTORY_SLOTS, Player, Mob,
 )
+
+from sim.talent_data import get_talent_for_level, TALENT_DEFS
 
 
 # ─── Combat Simulation ───────────────────────────────────────────────
@@ -579,16 +583,30 @@ class CombatSimulation:
         cls = p.class_id
         self.recalculate_gear_stats()
 
-        # ─── Primary stat totals (base + gear + buffs) ───────────────
+        # ─── Primary stat totals (base + gear + buffs + talents) ──────
         p.total_strength = class_base_stat(cls, 0, p.level) + p.gear_strength
         p.total_agility = class_base_stat(cls, 1, p.level) + p.gear_agility
         # PW:Fortitude adds Stamina (DBC: AuraName=29 MOD_STAT, MiscValue=2)
         fort_sta = p.fortitude_stamina_bonus if p.fortitude_remaining > 0 else 0
+        # Improved PW:Fortitude: +15/30% Stamina bonus from Fortitude
+        imp_fort_pts = self._get_talent_points("improved_pw_fortitude")
+        if imp_fort_pts > 0 and fort_sta > 0:
+            fort_sta = int(fort_sta * (1.0 + 0.15 * imp_fort_pts))
         p.total_stamina = class_base_stat(cls, 2, p.level) + p.gear_stamina + fort_sta
         p.total_intellect = class_base_stat(cls, 3, p.level) + p.gear_intellect
         # Divine Spirit adds Spirit bonus
         ds_spi = p.divine_spirit_bonus if p.divine_spirit_remaining > 0 else 0
-        p.total_spirit = class_base_stat(cls, 4, p.level) + p.gear_spirit + ds_spi
+        base_spirit = class_base_stat(cls, 4, p.level) + p.gear_spirit + ds_spi
+        # Improved Spirit Tap: +5/10% total Spirit (passive)
+        imp_st_pts = self._get_talent_points("improved_spirit_tap")
+        if imp_st_pts > 0:
+            base_spirit = int(base_spirit * (1.0 + 0.05 * imp_st_pts))
+        # Spirit Tap proc: +100% Spirit for 15s after kill (at 3/3)
+        if p.spirit_tap_remaining > 0:
+            st_pts = self._get_talent_points("spirit_tap")
+            # 3/3 = 100% bonus Spirit
+            base_spirit = int(base_spirit * (1.0 + (st_pts / 3.0)))
+        p.total_spirit = base_spirit
 
         # ─── Max HP (preserve ratio) ────────────────────────────────
         old_max_hp = max(p.max_hp, 1)
@@ -604,10 +622,15 @@ class CombatSimulation:
             mana_ratio = p.mana / old_max_mana
             p.mana = max(0, int(mana_ratio * p.max_mana))
 
-        # ─── Armor (gear + agi*2 + Inner Fire) ──────────────────────
+        # ─── Armor (gear + agi*2 + Inner Fire + Improved Inner Fire talent) ─
         p.total_armor = p.gear_armor + p.total_agility * 2
         if p.inner_fire_remaining > 0:
-            p.total_armor += p.inner_fire_armor
+            if_armor = p.inner_fire_armor
+            # Improved Inner Fire: +15/30/45% armor from Inner Fire
+            iif_pts = self._get_talent_points("improved_inner_fire")
+            if iif_pts > 0:
+                if_armor = int(if_armor * (1.0 + 0.15 * iif_pts))
+            p.total_armor += if_armor
 
         # ─── Attack Power (melee + ranged) ───────────────────────────
         p.total_attack_power = melee_attack_power(
@@ -615,27 +638,36 @@ class CombatSimulation:
         p.total_ranged_ap = ranged_attack_power(
             p.level, p.total_strength, p.total_agility, cls) + p.gear_ranged_ap
 
-        # ─── Spell Power (gear + Inner Fire buff) ───────────────────
+        # ─── Spell Power (gear + Inner Fire buff + talents) ──────────
         inner_fire_sp = p.inner_fire_spellpower if p.inner_fire_remaining > 0 else 0
         p.total_spell_power = p.gear_spell_power + inner_fire_sp
+        # Twisted Faith: +4/8/12/16/20% of Spirit as Spell Power
+        tf_pts = self._get_talent_points("twisted_faith")
+        if tf_pts > 0:
+            p.total_spell_power += int(p.total_spirit * 0.04 * tf_pts)
 
-        # ─── Crit (melee, ranged, spell) ─────────────────────────────
+        # ─── Crit (melee, ranged, spell + Mind Melt for MB/MF) ────────
         p.total_melee_crit = melee_crit_chance(
             p.level, p.total_agility, p.gear_crit_rating, cls)
         p.total_ranged_crit = ranged_crit_chance(
             p.level, p.total_agility, p.gear_crit_rating, cls)
         p.total_spell_crit = spell_crit_chance(
             p.level, p.gear_intellect, p.gear_crit_rating, cls)
+        # Mind Melt: +3/6% crit on Mind Blast and Mind Flay (applied per-spell, not here)
 
         # ─── Haste (melee, ranged, spell) ────────────────────────────
         p.total_melee_haste = melee_haste_pct(p.level, p.gear_haste_rating)
         p.total_ranged_haste = ranged_haste_pct(p.level, p.gear_haste_rating)
         p.total_spell_haste = spell_haste_pct(p.level, p.gear_haste_rating)
 
-        # ─── Hit (melee, ranged, spell) ──────────────────────────────
+        # ─── Hit (melee, ranged, spell + Shadow Focus talent) ─────────
         p.total_hit_melee = hit_chance_melee(p.level, p.gear_hit_rating)
         p.total_hit_ranged = hit_chance_ranged(p.level, p.gear_hit_rating)
         p.total_hit_spell = hit_chance_spell(p.level, p.gear_hit_rating)
+        # Shadow Focus: +1/2/3% Shadow spell hit chance
+        sf_pts = self._get_talent_points("shadow_focus")
+        if sf_pts > 0:
+            p.total_hit_spell += sf_pts
 
         # ─── Dodge (with diminishing returns) ────────────────────────
         p.total_dodge = dodge_chance(
@@ -1289,6 +1321,42 @@ class CombatSimulation:
         sid = get_best_rank(FAMILY_DISPEL_MAGIC, self.player.level)
         return self._start_cast(sid) if sid else False
 
+    def do_cast_mind_flay(self) -> bool:
+        """Cast Mind Flay (channeled, talent-granted). Requires mind_flay talent."""
+        if self._get_talent_points("mind_flay") < 1:
+            return False
+        sid = get_best_rank(FAMILY_MIND_FLAY, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_vampiric_touch(self) -> bool:
+        """Cast Vampiric Touch (talent-granted DoT). Requires vampiric_touch talent."""
+        if self._get_talent_points("vampiric_touch") < 1:
+            return False
+        sid = get_best_rank(FAMILY_VAMPIRIC_TOUCH, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_dispersion(self) -> bool:
+        """Cast Dispersion (talent-granted defensive CD). Requires dispersion talent."""
+        if self._get_talent_points("dispersion") < 1:
+            return False
+        sid = get_best_rank(FAMILY_DISPERSION, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_toggle_shadowform(self) -> bool:
+        """Toggle Shadowform on/off. Requires shadowform talent."""
+        p = self.player
+        if self._get_talent_points("shadowform") < 1:
+            return False
+        if p.is_casting or p.gcd_remaining > 0:
+            return False
+        if p.shadowform_active:
+            p.shadowform_active = False
+        else:
+            p.shadowform_active = True
+        p.gcd_remaining = 3  # GCD
+        self.recalculate_stats()
+        return True
+
     def do_eat_drink(self) -> bool:
         """Start eating/drinking. Regenerates 5% HP and Mana per second.
 
@@ -1423,7 +1491,7 @@ class CombatSimulation:
 
     # Offensive spell families (need alive target + range)
     _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE,
-                           FAMILY_DEVOURING_PLAGUE}
+                           FAMILY_DEVOURING_PLAGUE, FAMILY_MIND_FLAY, FAMILY_VAMPIRIC_TOUCH}
     # AoE families: no target needed, hits mobs in range
     _AOE_FAMILIES = {FAMILY_HOLY_NOVA, FAMILY_PSYCHIC_SCREAM}
 
@@ -1503,18 +1571,63 @@ class CombatSimulation:
             if self.target and self.target.dot3_remaining > 0:
                 return False
 
+        # Vampiric Touch: block if already active on target (slot 4)
+        if family == FAMILY_VAMPIRIC_TOUCH:
+            if self.target and self.target.dot4_remaining > 0:
+                return False
+
+        # Dispersion: block if already active
+        if family == FAMILY_DISPERSION:
+            if self.player.dispersion_remaining > 0:
+                return False
+
+        # Mind Flay: block if already channeling
+        if family == FAMILY_MIND_FLAY:
+            if self.player.channel_remaining > 0:
+                return False
+
         # Spend mana (% of BaseMana)
-        self.player.mana -= mana_cost
+        # Focused Mind: -5/10/15% mana cost of Mind Blast, Mind Flay, Mind Sear
+        actual_cost = mana_cost
+        if family in (FAMILY_MIND_BLAST, FAMILY_MIND_FLAY):
+            fm_pts = self._get_talent_points("focused_mind")
+            if fm_pts > 0:
+                actual_cost = int(actual_cost * (1.0 - 0.05 * fm_pts))
+        self.player.mana -= actual_cost
 
         # GCD
         self.player.gcd_remaining = spell.gcd_ticks
 
         # Spell-specific cooldown (keyed by family so all ranks share)
         if spell.cooldown_ticks > 0:
-            self.player.spell_cooldowns[family] = spell.cooldown_ticks
+            cd_ticks = spell.cooldown_ticks
+            # Improved Mind Blast: -0.5s per rank = -1 tick per rank
+            if family == FAMILY_MIND_BLAST:
+                imb_pts = self._get_talent_points("improved_mind_blast")
+                if imb_pts > 0:
+                    cd_ticks = max(0, cd_ticks - imb_pts)
+            self.player.spell_cooldowns[family] = cd_ticks
 
-        if spell.cast_ticks > 0:
-            # Channeled/Cast time spell
+        if family == FAMILY_MIND_FLAY:
+            # Mind Flay: channeled spell — set up channel state
+            self.player.is_casting = True
+            self.player.cast_remaining = spell.dot_ticks  # channel duration = dot_dur_ticks
+            self.player.cast_spell_id = spell_id
+            self.player.channel_remaining = spell.dot_ticks
+            self.player.channel_spell_id = spell_id
+            self.player.channel_tick_timer = spell.dot_interval  # first tick after 1s
+            self.player.channel_target_uid = self.target.uid if self.target else 0
+            # Apply initial hit check for Mind Flay
+            if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    # Cancel channel on miss
+                    self.player.is_casting = False
+                    self.player.cast_remaining = 0
+                    self.player.channel_remaining = 0
+                    return True  # mana still spent
+        elif spell.cast_ticks > 0:
+            # Regular cast time spell
             self.player.is_casting = True
             self.player.cast_remaining = spell.cast_ticks
             self.player.cast_spell_id = spell_id
@@ -1556,7 +1669,7 @@ class CombatSimulation:
         family = spell.spell_family
 
         if family == FAMILY_SMITE:
-            # Direct damage offensive spell
+            # Direct Holy damage offensive spell
             if self.target and self.target.alive:
                 outcome = self._resolve_offensive_spell(self.target.level)
                 if outcome == SPELL_MISS:
@@ -1577,15 +1690,24 @@ class CombatSimulation:
             self.player.hp = min(self.player.max_hp, self.player.hp + heal)
 
         elif family == FAMILY_SW_PAIN:
-            # DoT (miss check on application)
+            # Shadow DoT (miss check on application)
             if self.target and self.target.alive:
                 outcome = self._resolve_offensive_spell(self.target.level)
                 if outcome == SPELL_MISS:
                     return
                 dmg_per_tick = spell_dot_per_tick(spell_id, sp)
+                # Apply Shadow damage modifiers to per-tick value
+                mod = self._shadow_damage_mod(self.target)
+                iswp_pts = self._get_talent_points("improved_sw_pain")
+                if iswp_pts > 0:
+                    mod *= 1.0 + 0.03 * iswp_pts
+                dmg_per_tick = int(dmg_per_tick * mod)
                 self.target.dot_remaining = spell.dot_ticks
                 self.target.dot_timer = spell.dot_interval
                 self.target.dot_damage_per_tick = dmg_per_tick
+                # Misery: SW:Pain applies spell hit debuff
+                self._apply_misery(self.target)
+                self._apply_shadow_weaving(self.target)
 
         elif family == FAMILY_PW_SHIELD:
             # Absorb shield (no miss on friendly)
@@ -1595,16 +1717,26 @@ class CombatSimulation:
             self.player.shield_cooldown = 30  # Weakened Soul: 15s = 30 ticks
 
         elif family == FAMILY_MIND_BLAST:
-            # Direct damage with cooldown
+            # Shadow direct damage with cooldown
             if self.target and self.target.alive:
                 outcome = self._resolve_offensive_spell(self.target.level)
                 if outcome == SPELL_MISS:
                     return
                 min_dmg, max_dmg = spell_direct_value(spell_id, sp)
                 dmg = self.rng.randint(min_dmg, max_dmg)
-                if outcome == SPELL_CRIT:
-                    dmg = int(dmg * 1.5)
-                self._damage_mob(self.target, dmg)
+                # Mind Melt: +3/6% crit on Mind Blast
+                mm_pts = self._get_talent_points("mind_melt")
+                extra_crit = mm_pts * 3.0 if mm_pts > 0 else 0.0
+                if outcome == SPELL_CRIT or (outcome == SPELL_HIT and extra_crit > 0
+                        and self.rng.random() * 100 < extra_crit):
+                    # Shadow Power: +20/40/60/80/100% crit damage bonus
+                    sp_pts = self._get_talent_points("shadow_power")
+                    crit_mult = 1.5 + 0.1 * sp_pts
+                    dmg = int(dmg * crit_mult)
+                    if outcome != SPELL_CRIT:
+                        self.player.spell_crits += 1
+                self._damage_mob(self.target, dmg, is_shadow=True,
+                                 spell_family=FAMILY_MIND_BLAST)
 
         elif family == FAMILY_RENEW:
             # HoT (no miss on friendly)
@@ -1656,10 +1788,22 @@ class CombatSimulation:
                 if outcome == SPELL_MISS:
                     return
                 dmg_per_tick = spell_dot_per_tick(spell_id, sp)
+                # Apply Shadow damage modifiers to per-tick
+                mod = self._shadow_damage_mod(self.target)
+                dmg_per_tick = int(dmg_per_tick * mod)
                 self.target.dot3_remaining = spell.dot_ticks
                 self.target.dot3_timer = spell.dot_interval
                 self.target.dot3_damage_per_tick = dmg_per_tick
                 self.target.dot3_heals_caster = True
+                # Improved Devouring Plague: instant damage = 10/20/30% of total DoT
+                idp_pts = self._get_talent_points("improved_devouring_plague")
+                if idp_pts > 0:
+                    total_dot = dmg_per_tick * (spell.dot_ticks // spell.dot_interval)
+                    instant = int(total_dot * 0.1 * idp_pts)
+                    if instant > 0:
+                        self._damage_mob(self.target, instant, is_shadow=True,
+                                         spell_family=FAMILY_DEVOURING_PLAGUE)
+                self._apply_shadow_weaving(self.target)
 
         elif family == FAMILY_PSYCHIC_SCREAM:
             # AoE Fear: fears up to 5 mobs within 8 yards for 8 seconds (16 ticks)
@@ -1736,14 +1880,116 @@ class CombatSimulation:
                 self.player.spell_crits += 1
             self.player.hp = min(self.player.max_hp, self.player.hp + heal)
 
+        elif family == FAMILY_VAMPIRIC_TOUCH:
+            # Shadow DoT (slot 4) — talent-granted, mana return on ticks
+            if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return
+                dmg_per_tick = spell_dot_per_tick(spell_id, sp)
+                # Apply Shadow damage modifiers to per-tick
+                mod = self._shadow_damage_mod(self.target)
+                dmg_per_tick = int(dmg_per_tick * mod)
+                self.target.dot4_remaining = spell.dot_ticks
+                self.target.dot4_timer = spell.dot_interval
+                self.target.dot4_damage_per_tick = dmg_per_tick
+                # Misery: VT applies spell hit debuff
+                self._apply_misery(self.target)
+                self._apply_shadow_weaving(self.target)
+
+        elif family == FAMILY_DISPERSION:
+            # Defensive CD: -90% damage taken, +6% mana/s for 6s
+            self.player.dispersion_remaining = spell.buff_duration  # 12 ticks = 6s
+            self.player.is_casting = False  # can't cast during Dispersion
+            self.player.gcd_remaining = 0
+
         elif family == FAMILY_DISPEL_MAGIC:
             # Remove debuffs from self (in sim: no mob debuffs currently)
             # Rank 2 can also be used offensively to dispel mob buffs
             # For now: utility spell, no direct combat effect
             pass
 
-    def _damage_mob(self, mob: Mob, damage: int):
-        """Apply damage to a mob, handle death."""
+    def _shadow_damage_mod(self, mob: Mob) -> float:
+        """Calculate multiplicative Shadow damage modifier from talents.
+
+        Combines: Darkness, Shadowform, Shadow Weaving (target debuff),
+        Improved SW:Pain (for SW:P only — handled separately).
+        """
+        mod = 1.0
+        # Darkness: +2/4/6/8/10% Shadow spell damage
+        dark_pts = self._get_talent_points("darkness")
+        if dark_pts > 0:
+            mod *= 1.0 + 0.02 * dark_pts
+        # Shadowform: +15% Shadow damage
+        if self.player.shadowform_active:
+            mod *= 1.15
+        # Shadow Weaving: target takes +2% Shadow per stack (max 5 = +10%)
+        if mob.shadow_weaving_stacks > 0:
+            mod *= 1.0 + 0.02 * mob.shadow_weaving_stacks
+        return mod
+
+    def _apply_shadow_weaving(self, mob: Mob):
+        """Apply or refresh Shadow Weaving debuff stack on a mob."""
+        sw_pts = self._get_talent_points("shadow_weaving")
+        if sw_pts <= 0:
+            return
+        # 33/66/100% chance to apply per Shadow spell
+        chance = sw_pts / 3.0
+        if self.rng.random() < chance:
+            mob.shadow_weaving_stacks = min(5, mob.shadow_weaving_stacks + 1)
+            mob.shadow_weaving_timer = 30  # 15s = 30 ticks
+
+    def _apply_misery(self, mob: Mob):
+        """Apply Misery debuff (spell hit increase) from SW:P, MF, VT."""
+        mis_pts = self._get_talent_points("misery")
+        if mis_pts > 0:
+            mob.misery_stacks = 1  # binary debuff, value is mis_pts % hit
+
+    def _vampiric_embrace_heal(self, shadow_damage: int):
+        """Heal player from VE: 15% of single-target Shadow spell damage.
+
+        Improved VE: +33/67% → 20/25%.
+        """
+        ve_pts = self._get_talent_points("vampiric_embrace")
+        if ve_pts < 1:
+            return
+        pct = 0.15
+        ive_pts = self._get_talent_points("improved_vampiric_embrace")
+        if ive_pts == 1:
+            pct = 0.20
+        elif ive_pts >= 2:
+            pct = 0.25
+        heal = int(shadow_damage * pct)
+        if heal > 0:
+            self.player.hp = min(self.player.max_hp, self.player.hp + heal)
+
+    def _damage_mob(self, mob: Mob, damage: int, is_shadow: bool = False,
+                    spell_family: int = 0):
+        """Apply damage to a mob, handle death.
+
+        Args:
+            is_shadow: If True, apply Shadow damage modifiers + VE healing.
+            spell_family: Spell family for specific talent interactions.
+        """
+        # Apply Shadow talent multipliers
+        if is_shadow:
+            mod = self._shadow_damage_mod(mob)
+            # Improved SW:Pain: +3/6% SW:Pain damage
+            if spell_family == FAMILY_SW_PAIN:
+                iswp_pts = self._get_talent_points("improved_sw_pain")
+                if iswp_pts > 0:
+                    mod *= 1.0 + 0.03 * iswp_pts
+            # Twisted Faith: +2/4/6/8/10% MB/MF damage if target has SW:Pain
+            if spell_family in (FAMILY_MIND_BLAST, FAMILY_MIND_FLAY):
+                tf_pts = self._get_talent_points("twisted_faith")
+                if tf_pts > 0 and mob.dot_remaining > 0:
+                    mod *= 1.0 + 0.02 * tf_pts
+            damage = int(damage * mod)
+            # Shadow Weaving application
+            self._apply_shadow_weaving(mob)
+            # Vampiric Embrace healing
+            self._vampiric_embrace_heal(damage)
+
         old_hp = mob.hp
         mob.hp = max(0, mob.hp - damage)
         self.damage_dealt += old_hp - mob.hp
@@ -1756,6 +2002,11 @@ class CombatSimulation:
             mob.target_player = False
             mob.respawn_timer = self.RESPAWN_TICKS
             self.kills += 1
+            # Spirit Tap proc on kill
+            st_pts = self._get_talent_points("spirit_tap")
+            if st_pts > 0:
+                self.player.spirit_tap_remaining = 30  # 15s = 30 ticks
+                self.recalculate_stats()
             # XP reward — AzerothCore formula based on level difference
             xp = base_xp_gain(self.player.level, mob.level)
             self.player.xp_gained += xp
@@ -1783,9 +2034,29 @@ class CombatSimulation:
             p.levels_gained += 1
             self._apply_level_stats()
 
+    def _get_talent_points(self, talent_name: str) -> int:
+        """Return current points in a talent (0 if not yet trained)."""
+        return self.player.talent_points.get(talent_name, 0)
+
+    def _assign_talent_point(self, level: int):
+        """Assign talent point for the given level using the predefined build."""
+        talent = get_talent_for_level(level)
+        if talent is None:
+            return
+        p = self.player
+        current = p.talent_points.get(talent, 0)
+        max_pts = TALENT_DEFS[talent]["max"]
+        if current < max_pts:
+            p.talent_points[talent] = current + 1
+        # Auto-activate Shadowform when talented
+        if talent == "shadowform" and not p.shadowform_active:
+            p.shadowform_active = True
+
     def _apply_level_stats(self):
         """Update player stats after level-up. Heals to full."""
         p = self.player
+        # Assign talent point for this level
+        self._assign_talent_point(p.level)
         self.recalculate_stats()
         # Full heal on level-up (matches WoW behaviour)
         p.hp = p.max_hp
@@ -1801,12 +2072,60 @@ class CombatSimulation:
         self._update_exploration()
         self._update_quest_exploration()
 
+        # --- Mind Flay channel ticks ---
+        if p.channel_remaining > 0:
+            p.channel_remaining -= 1
+            p.channel_tick_timer -= 1
+            if p.channel_tick_timer <= 0 and p.channel_remaining > 0:
+                # Channel damage tick
+                mf_spell = SPELLS.get(p.channel_spell_id)
+                if mf_spell:
+                    # Find channel target
+                    target_mob = None
+                    for mob in self.mobs:
+                        if mob.uid == p.channel_target_uid and mob.alive:
+                            target_mob = mob
+                            break
+                    if target_mob:
+                        tick_dmg = spell_dot_per_tick(p.channel_spell_id,
+                                                     p.total_spell_power)
+                        # Mind Melt: +3/6% crit bonus (applied per tick)
+                        mm_pts = self._get_talent_points("mind_melt")
+                        extra_crit = mm_pts * 3.0 if mm_pts > 0 else 0.0
+                        is_crit = self.rng.random() * 100 < (p.total_spell_crit + extra_crit)
+                        if is_crit:
+                            sp_pts = self._get_talent_points("shadow_power")
+                            crit_mult = 1.5 + 0.1 * sp_pts
+                            tick_dmg = int(tick_dmg * crit_mult)
+                            p.spell_crits += 1
+                        self._damage_mob(target_mob, tick_dmg, is_shadow=True,
+                                         spell_family=FAMILY_MIND_FLAY)
+                        # Pain and Suffering: MF has 33/66/100% chance to refresh SWP
+                        ps_pts = self._get_talent_points("pain_and_suffering")
+                        if ps_pts > 0 and target_mob.dot_remaining > 0:
+                            if self.rng.random() < ps_pts / 3.0:
+                                target_mob.dot_remaining = 36  # refresh to 18s
+                        # Misery from Mind Flay
+                        self._apply_misery(target_mob)
+                    else:
+                        # Target dead/gone — cancel channel
+                        p.channel_remaining = 0
+                p.channel_tick_timer = 2  # next tick in 1s
+            if p.channel_remaining <= 0:
+                # Channel finished
+                p.channel_spell_id = 0
+                p.channel_tick_timer = 0
+                p.channel_target_uid = 0
+
         # --- Cast completion ---
         if p.is_casting:
             p.cast_remaining -= 1
             if p.cast_remaining <= 0:
                 p.is_casting = False
-                self._apply_spell(p.cast_spell_id)
+                # Mind Flay ends via channel system, not _apply_spell
+                if p.cast_spell_id and SPELLS.get(p.cast_spell_id, None) \
+                        and SPELLS[p.cast_spell_id].spell_family != FAMILY_MIND_FLAY:
+                    self._apply_spell(p.cast_spell_id)
                 p.cast_spell_id = 0
 
         # --- GCD ---
@@ -1843,7 +2162,8 @@ class CombatSimulation:
                         mob.dot_remaining -= 1
                         mob.dot_timer -= 1
                         if mob.dot_timer <= 0:
-                            self._damage_mob(mob, mob.dot_damage_per_tick)
+                            self._damage_mob(mob, mob.dot_damage_per_tick,
+                                             is_shadow=True, spell_family=FAMILY_SW_PAIN)
                             mob.dot_timer = 6
                     if mob.dot2_remaining > 0:
                         mob.dot2_remaining -= 1
@@ -1856,10 +2176,21 @@ class CombatSimulation:
                         mob.dot3_timer -= 1
                         if mob.dot3_timer <= 0:
                             tick_dmg = mob.dot3_damage_per_tick
-                            self._damage_mob(mob, tick_dmg)
+                            self._damage_mob(mob, tick_dmg, is_shadow=True,
+                                             spell_family=FAMILY_DEVOURING_PLAGUE)
                             if mob.dot3_heals_caster:
                                 p.hp = min(p.max_hp, p.hp + tick_dmg)
                             mob.dot3_timer = 6
+                    if mob.dot4_remaining > 0:
+                        mob.dot4_remaining -= 1
+                        mob.dot4_timer -= 1
+                        if mob.dot4_timer <= 0:
+                            tick_dmg = mob.dot4_damage_per_tick
+                            self._damage_mob(mob, tick_dmg, is_shadow=True,
+                                             spell_family=FAMILY_VAMPIRIC_TOUCH)
+                            mana_return = int(p.max_mana * 0.02)
+                            p.mana = min(p.max_mana, p.mana + mana_return)
+                            mob.dot4_timer = 6
                     continue
 
             if mob.target_player:
@@ -1950,12 +2281,14 @@ class CombatSimulation:
                             mob.attack_timer = mob.template.attack_speed
                             p.combat_timer = 0
 
-            # DoT processing (slot 1: SW:Pain)
+            # DoT processing (slot 1: SW:Pain — Shadow, VE heals)
             if mob.dot_remaining > 0:
                 mob.dot_remaining -= 1
                 mob.dot_timer -= 1
                 if mob.dot_timer <= 0:
-                    self._damage_mob(mob, mob.dot_damage_per_tick)
+                    tick_dmg = mob.dot_damage_per_tick
+                    self._damage_mob(mob, tick_dmg, is_shadow=True,
+                                     spell_family=FAMILY_SW_PAIN)
                     mob.dot_timer = 6
             # DoT processing (slot 2: Holy Fire)
             if mob.dot2_remaining > 0:
@@ -1964,16 +2297,34 @@ class CombatSimulation:
                 if mob.dot2_timer <= 0:
                     self._damage_mob(mob, mob.dot2_damage_per_tick)
                     mob.dot2_timer = 6
-            # DoT processing (slot 3: Devouring Plague — heals caster)
+            # DoT processing (slot 3: Devouring Plague — Shadow, heals caster)
             if mob.dot3_remaining > 0:
                 mob.dot3_remaining -= 1
                 mob.dot3_timer -= 1
                 if mob.dot3_timer <= 0:
                     tick_dmg = mob.dot3_damage_per_tick
-                    self._damage_mob(mob, tick_dmg)
+                    self._damage_mob(mob, tick_dmg, is_shadow=True,
+                                     spell_family=FAMILY_DEVOURING_PLAGUE)
                     if mob.dot3_heals_caster:
                         p.hp = min(p.max_hp, p.hp + tick_dmg)
                     mob.dot3_timer = 6
+            # DoT processing (slot 4: Vampiric Touch — Shadow, mana return)
+            if mob.dot4_remaining > 0:
+                mob.dot4_remaining -= 1
+                mob.dot4_timer -= 1
+                if mob.dot4_timer <= 0:
+                    tick_dmg = mob.dot4_damage_per_tick
+                    self._damage_mob(mob, tick_dmg, is_shadow=True,
+                                     spell_family=FAMILY_VAMPIRIC_TOUCH)
+                    # VT returns 2% of max mana per tick to caster
+                    mana_return = int(p.max_mana * 0.02)
+                    p.mana = min(p.max_mana, p.mana + mana_return)
+                    mob.dot4_timer = 6
+            # Shadow Weaving timer decay
+            if mob.shadow_weaving_timer > 0:
+                mob.shadow_weaving_timer -= 1
+                if mob.shadow_weaving_timer <= 0:
+                    mob.shadow_weaving_stacks = 0
 
         # --- Shield decay ---
         if p.shield_remaining > 0:
@@ -2034,6 +2385,21 @@ class CombatSimulation:
         if p.fear_ward_remaining > 0:
             p.fear_ward_remaining -= 1
 
+        # --- Spirit Tap decay ---
+        if p.spirit_tap_remaining > 0:
+            p.spirit_tap_remaining -= 1
+            if p.spirit_tap_remaining <= 0:
+                self.recalculate_stats()  # Spirit bonus removed
+
+        # --- Dispersion ---
+        if p.dispersion_remaining > 0:
+            p.dispersion_remaining -= 1
+            # +6% mana per second = 3% per tick
+            mana_regen = int(p.max_mana * 0.03)
+            p.mana = min(p.max_mana, p.mana + mana_regen)
+            if p.dispersion_remaining <= 0:
+                pass  # Dispersion ended
+
         # --- Regen ---
         if p.in_combat:
             p.combat_timer += 1
@@ -2050,13 +2416,20 @@ class CombatSimulation:
 
         # Mana regen (WotLK 5-second rule):
         #   OOC / not casting: Spirit-based regen + MP5 from gear
-        #   While casting: only MP5 from gear (flat)
+        #   While casting: only MP5 from gear (flat) + Meditation talent %
         mp5_per_tick = p.gear_mp5 / 5.0 * 0.5  # MP5 -> per tick (0.5s)
         if not p.is_casting:
             spi_regen = spirit_mana_regen(
-                p.level, p.gear_intellect, p.gear_spirit, p.class_id)
+                p.level, p.total_intellect, p.total_spirit, p.class_id)
             p.mana_regen_accumulator += spi_regen + mp5_per_tick
         else:
+            # Meditation: +17/33/50% of Spirit-based mana regen continues while casting
+            med_pts = self._get_talent_points("meditation")
+            if med_pts > 0:
+                spi_regen = spirit_mana_regen(
+                    p.level, p.total_intellect, p.total_spirit, p.class_id)
+                med_pcts = {1: 0.17, 2: 0.33, 3: 0.50}
+                p.mana_regen_accumulator += spi_regen * med_pcts.get(med_pts, 0.50)
             p.mana_regen_accumulator += mp5_per_tick
         # Fallback minimum: 2% of max_mana per tick if spirit regen is too low
         min_regen = p.max_mana * self.MANA_REGEN_PCT_PER_TICK
@@ -2082,7 +2455,7 @@ class CombatSimulation:
                     p.is_eating = False
 
     def _damage_player(self, damage: int, attacker: 'Mob | None' = None):
-        """Apply damage to player, considering armor mitigation and shield.
+        """Apply damage to player, considering armor mitigation, talents, and shield.
 
         Armor mitigation uses the WotLK formula from Unit::CalcArmorReducedDamage
         (Unit.cpp:2067):
@@ -2094,6 +2467,12 @@ class CombatSimulation:
         # Taking damage interrupts eating
         if p.is_eating:
             p.is_eating = False
+        # Dispersion: -90% damage taken
+        if p.dispersion_remaining > 0:
+            damage = max(1, int(damage * 0.10))
+        # Shadowform: -15% physical damage taken (mob melee is physical)
+        if p.shadowform_active:
+            damage = max(1, int(damage * 0.85))
         # total_armor is pre-computed in recalculate_stats (gear + agi*2 + inner fire)
         if p.total_armor > 0:
             if attacker is not None:
@@ -2141,6 +2520,12 @@ class CombatSimulation:
         mob.dot3_timer = 0
         mob.dot3_damage_per_tick = 0
         mob.dot3_heals_caster = False
+        mob.dot4_remaining = 0
+        mob.dot4_timer = 0
+        mob.dot4_damage_per_tick = 0
+        mob.shadow_weaving_stacks = 0
+        mob.shadow_weaving_timer = 0
+        mob.misery_stacks = 0
         mob.feared = False
         mob.fear_remaining = 0
         mob.respawn_timer = 0
@@ -2157,6 +2542,10 @@ class CombatSimulation:
         mob.dot_remaining = 0
         mob.dot3_remaining = 0
         mob.dot3_heals_caster = False
+        mob.dot4_remaining = 0
+        mob.shadow_weaving_stacks = 0
+        mob.shadow_weaving_timer = 0
+        mob.misery_stacks = 0
         mob.feared = False
         mob.fear_remaining = 0
         self._check_combat_end()
@@ -2258,6 +2647,7 @@ class CombatSimulation:
             "has_sw_pain": self.target.dot_remaining > 0,
             "has_holy_fire": self.target.dot2_remaining > 0,
             "has_devouring_plague": self.target.dot3_remaining > 0,
+            "has_vampiric_touch": self.target.dot4_remaining > 0,
         }
 
     def get_state_dict(self) -> dict:
@@ -2299,6 +2689,13 @@ class CombatSimulation:
             "target_has_sw_pain": "true" if t_info.get("has_sw_pain") else "false",
             "target_has_holy_fire": "true" if t_info.get("has_holy_fire") else "false",
             "target_has_devouring_plague": "true" if (self.target and self.target.alive and self.target.dot3_remaining > 0) else "false",
+            "target_has_vampiric_touch": "true" if t_info.get("has_vampiric_touch") else "false",
+            "shadowform_active": "true" if p.shadowform_active else "false",
+            "dispersion_active": "true" if p.dispersion_remaining > 0 else "false",
+            "dispersion_ready": "true" if (self._get_talent_points("dispersion") > 0 and p.spell_cooldowns.get(FAMILY_DISPERSION, 0) <= 0) else "false",
+            "is_channeling": "true" if p.channel_remaining > 0 else "false",
+            "mind_flay_available": "true" if self._get_talent_points("mind_flay") > 0 else "false",
+            "vampiric_touch_available": "true" if self._get_talent_points("vampiric_touch") > 0 else "false",
             "has_shadow_protection": "true" if p.shadow_prot_remaining > 0 else "false",
             "has_divine_spirit": "true" if p.divine_spirit_remaining > 0 else "false",
             "has_fear_ward": "true" if p.fear_ward_remaining > 0 else "false",
