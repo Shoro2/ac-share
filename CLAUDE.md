@@ -22,7 +22,7 @@ The sim environment (`python/sim/`) replicates the WoW combat system in pure Pyt
 - **~1000x faster** than live server training (no TCP, no server needed)
 - **WotLK 3.3.5 stat system** — all 10 classes, 5 primary stats, full combat rating conversions from DBC tables
 - **19-slot equipment system** — equip/unequip with automatic stat recalculation, combat-locked
-- **9 Priest spells** with spell power coefficients from AzerothCore `spell_bonus_data`
+- **16 Priest spells** (9 original + 7 new: Devouring Plague, Psychic Scream, Shadow Protection, Divine Spirit, Fear Ward, Holy Nova, Dispel Magic) with spell power coefficients from AzerothCore `spell_bonus_data`
 - **Armor mitigation** using WotLK formula (Unit.cpp), spell crit from Intellect + rating
 - **Optional 3D terrain data** from real WoW files (maps/vmaps) via `test_3d_env.py`
 - **Full-world creature spawning** from AzerothCore CSV exports via `creature_db.py`
@@ -57,7 +57,7 @@ ac-share/
 ├── python/                      <- Python RL training, inference & utilities
 │   ├── sim/                     <- ** MAIN FOCUS: Offline Simulation **
 │   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
-│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
+│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(45), Discrete(26))
 │   │   ├── train_sim.py         <- MaskablePPO training on the sim (5 bots, action masking, no server needed)
 │   │   ├── test_sim.py          <- Validation tests (16 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, action masking, eat/drink)
 │   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
@@ -291,14 +291,14 @@ Simulates the complete WoW 3.3.5 WotLK combat system in pure Python. All formula
 - **Natural difficulty gradient**: Wolves (L1) in the north -> Kobolds (L1-3) in the south/east
 - **WotLK 3.3.5 Attribute System** (see details below): 5 primary stats, combat ratings, spell power, armor mitigation
 - **19 Equipment Slots**: Full WoW gearing with stat recalculation on equip/unequip, combat-locked
-- **9 Priest Spells**: Smite (585), Lesser Heal (2050), SW:Pain (589), PW:Shield (17), Mind Blast (8092), Renew (139), Holy Fire (14914), Inner Fire (588), PW:Fortitude (1243)
+- **16 Priest Spells**: Smite (585), Lesser Heal (2050), SW:Pain (589), PW:Shield (17), Mind Blast (8092), Renew (139), Holy Fire (14914), Inner Fire (588), PW:Fortitude (1243), Devouring Plague (2944), Psychic Scream (8122), Shadow Protection (976), Divine Spirit (14752), Fear Ward (6346), Holy Nova (15237), Dispel Magic (527)
 - **Spell Power Scaling**: All spells scale with `total_spell_power` via WotLK coefficients from `spell_bonus_data`
 - **Spell Crit**: All damage/heal spells can crit (150% multiplier) based on `total_spell_crit` from Intellect + rating
 - **Spell Miss**: Offensive spells use WotLK two-roll hit system — base 4% miss at equal level, +1% per level diff (up to +2), 17% at +3 level diff (boss penalty), hit rating reduces miss (floor 1%)
 - **Melee Attack Table**: Mob melee attacks use WotLK single-roll attack table: miss (5% base) → dodge → parry → block → crit (5% base, 200% dmg) → crushing (150% dmg, 4+ level gap) → normal. Level difference and defense rating shift all thresholds.
 - **Dodge/Parry/Block**: Player dodge, parry, and block stats (already computed with DR) are now checked on every incoming mob melee attack. Block reduces damage by `block_value` instead of full avoidance.
 - **Armor Mitigation**: WotLK formula from `Unit.cpp:CalcArmorReducedDamage`, capped at 75%
-- **Mob AI**: Aggro range (10-20 units), chase, melee attack (with full attack table), leash (60 units)
+- **Mob AI**: Aggro range (10-20 units), chase, melee attack (with full attack table), leash (60 units), fear (fled mobs move away instead of chasing)
 - **Loot System**: Copper drops, item score system, gear stats parsed from CSV (10 stat slots per item)
 - **Respawn**: Dead mobs respawn after 60s at original spawn point
 - **XP**: AzerothCore formula `BaseGain()` with gray level, ZeroDifference — mobs below gray level give 0 XP
@@ -367,6 +367,9 @@ Dodge and Parry use **diminishing returns**: `dr * cap / (dr + cap * k)` with cl
 | Renew (per tick) | 0.1 | ~0.5 total over 5 ticks |
 | Holy Fire (direct) | 0.5711 | direct damage |
 | Holy Fire (DoT tick) | 0.024 | per tick |
+| Devouring Plague (per tick) | 0.18 | shadow DoT, heals caster |
+| Holy Nova (damage) | 0.161 | PBAoE damage |
+| Holy Nova (heal) | 0.303 | self-heal component |
 
 **Armor Mitigation** (Unit.cpp:CalcArmorReducedDamage):
 ```
@@ -518,15 +521,15 @@ Loads AzerothCore CSV exports for realistic item drops with full group/reference
 ### wow_sim_env.py — Gymnasium Sim Environment
 
 Extended replacement for `wow_env.py` with optional quest system:
-- **Action Space**: `Discrete(18)` — 17 base actions + Quest Interact
-- **Obs Space**: `Box(39,)` — 23 base dims + 10 stat dims + 6 quest dims
+- **Action Space**: `Discrete(26)` — 17 base actions + Quest Interact + 7 new spells (Devouring Plague, Psychic Scream, Shadow Protection, Divine Spirit, Fear Ward, Holy Nova, Dispel Magic)
+- **Obs Space**: `Box(45,)` — 23 base dims + 6 new spell dims + 10 stat dims + 6 quest dims
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Action Masking**: Invalid actions masked out (casting lock, GCD, mana, cooldowns, buff duplication, loot-in-combat). Bot learns strategic decisions (when to loot, heal timing, range, aggro). Vendor/quest NPC navigation remains as multi-step overrides.
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
 - **Stall Detection**: Truncates episode after 3,000 steps without kill XP (quest XP alone does not reset the counter)
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
-**Action Space** — `Discrete(18)`:
+**Action Space** — `Discrete(26)`:
 | ID | Action |
 |---|---|
 | 0 | No-op (wait) |
@@ -547,8 +550,16 @@ Extended replacement for `wow_env.py` with optional quest system:
 | 15 | Cast Inner Fire (588) — self-buff: armor + spell power |
 | 16 | Cast PW:Fortitude (1243) — self-buff: +HP |
 | 17 | Eat/Drink — regen 5% HP+Mana/s, OOC only, interrupted by movement/damage/full |
+| 18 | Cast Devouring Plague (2944) — shadow DoT that heals caster |
+| 19 | Cast Psychic Scream (8122) — AoE fear, 8yd range, 30s CD |
+| 20 | Cast Shadow Protection (976) — shadow resist buff, 10min |
+| 21 | Cast Divine Spirit (14752) — spirit buff, 30min |
+| 22 | Cast Fear Ward (6346) — fear immunity buff, 3min |
+| 23 | Cast Holy Nova (15237) — PBAoE damage + self-heal, 10yd |
+| 24 | Cast Dispel Magic (527) — debuff removal |
+| 25 | (reserved) |
 
-**Observation Vector** — `Box(shape=(39,), dtype=float32)`:
+**Observation Vector** — `Box(shape=(45,), dtype=float32)`:
 
 | Index | Value | Range |
 |---|---|---|
@@ -575,24 +586,30 @@ Extended replacement for `wow_env.py` with optional quest system:
 | 20 | mind_blast_ready | 0/1 |
 | 21 | target_has_holy_fire | 0/1 |
 | 22 | is_eating | 0/1 |
-| 23 | spell_power / 200 | 0-inf |
-| 24 | spell_crit / 50 | 0-inf |
-| 25 | spell_haste / 50 | 0-inf |
-| 26 | total_armor / 2000 | 0-inf |
-| 27 | attack_power / 500 | 0-inf |
-| 28 | melee_crit / 50 | 0-inf |
-| 29 | dodge / 50 | 0-inf |
-| 30 | hit_spell / 50 | 0-inf |
-| 31 | expertise / 50 | 0-inf |
-| 32 | armor_pen / 100 | 0-inf |
-| 33 | has_active_quest | 0/1 |
-| 34 | quest_progress (objectives ratio) | 0-1 |
-| 35 | quest_npc_nearby | 0/1 |
-| 36 | quest_npc_distance / 40 | 0-1 |
-| 37 | quest_npc_angle / pi | -1 to 1 |
-| 38 | quests_completed / 10 | 0-inf |
+| 23 | target_has_devouring_plague | 0/1 |
+| 24 | has_shadow_protection | 0/1 |
+| 25 | has_divine_spirit | 0/1 |
+| 26 | has_fear_ward | 0/1 |
+| 27 | psychic_scream_ready | 0/1 |
+| 28 | num_feared / 5 | 0-inf |
+| 29 | spell_power / 200 | 0-inf |
+| 30 | spell_crit / 50 | 0-inf |
+| 31 | spell_haste / 50 | 0-inf |
+| 32 | total_armor / 2000 | 0-inf |
+| 33 | attack_power / 500 | 0-inf |
+| 34 | melee_crit / 50 | 0-inf |
+| 35 | dodge / 50 | 0-inf |
+| 36 | hit_spell / 50 | 0-inf |
+| 37 | expertise / 50 | 0-inf |
+| 38 | armor_pen / 100 | 0-inf |
+| 39 | has_active_quest | 0/1 |
+| 40 | quest_progress (objectives ratio) | 0-1 |
+| 41 | quest_npc_nearby | 0/1 |
+| 42 | quest_npc_distance / 40 | 0-1 |
+| 43 | quest_npc_angle / pi | -1 to 1 |
+| 44 | quests_completed / 10 | 0-inf |
 
-Stat dims (23-32) reflect gear + buffs and update as the bot equips items or levels. Quest dims (33-38) are always present but zero when quests are disabled (`enable_quests=False`).
+New spell dims (23-28) track buff/debuff state for the 7 new spells. Stat dims (29-38) reflect gear + buffs and update as the bot equips items or levels. Quest dims (39-44) are always present but zero when quests are disabled (`enable_quests=False`).
 
 **Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1, enable_quests=False)`
 - `data_root`: Path to WoW `Data/` directory -> enables 3D terrain (`SimTerrain`) + area lookups (`WoW3DEnvironment` with AreaTable.dbc)
@@ -683,9 +700,9 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-16 test functions:
+17 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
-2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
+2. **test_gym_env()**: Gymnasium spaces validation — Box(45,) obs, Discrete(26) actions
 3. **test_random_episode()**: 1000-step episode with random actions
 4. **test_performance()**: FPS benchmark (~40000+ FPS single-env)
 5. **test_combat_scenario()**: Scripted combat with targeting and spell rotation
@@ -921,10 +938,10 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 
 | Component | Status | Details |
 |---|---|---|
-| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 9 Priest spells, WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, full combat resolution (melee attack table + spell miss/crit), dodge/parry/block, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
+| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 16 Priest spells (incl. Devouring Plague, Psychic Scream, Shadow Protection, Divine Spirit, Fear Ward, Holy Nova, Dispel Magic), WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, full combat resolution (melee attack table + spell miss/crit), dodge/parry/block, mob AI with fear, loot, XP, respawn, exploration, leveling (1-80) |
 | **WotLK Attribute System** | done | 5 primary stats, all combat ratings (hit/crit/haste/dodge/parry/block/expertise/ArP/resilience), spell power coefficients, DBC-derived formulas, diminishing returns |
 | **Equipment System** | done | 19 WoW equipment slots, equip/unequip with stat recalculation, combat-locked, two-hand offhand clearing, dual-slot logic (rings/trinkets), item stats from CSV |
-| **WoWSimEnv (Gym Interface)** | done | Discrete(18) actions, Box(39) obs (23 base + 10 stat + 6 quest), sparse rewards, stall detection |
+| **WoWSimEnv (Gym Interface)** | done | Discrete(26) actions, Box(45) obs (23 base + 6 spell + 10 stat + 6 quest), sparse rewards, stall detection |
 | **train_sim.py (PPO Training)** | done | 5 bots, SubprocVecEnv, TensorBoard, gameplay metrics, episode logging |
 | **Loot Table System** | done | LootDB CSV loader, AzerothCore group/reference logic, item scores + individual stat types, upgrade detection, sim integration with fallback |
 | **test_sim.py (Validation)** | done | 10+ tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables, vendor system, quest system, quest CSV loading, attribute system, equipment |
@@ -1005,8 +1022,8 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 
 ### Phase 4: Extensions (Later)
 
-9. **More spells / additional classes** *(partially done — 9 Priest spells implemented, all 10 classes have stat frameworks)*
-    - Additional Priest spells (Fade, Psychic Scream, Shadow Word: Death)
+9. **More spells / additional classes** *(partially done — 16 Priest spells implemented, all 10 classes have stat frameworks)*
+    - Remaining Priest spells (Fade, Shadow Word: Death, Mana Burn)
     - Spell implementations for non-Priest classes
     - Mob types with special abilities (ranged, caster, runners)
 
