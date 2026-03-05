@@ -8,7 +8,7 @@ Core idea: the server publishes game state over a local TCP socket, Python decid
 
 - `python/`
   Python control + training code:
-  - **Offline simulation** (`sim/`) — full WotLK 3.3.5 combat sim with stat system, 19-slot equipment, 9 Priest spells, ~1000x faster than live
+  - **Offline simulation** (`sim/`) — full WotLK 3.3.5 combat sim with stat system, 19-slot equipment, 16 Priest spells, ~1000x faster than live
   - A Gymnasium environment (`wow_env.py`) that connects to the server socket
   - Stable-Baselines3 PPO training (`train.py` for live, `sim/train_sim.py` for offline)
   - Model runner (`run_model.py`)
@@ -287,7 +287,7 @@ Full WoW-style equipment with stat recalculation:
 
 ### Spell power and crit
 
-All 9 Priest spells scale with spell power via WotLK coefficients:
+All 16 Priest spells scale with spell power via WotLK coefficients:
 
 - **Smite** (585): 0.7143 SP coeff, 2.5s cast
 - **Lesser Heal** (2050): 0.8571 SP coeff, 3.0s cast
@@ -298,6 +298,13 @@ All 9 Priest spells scale with spell power via WotLK coefficients:
 - **Holy Fire** (14914): 0.5711 SP coeff direct + DoT, 2.0s cast, 10s cooldown
 - **Inner Fire** (588): Self-buff — armor + spell power, instant
 - **PW:Fortitude** (1243): Self-buff — bonus HP, instant
+- **Devouring Plague** (2944): 0.18 SP coeff per tick, shadow DoT that heals caster, 24s duration
+- **Psychic Scream** (8122): AoE fear up to 5 mobs, 8yd range, 8s duration, 30s cooldown
+- **Shadow Protection** (976): Self-buff — shadow resistance, 10min duration
+- **Divine Spirit** (14752): Self-buff — spirit bonus, 30min duration
+- **Fear Ward** (6346): Self-buff — fear immunity, 3min duration
+- **Holy Nova** (15237): 0.161 SP coeff damage + 0.303 SP coeff self-heal, PBAoE 10yd
+- **Dispel Magic** (527): Debuff removal utility
 
 All damage and healing spells can crit (150% multiplier) based on `total_spell_crit` from Intellect + crit rating.
 
@@ -305,8 +312,8 @@ All damage and healing spells can crit (150% multiplier) based on `total_spell_c
 
 `python/sim/wow_sim_env.py` provides the Gymnasium interface:
 
-- **Action Space**: `Discrete(17)` — No-op, Move, Turn x2, Target, 9 spells, Loot, Sell, Quest Interact
-- **Observation Space**: `Box(38,)` — 22 base dims + 10 stat dims (spell power, crit, haste, armor, AP, dodge, hit, expertise, ArP) + 6 quest dims
+- **Action Space**: `Discrete(26)` — No-op, Move, Turn x2, Target, 16 spells, Loot, Sell, Quest Interact, Eat/Drink
+- **Observation Space**: `Box(45,)` — 23 base dims + 6 spell buff/debuff dims + 10 stat dims (spell power, crit, haste, armor, AP, dodge, hit, expertise, ArP) + 6 quest dims
 - **Stat observations** update dynamically as the bot equips gear and levels up
 
 ### Sim training
