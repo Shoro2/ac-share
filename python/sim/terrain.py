@@ -164,10 +164,28 @@ class SimTerrain:
         has_los, _, _ = self.env.check_los(p1, p2)
         return has_los
 
+    # Height offset above ground for movement collision ray.
+    # Low enough to catch mountain walls / building walls,
+    # high enough to clear small rocks and terrain bumps.
+    _WALK_LOS_HEIGHT = 0.5
+
     def check_walkable(self, x1: float, y1: float, z1: float,
                        x2: float, y2: float, z2: float) -> bool:
-        """Check if the terrain path between two points is walkable."""
+        """Check if the terrain path between two points is walkable.
+
+        Performs two checks:
+        1. Terrain slope/step check via heightmap (TerrainPathChecker)
+        2. Ground-level VMAP collision check (catches mountain walls,
+           buildings, and other solid objects the heightmap alone misses)
+        """
         if not self._loaded or self.env.terrain_checker is None:
             return True
+        # 1) Terrain slope / step height check
         walkable, _, _ = self.env.check_path(Vec3(x1, y1, z1), Vec3(x2, y2, z2))
-        return walkable
+        if not walkable:
+            return False
+        # 2) Ground-level VMAP collision — ray at ankle height
+        p1 = Vec3(x1, y1, z1 + self._WALK_LOS_HEIGHT)
+        p2 = Vec3(x2, y2, z2 + self._WALK_LOS_HEIGHT)
+        has_los, _, _ = self.env.check_los(p1, p2)
+        return has_los
