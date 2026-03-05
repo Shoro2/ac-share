@@ -1,12 +1,14 @@
 """
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
-Observation space: Box(39,) — 23 base dims + 10 stat dims + 6 quest dims.
-Action space: Discrete(19) — 18 base actions + 1 quest action.
+Observation space: Box(45,) — 29 base dims + 10 stat dims + 6 quest dims.
+Action space: Discrete(26) — 25 base actions + 1 quest action.
 Runs ~1000x faster than the real server.
 
 All spells auto-select the highest rank available at the player's current level.
-Flash Heal added as action 18.
+17 Priest spell families implemented (Smite, Heal, Flash Heal, SW:Pain, PW:Shield,
+Mind Blast, Renew, Holy Fire, Inner Fire, PW:Fortitude, Devouring Plague,
+Psychic Scream, Shadow Protection, Divine Spirit, Fear Ward, Holy Nova, Dispel Magic).
 
 Uses **action masking** instead of override logic: invalid actions are masked
 out so the bot can only choose from valid actions.  Game-mechanic constraints
@@ -42,6 +44,8 @@ from sim.constants import (
     FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_SW_PAIN,
     FAMILY_PW_SHIELD, FAMILY_MIND_BLAST, FAMILY_RENEW, FAMILY_HOLY_FIRE,
     FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
+    FAMILY_DEVOURING_PLAGUE, FAMILY_PSYCHIC_SCREAM, FAMILY_SHADOW_PROTECTION,
+    FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD, FAMILY_HOLY_NOVA, FAMILY_DISPEL_MAGIC,
 )
 
 # Reward per successfully looted item, indexed by WoW item quality
@@ -86,9 +90,9 @@ class WoWSimEnv(gym.Env):
                  log_interval: int = 1, enable_quests: bool = False):
         super().__init__()
 
-        self.action_space = spaces.Discrete(19)
+        self.action_space = spaces.Discrete(26)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(39,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(45,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -176,20 +180,30 @@ class WoWSimEnv(gym.Env):
 
     # Family ID -> action ID mapping for mask building
     _FAMILY_ACTION = {
-        FAMILY_SMITE: 5,        # Smite
-        FAMILY_HEAL: 6,         # Lesser Heal / Heal / Greater Heal
-        FAMILY_SW_PAIN: 9,      # Shadow Word: Pain
-        FAMILY_PW_SHIELD: 10,   # Power Word: Shield
-        FAMILY_MIND_BLAST: 12,  # Mind Blast
-        FAMILY_RENEW: 13,       # Renew
-        FAMILY_HOLY_FIRE: 14,   # Holy Fire
-        FAMILY_INNER_FIRE: 15,  # Inner Fire
-        FAMILY_FORTITUDE: 16,   # Power Word: Fortitude
-        FAMILY_FLASH_HEAL: 18,  # Flash Heal (new action)
+        FAMILY_SMITE: 5,                # Smite
+        FAMILY_HEAL: 6,                 # Lesser Heal / Heal / Greater Heal
+        FAMILY_SW_PAIN: 9,              # Shadow Word: Pain
+        FAMILY_PW_SHIELD: 10,           # Power Word: Shield
+        FAMILY_MIND_BLAST: 12,          # Mind Blast
+        FAMILY_RENEW: 13,               # Renew
+        FAMILY_HOLY_FIRE: 14,           # Holy Fire
+        FAMILY_INNER_FIRE: 15,          # Inner Fire
+        FAMILY_FORTITUDE: 16,           # Power Word: Fortitude
+        FAMILY_FLASH_HEAL: 18,          # Flash Heal
+        FAMILY_DEVOURING_PLAGUE: 19,    # Devouring Plague
+        FAMILY_PSYCHIC_SCREAM: 20,      # Psychic Scream
+        FAMILY_SHADOW_PROTECTION: 21,   # Shadow Protection
+        FAMILY_DIVINE_SPIRIT: 22,       # Divine Spirit
+        FAMILY_FEAR_WARD: 23,           # Fear Ward
+        FAMILY_HOLY_NOVA: 24,           # Holy Nova
+        FAMILY_DISPEL_MAGIC: 25,        # Dispel Magic
     }
-    _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE}
+    _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE,
+                           FAMILY_DEVOURING_PLAGUE}
+    _AOE_FAMILIES = {FAMILY_HOLY_NOVA, FAMILY_PSYCHIC_SCREAM}
     _SELF_FAMILIES = {FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_PW_SHIELD, FAMILY_RENEW,
-                      FAMILY_INNER_FIRE, FAMILY_FORTITUDE}
+                      FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
+                      FAMILY_SHADOW_PROTECTION, FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD}
 
     def action_masks(self) -> np.ndarray:
         """Return boolean mask: True = action allowed, False = masked.
@@ -214,7 +228,7 @@ class WoWSimEnv(gym.Env):
         - Walking to corpse after kill
         - When to eat/drink vs keep going
         """
-        mask = np.ones(19, dtype=bool)
+        mask = np.ones(self.action_space.n, dtype=bool)
         p = self.sim.player
 
         # ── While casting: ONLY noop is valid ──
@@ -288,6 +302,17 @@ class WoWSimEnv(gym.Env):
                         mask[action_id] = False
                         continue
 
+            # AoE spells: need at least one alive mob in range (no target required)
+            if family_id in self._AOE_FAMILIES:
+                has_aoe_target = any(
+                    m.alive and m.in_combat
+                    and math.sqrt((m.x - p.x)**2 + (m.y - p.y)**2) <= spell.spell_range
+                    for m in self.sim.mobs
+                )
+                if not has_aoe_target:
+                    mask[action_id] = False
+                    continue
+
             # Buff/debuff duplication checks (game mechanic — can't double-apply)
             if family_id == FAMILY_PW_SHIELD and (p.shield_remaining > 0 or p.shield_cooldown > 0):
                 mask[action_id] = False
@@ -298,6 +323,14 @@ class WoWSimEnv(gym.Env):
             elif family_id == FAMILY_INNER_FIRE and p.inner_fire_remaining > 0:
                 mask[action_id] = False
             elif family_id == FAMILY_FORTITUDE and p.fortitude_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_DEVOURING_PLAGUE and target is not None and target.dot3_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_SHADOW_PROTECTION and p.shadow_prot_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_DIVINE_SPIRIT and p.divine_spirit_remaining > 0:
+                mask[action_id] = False
+            elif family_id == FAMILY_FEAR_WARD and p.fear_ward_remaining > 0:
                 mask[action_id] = False
 
         # ── Loot (7): need dead unlootable mob in range AND not in combat ──
@@ -488,6 +521,20 @@ class WoWSimEnv(gym.Env):
                 self.sim.do_eat_drink()
             elif action == 18:
                 self.sim.do_cast_flash_heal()
+            elif action == 19:
+                self.sim.do_cast_devouring_plague()
+            elif action == 20:
+                self.sim.do_cast_psychic_scream()
+            elif action == 21:
+                self.sim.do_cast_shadow_protection()
+            elif action == 22:
+                self.sim.do_cast_divine_spirit()
+            elif action == 23:
+                self.sim.do_cast_fear_ward()
+            elif action == 24:
+                self.sim.do_cast_holy_nova()
+            elif action == 25:
+                self.sim.do_cast_dispel_magic()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -761,6 +808,13 @@ class WoWSimEnv(gym.Env):
         mind_blast_ready = 1.0 if data.get('mind_blast_ready') == 'true' else 0.0
         target_has_holy_fire = 1.0 if data.get('target_has_holy_fire') == 'true' else 0.0
         is_eating = 1.0 if data.get('is_eating') == 'true' else 0.0
+        # New spell buff/debuff obs (dims 23-28 shift stats to 29-38)
+        target_has_dp = 1.0 if data.get('target_has_devouring_plague') == 'true' else 0.0
+        has_shadow_prot = 1.0 if data.get('has_shadow_protection') == 'true' else 0.0
+        has_divine_spirit = 1.0 if data.get('has_divine_spirit') == 'true' else 0.0
+        has_fear_ward = 1.0 if data.get('has_fear_ward') == 'true' else 0.0
+        psychic_scream_ready = 1.0 if data.get('psychic_scream_ready') == 'true' else 0.0
+        num_feared = sum(1 for m in self.sim.mobs if m.alive and m.feared) / 5.0
 
         # Stat observations (dims 23-32) — comprehensive WotLK stats
         stat_sp = data.get('spell_power', 0) / 200.0           # spell power / 200
@@ -787,6 +841,8 @@ class WoWSimEnv(gym.Env):
             has_renew, has_inner_fire, has_fortitude,
             mind_blast_ready, target_has_holy_fire,
             is_eating,
+            target_has_dp, has_shadow_prot, has_divine_spirit,
+            has_fear_ward, psychic_scream_ready, num_feared,
             stat_sp, stat_spell_crit, stat_spell_haste, stat_armor,
             stat_ap, stat_melee_crit, stat_dodge, stat_hit,
             stat_expertise, stat_arp,
@@ -796,12 +852,12 @@ class WoWSimEnv(gym.Env):
     def _compute_quest_obs(self, data: dict):
         """Compute quest observation features (6 dimensions).
 
-        [33] has_active_quest        (0/1)
-        [34] quest_progress          (0-1, ratio of completed objectives)
-        [35] quest_npc_nearby        (0/1, relevant quest NPC exists)
-        [36] quest_npc_distance / 40 (0-1, normalized distance)
-        [37] quest_npc_angle / pi    (-1 to 1, relative angle)
-        [38] quests_completed / 10   (0-inf, total completed this episode)
+        [39] has_active_quest        (0/1)
+        [40] quest_progress          (0-1, ratio of completed objectives)
+        [41] quest_npc_nearby        (0/1, relevant quest NPC exists)
+        [42] quest_npc_distance / 40 (0-1, normalized distance)
+        [43] quest_npc_angle / pi    (-1 to 1, relative angle)
+        [44] quests_completed / 10   (0-inf, total completed this episode)
         """
         if not self._quest_db:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

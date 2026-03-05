@@ -941,6 +941,39 @@ SP_COEFFICIENTS = {
     2791: (0.0, 0.0),
     10937: (0.0, 0.0),
     10938: (0.0, 0.0),
+    # Devouring Plague (R1-R6) — DoT 0.18 per tick (from spell_bonus_data)
+    2944: (0.0, 0.18),
+    19276: (0.0, 0.18),
+    19277: (0.0, 0.18),
+    19278: (0.0, 0.18),
+    19279: (0.0, 0.18),
+    19280: (0.0, 0.18),
+    # Psychic Scream — no SP coefficient (CC, not damage)
+    8122: (0.0, 0.0),
+    8124: (0.0, 0.0),
+    10888: (0.0, 0.0),
+    10890: (0.0, 0.0),
+    # Shadow Protection — no SP coefficient (buff)
+    976: (0.0, 0.0),
+    10957: (0.0, 0.0),
+    10958: (0.0, 0.0),
+    # Divine Spirit — no SP coefficient (buff)
+    14752: (0.0, 0.0),
+    14818: (0.0, 0.0),
+    14819: (0.0, 0.0),
+    27681: (0.0, 0.0),
+    # Fear Ward — no SP coefficient (buff)
+    6346: (0.0, 0.0),
+    # Holy Nova (R1-R6) — direct 0.161 (from spell_bonus_data)
+    15237: (0.161, 0.0),
+    15430: (0.161, 0.0),
+    15431: (0.161, 0.0),
+    27799: (0.161, 0.0),
+    27800: (0.161, 0.0),
+    27801: (0.161, 0.0),
+    # Dispel Magic — no SP coefficient (utility)
+    527: (0.0, 0.0),
+    988: (0.0, 0.0),
 }
 
 # Legacy SP_COEFF_* aliases for backward compatibility
@@ -952,6 +985,9 @@ SP_COEFF_PW_SHIELD = 0.8068
 SP_COEFF_RENEW_TICK = 0.2070
 SP_COEFF_HOLY_FIRE = 0.5710
 SP_COEFF_HOLY_FIRE_DOT_TICK = 0.0529
+SP_COEFF_DEVOURING_PLAGUE_TICK = 0.18
+SP_COEFF_HOLY_NOVA = 0.161
+SP_COEFF_HOLY_NOVA_HEAL = 0.303
 
 def get_sp_coeff(spell_id):
     """Get (direct_bonus, dot_bonus_per_tick) for a spell ID."""
@@ -969,6 +1005,13 @@ FAMILY_RENEW = 139
 FAMILY_HOLY_FIRE = 14914
 FAMILY_INNER_FIRE = 588
 FAMILY_FORTITUDE = 1243
+FAMILY_DEVOURING_PLAGUE = 2944
+FAMILY_PSYCHIC_SCREAM = 8122
+FAMILY_SHADOW_PROTECTION = 976
+FAMILY_DIVINE_SPIRIT = 14752
+FAMILY_FEAR_WARD = 6346
+FAMILY_HOLY_NOVA = 15237
+FAMILY_DISPEL_MAGIC = 527
 
 # Each entry: (train_level, spell_id)
 SPELL_RANKS = {
@@ -1012,6 +1055,29 @@ SPELL_RANKS = {
     FAMILY_FORTITUDE: [
         (1, 1243), (12, 1244), (24, 1245), (36, 2791),
         (48, 10937), (60, 10938),
+    ],
+    FAMILY_DEVOURING_PLAGUE: [
+        (20, 2944), (28, 19276), (36, 19277), (44, 19278),
+        (52, 19279), (60, 19280),
+    ],
+    FAMILY_PSYCHIC_SCREAM: [
+        (14, 8122), (28, 8124), (42, 10888), (56, 10890),
+    ],
+    FAMILY_SHADOW_PROTECTION: [
+        (30, 976), (42, 10957), (56, 10958),
+    ],
+    FAMILY_DIVINE_SPIRIT: [
+        (30, 14752), (40, 14818), (50, 14819), (60, 27681),
+    ],
+    FAMILY_FEAR_WARD: [
+        (20, 6346),
+    ],
+    FAMILY_HOLY_NOVA: [
+        (20, 15237), (28, 15430), (36, 15431), (44, 27799),
+        (52, 27800), (60, 27801),
+    ],
+    FAMILY_DISPEL_MAGIC: [
+        (18, 527), (36, 988),
     ],
 }
 
@@ -1074,6 +1140,20 @@ SPELL_MANA_PCT = {
     588: 14, 7128: 14, 602: 14, 1006: 14, 10951: 14, 10952: 14,
     # PW:Fortitude: all 27%
     1243: 27, 1244: 27, 1245: 27, 2791: 27, 10937: 27, 10938: 27,
+    # Devouring Plague: all 25% (Spell.dbc ManaCostPercentage)
+    2944: 25, 19276: 25, 19277: 25, 19278: 25, 19279: 25, 19280: 25,
+    # Psychic Scream: all 15%
+    8122: 15, 8124: 15, 10888: 15, 10890: 15,
+    # Shadow Protection: all 23%
+    976: 23, 10957: 23, 10958: 23,
+    # Divine Spirit: all 23%
+    14752: 23, 14818: 23, 14819: 23, 27681: 23,
+    # Fear Ward: 3%
+    6346: 3,
+    # Holy Nova: all 20%
+    15237: 20, 15430: 20, 15431: 20, 27799: 20, 27800: 20, 27801: 20,
+    # Dispel Magic: all 14%
+    527: 14, 988: 14,
 }
 
 
