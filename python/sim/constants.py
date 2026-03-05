@@ -842,14 +842,239 @@ from sim.dbc_loader import (  # noqa: E402
 
 
 # ─── WotLK Spell Power Coefficients (from spell_bonus_data DB) ──────
-SP_COEFF_SMITE = 0.7143           # 2.5s / 3.5
-SP_COEFF_HEAL = 0.8571            # 3.0s / 3.5
-SP_COEFF_MIND_BLAST = 0.4286      # 1.5s / 3.5
-SP_COEFF_SW_PAIN_TICK = 0.1833    # per tick (total ~1.1 over 6 ticks)
-SP_COEFF_PW_SHIELD = 0.8068       # absorb coefficient
-SP_COEFF_RENEW_TICK = 0.1         # per tick (~0.5 total over 5 ticks)
-SP_COEFF_HOLY_FIRE = 0.5711       # direct
-SP_COEFF_HOLY_FIRE_DOT_TICK = 0.024  # per tick
+# Per-rank SP coefficients from AzerothCore spell_bonus_data table.
+# Maps spell_id -> (direct_bonus, dot_bonus_per_tick).
+SP_COEFFICIENTS = {
+    # Smite (R1-R8): coefficient scales up with cast time
+    585: (0.1230, 0.0),    # R1 1.5s cast
+    591: (0.2710, 0.0),    # R2 2.0s cast
+    598: (0.5540, 0.0),    # R3 2.5s cast
+    984: (0.7140, 0.0),    # R4 2.5s
+    1004: (0.7140, 0.0),   # R5
+    6060: (0.7140, 0.0),   # R6
+    10933: (0.7140, 0.0),  # R7
+    10934: (0.7140, 0.0),  # R8
+    # Lesser Heal (R1-R3)
+    2050: (0.2310, 0.0),   # R1 1.5s
+    2052: (0.4310, 0.0),   # R2 2.0s
+    2053: (0.7550, 0.0),   # R3 2.5s
+    # Heal (R1-R4)
+    2054: (1.3700, 0.0),   # R1 3.0s
+    2055: (1.3700, 0.0),   # R2
+    6063: (1.3700, 0.0),   # R3
+    6064: (1.3700, 0.0),   # R4
+    # Greater Heal (R1-R5)
+    2060: (1.6110, 0.0),   # R1 3.0s
+    10963: (1.6110, 0.0),  # R2
+    10964: (1.6110, 0.0),  # R3
+    10965: (1.6110, 0.0),  # R4
+    25314: (1.6110, 0.0),  # R5
+    # Flash Heal (R1-R7)
+    2061: (0.8057, 0.0),   # R1 1.5s
+    9472: (0.8057, 0.0),   # R2
+    9473: (0.8057, 0.0),   # R3
+    9474: (0.8057, 0.0),   # R4
+    10915: (0.8057, 0.0),  # R5
+    10916: (0.8057, 0.0),  # R6
+    10917: (0.8057, 0.0),  # R7
+    # Shadow Word: Pain (R1-R8)
+    589: (0.0, 0.1833),    # R1
+    594: (0.0, 0.1833),    # R2
+    970: (0.0, 0.1833),    # R3
+    992: (0.0, 0.1833),    # R4
+    2767: (0.0, 0.1833),   # R5
+    10892: (0.0, 0.1833),  # R6
+    10893: (0.0, 0.1833),  # R7
+    10894: (0.0, 0.1833),  # R8
+    # Power Word: Shield (R1-R10) — uses DBC BonusMult, no spell_bonus_data entry
+    17: (0.8068, 0.0),     # R1
+    592: (0.8068, 0.0),    # R2
+    600: (0.8068, 0.0),    # R3
+    3747: (0.8068, 0.0),   # R4
+    6065: (0.8068, 0.0),   # R5
+    6066: (0.8068, 0.0),   # R6
+    10898: (0.8068, 0.0),  # R7
+    10899: (0.8068, 0.0),  # R8
+    10900: (0.8068, 0.0),  # R9
+    10901: (0.8068, 0.0),  # R10
+    # Mind Blast (R1-R9)
+    8092: (0.2680, 0.0),   # R1
+    8102: (0.3640, 0.0),   # R2
+    8103: (0.4286, 0.0),   # R3
+    8104: (0.4286, 0.0),   # R4
+    8105: (0.4286, 0.0),   # R5
+    8106: (0.4286, 0.0),   # R6
+    10945: (0.4286, 0.0),  # R7
+    10946: (0.4286, 0.0),  # R8
+    10947: (0.4286, 0.0),  # R9
+    # Renew (R1-R10)
+    139: (0.0, 0.2070),    # R1
+    6074: (0.0, 0.2910),   # R2
+    6075: (0.0, 0.3760),   # R3
+    6076: (0.0, 0.3760),   # R4
+    6077: (0.0, 0.3760),   # R5
+    6078: (0.0, 0.3760),   # R6
+    10927: (0.0, 0.3760),  # R7
+    10928: (0.0, 0.3760),  # R8
+    10929: (0.0, 0.3760),  # R9
+    25315: (0.0, 0.3760),  # R10
+    # Holy Fire (R1-R8) — direct + DoT
+    14914: (0.5710, 0.0529),  # R1
+    15262: (0.5710, 0.0529),  # R2
+    15263: (0.5710, 0.0529),  # R3
+    15264: (0.5710, 0.0529),  # R4
+    15265: (0.5710, 0.0529),  # R5
+    15266: (0.5710, 0.0529),  # R6
+    15267: (0.5710, 0.0529),  # R7
+    15261: (0.5710, 0.0529),  # R8
+    # Inner Fire (R1-R6) — no SP coefficient (buff, not damage/heal)
+    588: (0.0, 0.0),
+    7128: (0.0, 0.0),
+    602: (0.0, 0.0),
+    1006: (0.0, 0.0),
+    10951: (0.0, 0.0),
+    10952: (0.0, 0.0),
+    # PW:Fortitude (R1-R6) — no SP coefficient
+    1243: (0.0, 0.0),
+    1244: (0.0, 0.0),
+    1245: (0.0, 0.0),
+    2791: (0.0, 0.0),
+    10937: (0.0, 0.0),
+    10938: (0.0, 0.0),
+}
+
+# Legacy SP_COEFF_* aliases for backward compatibility
+SP_COEFF_SMITE = 0.1230
+SP_COEFF_HEAL = 0.2310
+SP_COEFF_MIND_BLAST = 0.2680
+SP_COEFF_SW_PAIN_TICK = 0.1833
+SP_COEFF_PW_SHIELD = 0.8068
+SP_COEFF_RENEW_TICK = 0.2070
+SP_COEFF_HOLY_FIRE = 0.5710
+SP_COEFF_HOLY_FIRE_DOT_TICK = 0.0529
+
+def get_sp_coeff(spell_id):
+    """Get (direct_bonus, dot_bonus_per_tick) for a spell ID."""
+    return SP_COEFFICIENTS.get(spell_id, (0.0, 0.0))
+
+# ─── Spell Families and Ranks ──────────────────────────────────────
+# Family ID = first (R1) spell ID. Ranks sorted by level requirement.
+FAMILY_SMITE = 585
+FAMILY_HEAL = 2050       # Lesser Heal → Heal → Greater Heal (unified healing line)
+FAMILY_FLASH_HEAL = 2061
+FAMILY_SW_PAIN = 589
+FAMILY_PW_SHIELD = 17
+FAMILY_MIND_BLAST = 8092
+FAMILY_RENEW = 139
+FAMILY_HOLY_FIRE = 14914
+FAMILY_INNER_FIRE = 588
+FAMILY_FORTITUDE = 1243
+
+# Each entry: (train_level, spell_id)
+SPELL_RANKS = {
+    FAMILY_SMITE: [
+        (1, 585), (6, 591), (14, 598), (22, 984), (30, 1004),
+        (38, 6060), (46, 10933), (54, 10934),
+    ],
+    FAMILY_HEAL: [  # Lesser Heal → Heal → Greater Heal
+        (1, 2050), (4, 2052), (10, 2053),           # Lesser Heal R1-R3
+        (16, 2054), (22, 2055), (28, 6063), (34, 6064),  # Heal R1-R4
+        (40, 2060), (46, 10963), (52, 10964), (58, 10965), (60, 25314),  # Greater Heal R1-R5
+    ],
+    FAMILY_FLASH_HEAL: [
+        (20, 2061), (26, 9472), (32, 9473), (38, 9474),
+        (44, 10915), (50, 10916), (56, 10917),
+    ],
+    FAMILY_SW_PAIN: [
+        (4, 589), (10, 594), (18, 970), (26, 992), (34, 2767),
+        (42, 10892), (50, 10893), (58, 10894),
+    ],
+    FAMILY_PW_SHIELD: [
+        (6, 17), (12, 592), (18, 600), (24, 3747), (30, 6065),
+        (36, 6066), (42, 10898), (48, 10899), (54, 10900), (60, 10901),
+    ],
+    FAMILY_MIND_BLAST: [
+        (10, 8092), (16, 8102), (22, 8103), (28, 8104), (34, 8105),
+        (40, 8106), (46, 10945), (52, 10946), (58, 10947),
+    ],
+    FAMILY_RENEW: [
+        (8, 139), (14, 6074), (20, 6075), (26, 6076), (32, 6077),
+        (38, 6078), (44, 10927), (50, 10928), (56, 10929), (60, 25315),
+    ],
+    FAMILY_HOLY_FIRE: [
+        (20, 14914), (24, 15262), (30, 15263), (36, 15264),
+        (42, 15265), (48, 15266), (54, 15267), (60, 15261),
+    ],
+    FAMILY_INNER_FIRE: [
+        (12, 588), (20, 7128), (30, 602), (40, 1006),
+        (50, 10951), (60, 10952),
+    ],
+    FAMILY_FORTITUDE: [
+        (1, 1243), (12, 1244), (24, 1245), (36, 2791),
+        (48, 10937), (60, 10938),
+    ],
+}
+
+# Set of all spell IDs across all ranks
+ALL_RANKED_SPELL_IDS = set()
+for _ranks in SPELL_RANKS.values():
+    for _lvl, _sid in _ranks:
+        ALL_RANKED_SPELL_IDS.add(_sid)
+
+def get_best_rank(family_id, player_level):
+    """Return the highest-rank spell_id available at the given player level.
+
+    Returns None if the player hasn't learned any rank yet.
+    """
+    ranks = SPELL_RANKS.get(family_id)
+    if not ranks:
+        return None
+    best = None
+    for lvl_req, spell_id in ranks:
+        if player_level >= lvl_req:
+            best = spell_id
+    return best
+
+# Spell level requirements from trainer_spell table (all ranks)
+SPELL_LEVEL_REQ = {}
+for _ranks in SPELL_RANKS.values():
+    for _lvl, _sid in _ranks:
+        SPELL_LEVEL_REQ[_sid] = _lvl
+
+# Spell mana cost as % of class base mana (from Spell.dbc ManaCostPercentage)
+SPELL_MANA_PCT = {
+    # Smite: R1=9%, R2=12%, R3+=15%
+    585: 9, 591: 12, 598: 15, 984: 15, 1004: 15,
+    6060: 15, 10933: 15, 10934: 15,
+    # Lesser Heal: R1=16%, R2=21%, R3=27%
+    2050: 16, 2052: 21, 2053: 27,
+    # Heal: all 32%
+    2054: 32, 2055: 32, 6063: 32, 6064: 32,
+    # Greater Heal: all 32%
+    2060: 32, 10963: 32, 10964: 32, 10965: 32, 25314: 32,
+    # Flash Heal: all 18%
+    2061: 18, 9472: 18, 9473: 18, 9474: 18,
+    10915: 18, 10916: 18, 10917: 18,
+    # SW:Pain: all 22%
+    589: 22, 594: 22, 970: 22, 992: 22, 2767: 22,
+    10892: 22, 10893: 22, 10894: 22,
+    # PW:Shield: all 23%
+    17: 23, 592: 23, 600: 23, 3747: 23, 6065: 23,
+    6066: 23, 10898: 23, 10899: 23, 10900: 23, 10901: 23,
+    # Mind Blast: all 17%
+    8092: 17, 8102: 17, 8103: 17, 8104: 17, 8105: 17,
+    8106: 17, 10945: 17, 10946: 17, 10947: 17,
+    # Renew: all 17%
+    139: 17, 6074: 17, 6075: 17, 6076: 17, 6077: 17,
+    6078: 17, 10927: 17, 10928: 17, 10929: 17, 25315: 17,
+    # Holy Fire: all 11%
+    14914: 11, 15262: 11, 15263: 11, 15264: 11,
+    15265: 11, 15266: 11, 15267: 11, 15261: 11,
+    # Inner Fire: all 14%
+    588: 14, 7128: 14, 602: 14, 1006: 14, 10951: 14, 10952: 14,
+    # PW:Fortitude: all 27%
+    1243: 27, 1244: 27, 1245: 27, 2791: 27, 10937: 27, 10938: 27,
+}
 
 
 # ─── Load DBC/CSV data at import time ────────────────────────────────

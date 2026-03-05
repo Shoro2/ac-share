@@ -2,8 +2,11 @@
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
 Observation space: Box(39,) — 23 base dims + 10 stat dims + 6 quest dims.
-Action space: Discrete(18) — 17 base actions + 1 quest action.
+Action space: Discrete(19) — 18 base actions + 1 quest action.
 Runs ~1000x faster than the real server.
+
+All spells auto-select the highest rank available at the player's current level.
+Flash Heal added as action 18.
 
 Uses **action masking** instead of override logic: invalid actions are masked
 out so the bot can only choose from valid actions.  Game-mechanic constraints
@@ -21,7 +24,7 @@ Usage:
     obs, reward, done, trunc, info = env.step(action)
 
     # Action masking (for MaskablePPO from sb3_contrib):
-    masks = env.action_masks()               # np.ndarray(18,) bool
+    masks = env.action_masks()               # np.ndarray(19,) bool
 """
 
 import gymnasium as gym
@@ -33,6 +36,13 @@ import random
 from typing import Optional
 
 from sim.combat_sim import CombatSimulation, SPELLS
+from sim.formulas import spell_mana_cost
+from sim.constants import (
+    get_best_rank, SPELL_RANKS,
+    FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_SW_PAIN,
+    FAMILY_PW_SHIELD, FAMILY_MIND_BLAST, FAMILY_RENEW, FAMILY_HOLY_FIRE,
+    FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
+)
 
 # Reward per successfully looted item, indexed by WoW item quality
 QUALITY_LOOT_REWARD = {
@@ -58,7 +68,7 @@ class WoWSimEnv(gym.Env):
     Simulated WoW environment with optional quest system.
 
     Observation Space: Box(39,) — 23 base + 10 stat + 6 quest dimensions
-    Action Space: Discrete(18) — 17 base actions + quest interact
+    Action Space: Discrete(19) — 18 base actions + quest interact
 
     Stat dimensions (indices 23-32):
       [23] spell_power/200, [24] spell_crit/50, [25] spell_haste/50,
@@ -76,7 +86,7 @@ class WoWSimEnv(gym.Env):
                  log_interval: int = 1, enable_quests: bool = False):
         super().__init__()
 
-        self.action_space = spaces.Discrete(18)
+        self.action_space = spaces.Discrete(19)
         self.observation_space = spaces.Box(
             low=-1.0, high=float('inf'), shape=(39,), dtype=np.float32
         )
@@ -164,20 +174,22 @@ class WoWSimEnv(gym.Env):
         self._vendor_nav_active = False    # True while bot is walking to vendor / selling
         self._quest_nav_active = False     # True while bot is walking to quest NPC
 
-    # Spell ID -> action ID mapping for mask building
-    _SPELL_ACTION = {
-        585: 5,     # Smite
-        2050: 6,    # Lesser Heal
-        589: 9,     # SW:Pain
-        17: 10,     # PW:Shield
-        8092: 12,   # Mind Blast
-        139: 13,    # Renew
-        14914: 14,  # Holy Fire
-        588: 15,    # Inner Fire
-        1243: 16,   # PW:Fortitude
+    # Family ID -> action ID mapping for mask building
+    _FAMILY_ACTION = {
+        FAMILY_SMITE: 5,        # Smite
+        FAMILY_HEAL: 6,         # Lesser Heal / Heal / Greater Heal
+        FAMILY_SW_PAIN: 9,      # Shadow Word: Pain
+        FAMILY_PW_SHIELD: 10,   # Power Word: Shield
+        FAMILY_MIND_BLAST: 12,  # Mind Blast
+        FAMILY_RENEW: 13,       # Renew
+        FAMILY_HOLY_FIRE: 14,   # Holy Fire
+        FAMILY_INNER_FIRE: 15,  # Inner Fire
+        FAMILY_FORTITUDE: 16,   # Power Word: Fortitude
+        FAMILY_FLASH_HEAL: 18,  # Flash Heal (new action)
     }
-    _OFFENSIVE_SPELLS = {585, 589, 8092, 14914}   # need alive target + range
-    _SELF_SPELLS = {2050, 17, 139, 588, 1243}     # self-cast, no target needed
+    _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE}
+    _SELF_FAMILIES = {FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_PW_SHIELD, FAMILY_RENEW,
+                      FAMILY_INNER_FIRE, FAMILY_FORTITUDE}
 
     def action_masks(self) -> np.ndarray:
         """Return boolean mask: True = action allowed, False = masked.
@@ -202,7 +214,7 @@ class WoWSimEnv(gym.Env):
         - Walking to corpse after kill
         - When to eat/drink vs keep going
         """
-        mask = np.ones(18, dtype=bool)
+        mask = np.ones(19, dtype=bool)
         p = self.sim.player
 
         # ── While casting: ONLY noop is valid ──
@@ -233,9 +245,15 @@ class WoWSimEnv(gym.Env):
         if not has_targetable:
             mask[4] = False
 
-        # ── Spell masks (5,6,9,10,12,13,14,15,16) ──
+        # ── Spell masks (5,6,9,10,12,13,14,15,16,18) ──
         gcd_blocked = p.gcd_remaining > 0
-        for spell_id, action_id in self._SPELL_ACTION.items():
+        for family_id, action_id in self._FAMILY_ACTION.items():
+            # Get best rank for current level
+            spell_id = get_best_rank(family_id, p.level)
+            if spell_id is None:
+                mask[action_id] = False
+                continue
+
             spell = SPELLS[spell_id]
 
             # GCD blocks all spells
@@ -243,18 +261,19 @@ class WoWSimEnv(gym.Env):
                 mask[action_id] = False
                 continue
 
-            # Mana check
-            if p.mana < spell.mana_cost:
+            # Mana check (% of BaseMana from Spell.dbc)
+            cost = spell_mana_cost(spell_id, p.level, p.class_id)
+            if p.mana < cost:
                 mask[action_id] = False
                 continue
 
-            # Spell-specific cooldown
-            if p.spell_cooldowns.get(spell_id, 0) > 0:
+            # Spell-specific cooldown (keyed by family)
+            if spell.cooldown_ticks > 0 and p.spell_cooldowns.get(family_id, 0) > 0:
                 mask[action_id] = False
                 continue
 
             # Offensive spells: need alive target in range
-            if spell_id in self._OFFENSIVE_SPELLS:
+            if family_id in self._OFFENSIVE_FAMILIES:
                 if not target_alive:
                     mask[action_id] = False
                     continue
@@ -270,15 +289,15 @@ class WoWSimEnv(gym.Env):
                         continue
 
             # Buff/debuff duplication checks (game mechanic — can't double-apply)
-            if spell_id == 17 and (p.shield_remaining > 0 or p.shield_cooldown > 0):
+            if family_id == FAMILY_PW_SHIELD and (p.shield_remaining > 0 or p.shield_cooldown > 0):
                 mask[action_id] = False
-            elif spell_id == 589 and target is not None and target.dot_remaining > 0:
+            elif family_id == FAMILY_SW_PAIN and target is not None and target.dot_remaining > 0:
                 mask[action_id] = False
-            elif spell_id == 139 and p.hot_remaining > 0:
+            elif family_id == FAMILY_RENEW and p.hot_remaining > 0:
                 mask[action_id] = False
-            elif spell_id == 588 and p.inner_fire_remaining > 0:
+            elif family_id == FAMILY_INNER_FIRE and p.inner_fire_remaining > 0:
                 mask[action_id] = False
-            elif spell_id == 1243 and p.fortitude_remaining > 0:
+            elif family_id == FAMILY_FORTITUDE and p.fortitude_remaining > 0:
                 mask[action_id] = False
 
         # ── Loot (7): need dead unlootable mob in range AND not in combat ──
@@ -462,6 +481,8 @@ class WoWSimEnv(gym.Env):
                 self.sim.do_cast_fortitude()
             elif action == 17:
                 self.sim.do_eat_drink()
+            elif action == 18:
+                self.sim.do_cast_flash_heal()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()

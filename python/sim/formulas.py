@@ -28,6 +28,7 @@ from sim.constants import (
     SP_COEFF_SMITE, SP_COEFF_HEAL, SP_COEFF_MIND_BLAST,
     SP_COEFF_SW_PAIN_TICK, SP_COEFF_PW_SHIELD, SP_COEFF_RENEW_TICK,
     SP_COEFF_HOLY_FIRE, SP_COEFF_HOLY_FIRE_DOT_TICK,
+    get_sp_coeff, SPELL_LEVEL_REQ,
 )
 from sim.dbc_loader import (
     CR_DEFENSE_SKILL as _CR_DEFENSE,
@@ -482,62 +483,155 @@ def spirit_hp_regen(level: int, total_spirit: int,
 
 # ─── Spell Damage / Heal Formulas ────────────────────────────────────
 
+def base_mana_for_level(level: int, class_id: int = CLASS_PRIEST) -> int:
+    """Get class BaseMana at given level from player_class_stats.csv.
+
+    Used for computing % mana costs (Spell.dbc ManaCostPercentage).
+    """
+    tbl = _c.PLAYER_CLASS_LEVEL_STATS
+    if tbl is not None:
+        key = (class_id, min(level, 80))
+        if key in tbl:
+            return tbl[key][1]  # BaseMana column
+    # Fallback: approximate from CLASS_BASE_HP_MANA
+    base_mana_data = _c.CLASS_BASE_HP_MANA.get(class_id, _c.CLASS_BASE_HP_MANA[CLASS_PRIEST])
+    mana_per_lvl = _c.CLASS_MANA_PER_LEVEL.get(class_id, 5)
+    return base_mana_data[1] + (level - 1) * mana_per_lvl
+
+
+def spell_mana_cost(spell_id: int, level: int,
+                    class_id: int = CLASS_PRIEST) -> int:
+    """Compute actual mana cost = BaseMana * ManaCostPct / 100.
+
+    Uses SPELL_MANA_PCT from Spell.dbc. Falls back to SpellDef.mana_cost
+    when pct is 0.
+    """
+    pct = _c.SPELL_MANA_PCT.get(spell_id, 0)
+    if pct > 0:
+        return int(base_mana_for_level(level, class_id) * pct / 100)
+    # Fallback: use flat cost from SpellDef
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    return spell.mana_cost if spell else 0
+
+
+def spell_direct_value(spell_id: int, spell_power: int = 0) -> tuple[int, int]:
+    """Generic spell direct damage/heal range from SpellDef DBC values.
+
+    Uses base_points, die_sides from SpellDef (no per-level scaling at cast time;
+    the rank system handles level scaling by selecting the appropriate rank).
+    SP coefficient from SP_COEFFICIENTS.
+
+    Returns (min_value, max_value).
+    """
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    if spell is None:
+        return (0, 0)
+    bp = spell.base_points
+    ds = spell.die_sides
+    if ds <= 0:
+        return (0, 0)
+    direct_coeff, _ = get_sp_coeff(spell_id)
+    sp_bonus = int(spell_power * direct_coeff)
+    return (bp + 1 + sp_bonus, bp + ds + sp_bonus)
+
+
+def spell_dot_per_tick(spell_id: int, spell_power: int = 0) -> int:
+    """Generic DoT damage per tick from SpellDef + SP coefficient."""
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    if spell is None:
+        return 0
+    _, dot_coeff = get_sp_coeff(spell_id)
+    return spell.dot_per_tick + int(spell_power * dot_coeff)
+
+
+def spell_hot_per_tick(spell_id: int, spell_power: int = 0) -> int:
+    """Generic HoT heal per tick from SpellDef + SP coefficient."""
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    if spell is None:
+        return 0
+    _, dot_coeff = get_sp_coeff(spell_id)
+    return spell.hot_per_tick + int(spell_power * dot_coeff)
+
+
+def spell_shield_absorb(spell_id: int, spell_power: int = 0) -> int:
+    """Generic shield absorb from SpellDef + SP coefficient."""
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    if spell is None:
+        return 0
+    direct_coeff, _ = get_sp_coeff(spell_id)
+    return spell.shield_base + spell.shield_die + int(spell_power * direct_coeff)
+
+
+def spell_buff_value(spell_id: int) -> int:
+    """Generic buff value (armor for Inner Fire, stamina for Fortitude)."""
+    from sim.models import SPELLS
+    spell = SPELLS.get(spell_id)
+    return spell.buff_value if spell else 0
+
+
+# ─── Legacy wrapper functions (backward compatibility) ─────────────
+
 def smite_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Smite damage range: base (13-17) + 10 per level + SP*coeff."""
-    bonus = (level - 1) * 10
-    sp_bonus = int(spell_power * SP_COEFF_SMITE)
-    return (13 + bonus + sp_bonus, 17 + bonus + sp_bonus)
+    """Smite R1 damage range (legacy wrapper)."""
+    return spell_direct_value(585, spell_power)
 
 
 def heal_amount(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Lesser Heal range: base (46-56) + 5 per level + SP*coeff."""
-    bonus = (level - 1) * 5
-    sp_bonus = int(spell_power * SP_COEFF_HEAL)
-    return (46 + bonus + sp_bonus, 56 + bonus + sp_bonus)
+    """Lesser Heal R1 heal range (legacy wrapper)."""
+    return spell_direct_value(2050, spell_power)
 
 
 def mind_blast_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Mind Blast damage range: base (39-43) + 12 per level + SP*coeff."""
-    bonus = (level - 1) * 12
-    sp_bonus = int(spell_power * SP_COEFF_MIND_BLAST)
-    return (39 + bonus + sp_bonus, 43 + bonus + sp_bonus)
+    """Mind Blast R1 damage range (legacy wrapper)."""
+    return spell_direct_value(8092, spell_power)
 
 
 def renew_total_heal(level: int, spell_power: int = 0) -> int:
-    """Renew total HoT: base 45 + 8 per level + SP*coeff (total over 5 ticks)."""
-    return 45 + (level - 1) * 8 + int(spell_power * SP_COEFF_RENEW_TICK * 5)
+    """Renew R1 total HoT (legacy wrapper)."""
+    per_tick = spell_hot_per_tick(139, spell_power)
+    return per_tick * 5  # 5 ticks
 
 
 def holy_fire_damage(level: int, spell_power: int = 0) -> tuple[int, int]:
-    """Holy Fire direct damage: base (15-20) + 10 per level + SP*coeff."""
-    bonus = (level - 1) * 10
-    sp_bonus = int(spell_power * SP_COEFF_HOLY_FIRE)
-    return (15 + bonus + sp_bonus, 20 + bonus + sp_bonus)
+    """Holy Fire R1 direct damage (legacy wrapper)."""
+    return spell_direct_value(14914, spell_power)
 
 
 def holy_fire_dot_total(level: int, spell_power: int = 0) -> int:
-    """Holy Fire DoT total: base 12 + 5 per level + SP*coeff (2 ticks)."""
-    return 12 + (level - 1) * 5 + int(spell_power * SP_COEFF_HOLY_FIRE_DOT_TICK * 2)
+    """Holy Fire R1 DoT total (legacy wrapper)."""
+    per_tick = spell_dot_per_tick(14914, spell_power)
+    return per_tick * 7  # 7 ticks
 
 
 def sw_pain_total(level: int, spell_power: int = 0) -> int:
-    """SW:Pain total DoT damage: base 30 + SP*coeff (6 ticks)."""
-    return 30 + int(spell_power * SP_COEFF_SW_PAIN_TICK * 6)
+    """SW:Pain R1 total DoT damage (legacy wrapper)."""
+    per_tick = spell_dot_per_tick(589, spell_power)
+    return per_tick * 6  # 6 ticks
 
 
 def pw_shield_absorb(level: int, spell_power: int = 0) -> int:
-    """PW:Shield absorb amount: base 44 + SP*coeff."""
-    return 44 + int(spell_power * SP_COEFF_PW_SHIELD)
+    """PW:Shield R1 absorb (legacy wrapper)."""
+    return spell_shield_absorb(17, spell_power)
 
 
 def inner_fire_values(level: int) -> tuple[int, int]:
-    """Inner Fire: (armor, spell_power_bonus). Scales with level."""
-    return (10 + (level - 1) * 3, 2 + (level - 1) * 1)
+    """Inner Fire R1: +315 Armor, 0 SP (legacy wrapper)."""
+    return (spell_buff_value(588), 0)
 
 
 def fortitude_hp_bonus(level: int) -> int:
-    """PW:Fortitude HP bonus: base 20 + 8 per level gained."""
-    return 20 + (level - 1) * 8
+    """Legacy: flat HP bonus. Kept for backward compat."""
+    return 0
+
+
+def fortitude_stamina_bonus(level: int) -> int:
+    """PW:Fortitude R1 Stamina bonus (legacy wrapper)."""
+    return spell_buff_value(1243)
 
 
 # ─── Combat Resolution Formulas (WotLK attack table) ─────────────────
