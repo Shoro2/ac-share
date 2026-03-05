@@ -1,7 +1,7 @@
-"""Build a stitched world-map PNG from WoW WorldMap BLP/PNG tiles.
+"""Build a stitched world-map PNG from WoW WorldMap BLP tiles.
 
 Reads WorldMapArea.dbc for coordinate mapping and stitches zone tiles from
-a ZIP archive (or extracted directory) of Interface/WorldMap/ BLP/PNG files.
+a ZIP archive (or extracted directory) of Interface/WorldMap/ BLP files.
 
 Outputs:
   - A single PNG image of the composited map
@@ -202,20 +202,19 @@ def stitch_zone_tiles(tile_loader, zone_name: str) -> Image.Image:
 def make_zip_tile_loader(zf: zipfile.ZipFile):
     """Create a tile loader that reads from a ZIP archive.
 
-    Prefers PNG over BLP (no BLP plugin needed).
+    Only uses BLP files — PNG tiles may contain incorrect/mismatched data.
     """
     name_set = set(zf.namelist())
 
     def loader(zone_name, tile_num):
-        # Try PNG first, then BLP
-        for ext in ("png", "blp"):
-            path = f"Interface/WorldMap/{zone_name}/{zone_name}{tile_num}.{ext}"
-            if path in name_set:
-                try:
-                    img_data = zf.read(path)
-                    return _open_image_with_blp_fallback(img_data)
-                except Exception:
-                    continue
+        # Only use BLP files (PNG versions may be incorrect)
+        path = f"Interface/WorldMap/{zone_name}/{zone_name}{tile_num}.blp"
+        if path in name_set:
+            try:
+                img_data = zf.read(path)
+                return _open_image_with_blp_fallback(img_data)
+            except Exception:
+                pass
         return None
 
     return loader
@@ -224,15 +223,15 @@ def make_zip_tile_loader(zf: zipfile.ZipFile):
 def make_dir_tile_loader(base_dir: str):
     """Create a tile loader that reads from an extracted directory."""
     def loader(zone_name, tile_num):
-        for ext in ("png", "blp"):
-            path = os.path.join(base_dir, "Interface", "WorldMap",
-                                zone_name, f"{zone_name}{tile_num}.{ext}")
-            if os.path.exists(path):
-                try:
-                    img_data = open(path, "rb").read()
-                    return _open_image_with_blp_fallback(img_data)
-                except Exception:
-                    continue
+        # Only use BLP files (PNG versions may be incorrect)
+        path = os.path.join(base_dir, "Interface", "WorldMap",
+                            zone_name, f"{zone_name}{tile_num}.blp")
+        if os.path.exists(path):
+            try:
+                img_data = open(path, "rb").read()
+                return _open_image_with_blp_fallback(img_data)
+            except Exception:
+                pass
         return None
 
     return loader
