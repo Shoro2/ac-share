@@ -291,7 +291,7 @@ Format: `<playerName>:<actionType>:<value>\n`
 **Reward Design** — Sparse, matching sim:
 - Step penalty: -0.001 (was -0.01)
 - Idle penalty: -0.005 (was -0.03)
-- XP/Kill: 10.0 + xp * 0.5 (was 3.0 + xp * 0.05)
+- XP/Kill: xp * 0.5 (purely XP-dependent, gray mobs = 0 reward)
 - Death: -15.0 terminal (was -5.0)
 - Level-up: +15.0 NOT terminal (was +15.0 terminal)
 - OOM: NOT terminal (was -2.0 terminal)
@@ -667,7 +667,7 @@ Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect
 | Eat/Drink Shaping | +0.003 * missing | missing = (1-hp%) + (1-mana%), encourages eating over idle-waiting |
 | Approach | clip(delta * 0.03, -0.1, +0.15) | potential-based, closer to target |
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
-| XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
+| XP/Kill | xp * 0.5 | purely XP-dependent, gray mobs give 0 reward |
 | Level-Up | +15.0 * levels | per level gained |
 | Equipment Upgrade | min(1.0 + diff * 0.15, 5.0) | class-aware scoring, scaled by score improvement |
 | Loot | per-item quality reward (0.1 grey to 5.0 epic) + min(copper * 0.01, 1.0) | penalty if inventory full |
@@ -687,7 +687,7 @@ Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect
 | Idle Penalty | -0.005 | Noop without casting (matches sim) |
 | Approach | clip(delta * 0.03, -0.1, +0.15) | potential-based (matches sim) |
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target (matches sim) |
-| XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill (matches sim) |
+| XP/Kill | xp * 0.5 | purely XP-dependent, gray mobs give 0 reward (matches sim) |
 | Level-Up | +15.0 * levels | NOT terminal (matches sim) |
 | Equipment Upgrade | min(1.0 + diff * 0.15, 5.0) | class-aware scoring (matches sim) |
 | Loot | per-item quality reward (0.1 grey to 5.0 epic) + min(copper * 0.01, 1.0) | quality-based (matches sim) |
@@ -699,7 +699,7 @@ Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect
 | Death | -15.0 | terminal (matches sim) |
 | OOM | NOT terminal | bot must learn to wait for regen (matches sim) |
 
-**Parity**: Both sim and live now use **identical sparse reward design**. Approach shaping: clip to [-0.1, +0.15]. Same XP/kill multiplier (10+xp*0.5). Same death penalty (-15). OOM is not terminal in either. Stall detection: both truncate after 3k steps without kill XP.
+**Parity**: Both sim and live now use **identical sparse reward design**. Approach shaping: clip to [-0.1, +0.15]. Same XP/kill multiplier (xp*0.5, no flat bonus). Same death penalty (-15). OOM is not terminal in either. Stall detection: both truncate after 3k steps without kill XP.
 
 ### sim_logger.py — Episode Logging System
 
@@ -909,7 +909,7 @@ The module consists of 2 files without its own header or CMakeLists:
 ### Reward Parity Gap
 - The sim uses **sparse reward design** (only real outcomes: XP, kills, deaths, exploration)
 - The live env uses **more shaping** (approach, facing, discovery, action-specific bonuses)
-- XP/kill reward differs: sim=10+xp*0.5, live=3+xp*0.05
+- XP/kill reward differs: sim=xp*0.5, live=3+xp*0.05
 - Death penalty differs: sim=-15, live=-5
 - OOM: sim=not terminal, live=-2 terminal
 - When transferring sim-trained models to live, reward behavior will differ
@@ -1011,7 +1011,7 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | Problem | Area | Severity | Details |
 |---|---|---|---|
 | ~~**Exploration missing in wow_env.py**~~ | Live Env | **FIXED** | Live env now has grid-based exploration (50x50 areas, 200x200 zones) matching sim fallback |
-| ~~**Reward parity gap**~~ | Both Envs | **FIXED** | Both envs now use identical sparse rewards (XP=10+xp*0.5, death=-15, OOM=not terminal) |
+| ~~**Reward parity gap**~~ | Both Envs | **FIXED** | Both envs now use identical sparse rewards (XP=xp*0.5, no flat bonus, death=-15, OOM=not terminal) |
 | ~~**Action space mismatch**~~ | Both Envs | **FIXED** | Both envs now use Discrete(30) with identical action mapping |
 | ~~**Observation space mismatch**~~ | Both Envs | **FIXED** | Both envs now use Box(52,) with identical dim layout |
 | ~~**Override logic vs masking**~~ | Both Envs | **FIXED** | Both envs now use action masking with MaskablePPO |

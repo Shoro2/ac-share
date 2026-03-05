@@ -18,7 +18,7 @@ Reward design matches sim (sparse):
   - Idle penalty: -0.005
   - Approach shaping: clip(delta * 0.03, -0.1, +0.15)
   - Damage dealt: min(dmg * 0.03, 1.0)
-  - XP/Kill: 10.0 + xp * 0.5
+  - XP/Kill: xp * 0.5 (no flat bonus — gray mobs give 0 reward)
   - Level-up: +15.0 per level (NOT terminal)
   - Equipment upgrade: min(1.0 + diff * 0.15, 5.0)
   - Loot: quality-based per item
@@ -867,7 +867,7 @@ class WoWEnv(gym.Env):
 
         # 4. XP/Kill
         if xp_gained > 0:
-            reward += 10.0 + xp_gained * 0.5
+            reward += xp_gained * 0.5
             self._ep_kills += 1
             self._ep_xp += xp_gained
             self._steps_since_kill_xp = 0

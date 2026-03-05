@@ -624,7 +624,7 @@ class WoWSimEnv(gym.Env):
                     self._logger.record_event(
                         self._step_count, p.x, p.y, "kill")
         if xp > 0:
-            reward += 10.0 + xp * 0.5
+            reward += xp * 0.5
             if kill_xp > 0:
                 self._steps_since_kill_xp = 0
         else:
