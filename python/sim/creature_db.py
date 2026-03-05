@@ -83,7 +83,11 @@ SKIP_CREATURE_TYPES = frozenset({
 })
 
 UNIT_FLAG_NON_ATTACKABLE = 0x00000002
+UNIT_FLAG_NOT_SELECTABLE = 0x02000000  # Can't be targeted by players
 UNIT_NPC_FLAG_VENDOR = 0x00000080     # 128 — NPC sells items
+
+# flags_extra bitmask values
+CREATURE_FLAG_EXTRA_TRIGGER = 0x80  # 128 — Invisible trigger mob (script helper)
 
 
 # ─── Data Classes ────────────────────────────────────────────────────
@@ -107,11 +111,16 @@ class CreatureTemplate:
     unit_class: int
     unit_flags: int
     creature_type: int
+    flags_extra: int = 0
     lootid: int = 0       # creature_template.lootid → creature_loot_template.Entry
 
     @property
     def is_attackable(self) -> bool:
         if self.unit_flags & UNIT_FLAG_NON_ATTACKABLE:
+            return False
+        if self.unit_flags & UNIT_FLAG_NOT_SELECTABLE:
+            return False
+        if self.flags_extra & CREATURE_FLAG_EXTRA_TRIGGER:
             return False
         if self.faction in FRIENDLY_FACTIONS:
             return False
@@ -123,6 +132,9 @@ class CreatureTemplate:
             return False
         # Skip decorative/event mobs with extremely low HP (turkeys, swarms, stalkers, dummies)
         if self.health_modifier < 0.5:
+            return False
+        # Skip script helper mobs (DND = Do Not Disturb — event/internal use only)
+        if "DND" in self.name.upper():
             return False
         return True
 
@@ -206,6 +218,7 @@ class CreatureDB:
                     unit_class=int(row['unit_class']),
                     unit_flags=int(row['unit_flags']),
                     creature_type=int(row['type']),
+                    flags_extra=int(row.get('flags_extra', 0)),
                     lootid=lootid,
                 )
 
