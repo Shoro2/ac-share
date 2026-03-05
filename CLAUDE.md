@@ -58,7 +58,7 @@ ac-share/
 ├── python/                      <- Python RL training, inference & utilities
 │   ├── sim/                     <- ** MAIN FOCUS: Offline Simulation **
 │   │   ├── combat_sim.py        <- Combat system simulation (Mobs, Spells, Loot, Movement, Exploration, Leveling, Quests)
-│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
+│   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(45), Discrete(26))
 │   │   ├── train_sim.py         <- MaskablePPO training on the sim (5 bots, action masking, no server needed)
 │   │   ├── test_sim.py          <- Validation tests (16 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, action masking, eat/drink)
 │   │   ├── talent_data.py        <- Talent definitions + Shadow Priest 13/0/58 build order (71 points)
@@ -301,7 +301,7 @@ Simulates the complete WoW 3.3.5 WotLK combat system in pure Python. All formula
 - **Melee Attack Table**: Mob melee attacks use WotLK single-roll attack table: miss (5% base) → dodge → parry → block → crit (5% base, 200% dmg) → crushing (150% dmg, 4+ level gap) → normal. Level difference and defense rating shift all thresholds.
 - **Dodge/Parry/Block**: Player dodge, parry, and block stats (already computed with DR) are now checked on every incoming mob melee attack. Block reduces damage by `block_value` instead of full avoidance.
 - **Armor Mitigation**: WotLK formula from `Unit.cpp:CalcArmorReducedDamage`, capped at 75%
-- **Mob AI**: Aggro range (10-20 units), chase, melee attack (with full attack table), leash (60 units)
+- **Mob AI**: Aggro range (10-20 units), chase, melee attack (with full attack table), leash (60 units), fear (fled mobs move away instead of chasing)
 - **Loot System**: Copper drops, item score system, gear stats parsed from CSV (10 stat slots per item)
 - **Respawn**: Dead mobs respawn after 60s at original spawn point
 - **XP**: AzerothCore formula `BaseGain()` with gray level, ZeroDifference — mobs below gray level give 0 XP
@@ -370,6 +370,9 @@ Dodge and Parry use **diminishing returns**: `dr * cap / (dr + cap * k)` with cl
 | Renew (per tick) | 0.1 | ~0.5 total over 5 ticks |
 | Holy Fire (direct) | 0.5711 | direct damage |
 | Holy Fire (DoT tick) | 0.024 | per tick |
+| Devouring Plague (per tick) | 0.18 | shadow DoT, heals caster |
+| Holy Nova (damage) | 0.161 | PBAoE damage |
+| Holy Nova (heal) | 0.303 | self-heal component |
 
 **Armor Mitigation** (Unit.cpp:CalcArmorReducedDamage):
 ```
@@ -709,7 +712,7 @@ Interactive map visualization for analyzing training episodes:
 
 18 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
-2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
+2. **test_gym_env()**: Gymnasium spaces validation — Box(45,) obs, Discrete(26) actions
 3. **test_random_episode()**: 1000-step episode with random actions
 4. **test_performance()**: FPS benchmark (~40000+ FPS single-env)
 5. **test_combat_scenario()**: Scripted combat with targeting and spell rotation
@@ -1032,8 +1035,8 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 
 ### Phase 4: Extensions (Later)
 
-9. **More spells / additional classes** *(partially done — 9 Priest spells implemented, all 10 classes have stat frameworks)*
-    - Additional Priest spells (Fade, Psychic Scream, Shadow Word: Death)
+9. **More spells / additional classes** *(partially done — 16 Priest spells implemented, all 10 classes have stat frameworks)*
+    - Remaining Priest spells (Fade, Shadow Word: Death, Mana Burn)
     - Spell implementations for non-Priest classes
     - Mob types with special abilities (ranged, caster, runners)
 
