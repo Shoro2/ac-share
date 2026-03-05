@@ -208,16 +208,29 @@ def stitch_zone_tiles(tile_loader, zone_name: str) -> Image.Image:
 def make_zip_tile_loader(zf: zipfile.ZipFile):
     """Create a tile loader that reads from a ZIP archive.
 
-    Only uses BLP files — PNG tiles may contain incorrect/mismatched data.
+    Only uses BLP files. Auto-detects any path prefix inside the ZIP
+    (e.g. ``1659008088-atlasworldmap_wotlk/Interface/WorldMap/...``).
     """
-    name_set = set(zf.namelist())
+    # Build a lookup: normalised suffix -> actual zip path (BLP only)
+    blp_lookup = {}
+    for name in zf.namelist():
+        if not name.lower().endswith(".blp"):
+            continue
+        # Find "Interface/WorldMap/" part and key on everything after it
+        idx = name.find("Interface/WorldMap/")
+        if idx == -1:
+            # try case-insensitive
+            idx = name.lower().find("interface/worldmap/")
+        if idx != -1:
+            suffix = name[idx:]  # e.g. Interface/WorldMap/Elwynn/Elwynn1.blp
+            blp_lookup[suffix] = name
 
     def loader(zone_name, tile_num):
-        # Only use BLP files (PNG versions may be incorrect)
-        path = f"Interface/WorldMap/{zone_name}/{zone_name}{tile_num}.blp"
-        if path in name_set:
+        key = f"Interface/WorldMap/{zone_name}/{zone_name}{tile_num}.blp"
+        actual = blp_lookup.get(key)
+        if actual:
             try:
-                img_data = zf.read(path)
+                img_data = zf.read(actual)
                 return _open_image_with_blp_fallback(img_data)
             except Exception:
                 pass
