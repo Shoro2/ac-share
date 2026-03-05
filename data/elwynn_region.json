@@ -1,0 +1,9 @@
+{
+  "x_min": -11733.3330078125,
+  "y_min": -3741.66650390625,
+  "x_max": -3877.083251953125,
+  "y_max": 3016.66650390625,
+  "map_id": 0,
+  "description": "WoW world coordinate bounds for ../data/elwynn_region.png",
+  "usage": "--map-image ../data/elwynn_region.png --map-bounds \"-11733.3330078125,-3741.66650390625,-3877.083251953125,3016.66650390625\""
+}
