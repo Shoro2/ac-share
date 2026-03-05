@@ -1,33 +1,21 @@
-"""Build a stitched world-map PNG from WoW WorldMap BLP tiles.
+"""Build a continent world-map PNG from WoW WorldMap BLP tiles.
 
-Reads WorldMapArea.dbc for coordinate mapping and stitches zone tiles from
-a ZIP archive (or extracted directory) of Interface/WorldMap/ BLP files.
+Reads WorldMapArea.dbc for coordinate mapping and stitches the continent
+overview tiles (area_id=0) from a ZIP archive (or extracted directory) of
+Interface/WorldMap/ BLP files.  Only the large continent map is used, not
+individual zone maps.
 
 Outputs:
-  - A single PNG image of the composited map
+  - A single PNG image of the continent map
   - A JSON sidecar file with WoW coordinate bounds (for --map-bounds)
 
 Usage:
-    # Build Eastern Kingdoms map from ZIP
+    # Build Eastern Kingdoms continent map
     python -m sim.build_world_map \
         --zip data/1659008088-atlasworldmap_wotlk.zip \
         --dbc data/dbc/WorldMapArea.dbc \
         --map-id 0 \
         --output data/eastern_kingdoms.png
-
-    # Build just Elwynn Forest + surrounding zones
-    python -m sim.build_world_map \
-        --zip data/1659008088-atlasworldmap_wotlk.zip \
-        --dbc data/dbc/WorldMapArea.dbc \
-        --map-id 0 --zones Elwynn,Westfall,Redridge,Duskwood,DunMorogh,Stormwind \
-        --output data/elwynn_area.png
-
-    # Build just the continent overview
-    python -m sim.build_world_map \
-        --zip data/1659008088-atlasworldmap_wotlk.zip \
-        --dbc data/dbc/WorldMapArea.dbc \
-        --map-id 0 --continent-only \
-        --output data/ek_continent.png
 
     # Use the output with the visualizer:
     python -m sim.visualize --log-dir logs/sim_episodes/ \
@@ -257,44 +245,31 @@ def make_dir_tile_loader(base_dir: str):
 # ─── Map Compositor ─────────────────────────────────────────────────────
 
 def composite_world_map(entries: list, tile_loader,
-                        pixels_per_unit: float = 0.5,
-                        zone_filter: set = None,
-                        continent_only: bool = False) -> tuple:
-    """Composite zone maps onto a single world canvas.
+                        pixels_per_unit: float = 0.5) -> tuple:
+    """Render the continent overview map (area_id=0 entry only).
 
     Args:
         entries: List of WorldMapAreaEntry for the target map.
         tile_loader: callable(zone_name, tile_num) -> PIL.Image
         pixels_per_unit: Resolution (pixels per WoW world unit).
-        zone_filter: If set, only include these zone internal_names.
-        continent_only: If True, only render the continent (area_id=0) entry.
 
     Returns:
         (PIL.Image, wow_bounds) where wow_bounds is (x_min, y_min, x_max, y_max).
     """
-    # Filter entries
-    if continent_only:
-        entries = [e for e in entries if e.area_id == 0]
-    elif zone_filter:
-        zone_filter_lower = {z.lower() for z in zone_filter}
-        entries = [e for e in entries
-                   if e.internal_name.lower() in zone_filter_lower
-                   or e.area_id == 0]  # always include continent as bg
-
-    if not entries:
-        print("ERROR: No matching zones found!")
+    # Use only the continent entry (area_id=0)
+    continent = [e for e in entries if e.area_id == 0]
+    if not continent:
+        print("ERROR: No continent entry (area_id=0) found!")
         return None, None
 
-    # Determine overall world bounds from ZONE entries only
-    # (continent entry has huge bounds — use zone bounds for sizing)
+    entry = continent[0]
+
     # WoW coords: x1 = top (north), x2 = bottom (south)
     #             y1 = left (west), y2 = right (east)
-    zone_entries = [e for e in entries if e.area_id != 0]
-    bounds_entries = zone_entries if zone_entries else entries
-    all_x_min = min(e.x2 for e in bounds_entries)  # southernmost
-    all_x_max = max(e.x1 for e in bounds_entries)  # northernmost
-    all_y_min = min(e.y2 for e in bounds_entries)  # easternmost
-    all_y_max = max(e.y1 for e in bounds_entries)  # westernmost
+    all_x_min = entry.x2
+    all_x_max = entry.x1
+    all_y_min = entry.y2
+    all_y_max = entry.y1
 
     wow_bounds = (all_x_min, all_y_min, all_x_max, all_y_max)
 
@@ -309,44 +284,20 @@ def composite_world_map(entries: list, tile_loader,
     print(f"Canvas size: {canvas_w}x{canvas_h} px "
           f"({pixels_per_unit} px/unit)")
 
+    name = entry.internal_name
+    print(f"  Stitching {name}...", end=" ", flush=True)
+
+    zone_img = stitch_zone_tiles(tile_loader, name)
+
+    if zone_img.getbbox() is None:
+        print("(no tiles found)")
+        return None, None
+
+    # Resize to match world scale
+    zone_img = zone_img.resize((canvas_w, canvas_h), Image.LANCZOS)
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
-
-    # Sort: continent first (background), then zones on top
-    entries_sorted = sorted(entries, key=lambda e: (0 if e.area_id == 0 else 1))
-
-    for entry in entries_sorted:
-        name = entry.internal_name
-        print(f"  Stitching {name}...", end=" ", flush=True)
-
-        zone_img = stitch_zone_tiles(tile_loader, name)
-
-        # Check if zone has any content
-        if zone_img.getbbox() is None:
-            print("(no tiles found, skipping)")
-            continue
-
-        # Calculate zone dimensions in pixels
-        zone_world_w = entry.y1 - entry.y2  # Y range
-        zone_world_h = entry.x1 - entry.x2  # X range
-        zone_px_w = int(zone_world_w * pixels_per_unit)
-        zone_px_h = int(zone_world_h * pixels_per_unit)
-
-        if zone_px_w <= 0 or zone_px_h <= 0:
-            print("(invalid bounds, skipping)")
-            continue
-
-        # Resize zone image to match world scale
-        zone_img = zone_img.resize((zone_px_w, zone_px_h), Image.LANCZOS)
-
-        # Calculate paste position
-        # Image y-axis is flipped (top=0): x_max maps to top, x_min to bottom
-        # Image x-axis: y_min (east) maps to left=0
-        paste_x = int((entry.y2 - all_y_min) * pixels_per_unit)
-        paste_y = int((all_x_max - entry.x1) * pixels_per_unit)
-
-        # Alpha-composite to layer zones properly
-        canvas.paste(zone_img, (paste_x, paste_y), zone_img)
-        print(f"{zone_px_w}x{zone_px_h} px")
+    canvas.paste(zone_img, (0, 0), zone_img)
+    print(f"{canvas_w}x{canvas_h} px")
 
     return canvas, wow_bounds
 
@@ -368,11 +319,6 @@ def main():
                         help="Path to WorldMapArea.dbc")
     parser.add_argument("--map-id", type=int, default=0,
                         help="Map ID to render (0=Eastern Kingdoms, 1=Kalimdor)")
-    parser.add_argument("--zones", type=str, default=None,
-                        help="Comma-separated zone names to include "
-                             "(e.g. Elwynn,Westfall,Redridge)")
-    parser.add_argument("--continent-only", action="store_true",
-                        help="Only render the continent overview (no zone detail)")
     parser.add_argument("--ppu", type=float, default=0.5,
                         help="Pixels per world unit (default: 0.5)")
     parser.add_argument("--output", type=str, default=_DEFAULT_OUTPUT,
@@ -416,19 +362,11 @@ def main():
         print(f"Reading tiles from: {args.dir}")
         tile_loader = make_dir_tile_loader(args.dir)
 
-    # Zone filter
-    zone_filter = None
-    if args.zones:
-        zone_filter = set(args.zones.split(","))
-        print(f"Zone filter: {zone_filter}")
-
     # Build
     print(f"\nCompositing world map...")
     canvas, wow_bounds = composite_world_map(
         map_entries, tile_loader,
-        pixels_per_unit=args.ppu,
-        zone_filter=zone_filter,
-        continent_only=args.continent_only)
+        pixels_per_unit=args.ppu)
 
     if canvas is None:
         sys.exit(1)
