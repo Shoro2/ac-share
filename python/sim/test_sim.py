@@ -130,28 +130,28 @@ def test_gym_env():
     env = WoWSimEnv(num_mobs=10, seed=42)
 
     # Check spaces
-    assert env.observation_space.shape == (39,), f"Obs shape: {env.observation_space.shape}"
-    assert env.action_space.n == 19, f"Action space: {env.action_space.n}"
+    assert env.observation_space.shape == (45,), f"Obs shape: {env.observation_space.shape}"
+    assert env.action_space.n == 26, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
     # Reset
     obs, info = env.reset()
-    assert obs.shape == (39,), f"Obs shape after reset: {obs.shape}"
+    assert obs.shape == (45,), f"Obs shape after reset: {obs.shape}"
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
     # Check action_masks
     mask = env.action_masks()
-    assert mask.shape == (19,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (26,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
     print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/19")
 
     # Step with each action
-    for action in range(19):
+    for action in range(26):
         obs, reward, done, trunc, info = env.step(action)
-        assert obs.shape == (39,)
+        assert obs.shape == (45,)
         if done:
             obs, info = env.reset()
 
@@ -1114,12 +1114,12 @@ def test_quest_system():
     # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
-    assert obs.shape == (39,), f"Expected obs(39,), got {obs.shape}"
-    assert env.action_space.n == 19, f"Expected 19 actions, got {env.action_space.n}"
+    assert obs.shape == (45,), f"Expected obs(45,), got {obs.shape}"
+    assert env.action_space.n == 26, f"Expected 26 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
-    assert obs[28] > 0 or obs[26] == 0.0, "Quest NPC obs should reflect nearby NPCs"
+    assert obs[34] > 0 or obs[32] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
-          f"quest_dims={obs[26:32]} ✓")
+          f"quest_dims={obs[33:39]} ✓")
 
     # --- Test 9l: Quest reward in env ---
     # Set up: accept quest, complete it, turn in, check reward
@@ -1512,13 +1512,13 @@ def test_attribute_system():
     # Stat obs at indices 23-32 (10 dims: SP, spell_crit, spell_haste, armor,
     # AP, melee_crit, dodge, hit, expertise, ArP)
     assert obs[22] == 0.0, f"is_eating obs should be 0 at start, got {obs[22]}"
-    assert obs[23] == 0.0, f"SP obs should be 0 with no gear, got {obs[23]}"
-    assert obs[24] >= 0.0, f"Spell crit obs should be >= 0, got {obs[24]}"
-    assert obs[25] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[25]}"
-    assert obs[26] >= 0.0, f"Armor obs should be >= 0, got {obs[26]}"  # agi*2 gives base armor
-    assert obs[27] >= 0.0, f"AP obs should be >= 0, got {obs[27]}"
-    assert obs[28] >= 0.0, f"Melee crit obs should be >= 0, got {obs[28]}"
-    assert obs[29] >= 0.0, f"Dodge obs should be >= 0, got {obs[29]}"
+    assert obs[29] == 0.0, f"SP obs should be 0 with no gear, got {obs[29]}"
+    assert obs[30] >= 0.0, f"Spell crit obs should be >= 0, got {obs[30]}"
+    assert obs[31] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[31]}"
+    assert obs[32] >= 0.0, f"Armor obs should be >= 0, got {obs[32]}"  # agi*2 gives base armor
+    assert obs[33] >= 0.0, f"AP obs should be >= 0, got {obs[33]}"
+    assert obs[34] >= 0.0, f"Melee crit obs should be >= 0, got {obs[34]}"
+    assert obs[35] >= 0.0, f"Dodge obs should be >= 0, got {obs[35]}"
     print(f"  11m: Stat obs [23:33]={obs[23:33]} ✓")
 
     # --- Test 11n: Equipment persists across ticks ---
@@ -2386,7 +2386,7 @@ def test_action_masking():
 
     # --- 15a: Initial mask — basic validity ---
     mask = env.action_masks()
-    assert mask.shape == (19,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (26,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
     assert mask[1] == True, "Move forward should be valid when not casting"
@@ -2533,7 +2533,7 @@ def test_action_masking():
     obs6, _ = env6.reset()
     env6.sim.player.mana = 0
     obs6, reward, done, trunc, info = env6.step(5)  # try Smite with no mana
-    assert obs6.shape == (39,), "Step with invalid action should not crash"
+    assert obs6.shape == (45,), "Step with invalid action should not crash"
     print(f"  15k: Stepping with masked action is graceful (no crash) ✓")
 
     print("  PASSED\n")

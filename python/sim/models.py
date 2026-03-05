@@ -14,6 +14,8 @@ from sim.constants import (
     FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL, FAMILY_SW_PAIN,
     FAMILY_PW_SHIELD, FAMILY_MIND_BLAST, FAMILY_RENEW, FAMILY_HOLY_FIRE,
     FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
+    FAMILY_DEVOURING_PLAGUE, FAMILY_PSYCHIC_SCREAM, FAMILY_SHADOW_PROTECTION,
+    FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD, FAMILY_HOLY_NOVA, FAMILY_DISPEL_MAGIC,
 )
 
 
@@ -293,6 +295,75 @@ SPELLS = {
               is_buff=True, buff_dur=3600, buff_val=43),
     10938: _sd(10938, "Power Word: Fortitude", FAMILY_FORTITUDE, 0,
               is_buff=True, buff_dur=3600, buff_val=54),
+
+    # ── Devouring Plague (R1-R6) ── instant, range 30, 24s DoT, 3s ticks, heals caster
+    # DBC: Shadow damage DoT, heals caster for 100% of damage dealt
+    2944:  _sd(2944, "Devouring Plague", FAMILY_DEVOURING_PLAGUE, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=19, dot_dur_ticks=48, dot_interval=6),
+    19276: _sd(19276, "Devouring Plague", FAMILY_DEVOURING_PLAGUE, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=30, dot_dur_ticks=48, dot_interval=6),
+    19277: _sd(19277, "Devouring Plague", FAMILY_DEVOURING_PLAGUE, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=44, dot_dur_ticks=48, dot_interval=6),
+    19278: _sd(19278, "Devouring Plague", FAMILY_DEVOURING_PLAGUE, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=61, dot_dur_ticks=48, dot_interval=6),
+    19279: _sd(19279, "Devouring Plague", FAMILY_DEVOURING_PLAGUE, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=81, dot_dur_ticks=48, dot_interval=6),
+    19280: _sd(19280, "Devouring Plague", FAMILY_DEVOURING_PLAGUE, 0, spell_range=30.0,
+              is_dot=True, dot_per_tick=103, dot_dur_ticks=48, dot_interval=6),
+
+    # ── Psychic Scream (R1-R4) ── instant, AoE fear 8 yards, 30s CD
+    # DBC: Causes up to 5 nearby enemies to flee for X seconds
+    # Fear duration scales: R1=8s(16t), R2=8s, R3=8s, R4=8s
+    8122:  _sd(8122, "Psychic Scream", FAMILY_PSYCHIC_SCREAM, 0, spell_range=8.0,
+              cd=60, bp=0, ds=0),
+    8124:  _sd(8124, "Psychic Scream", FAMILY_PSYCHIC_SCREAM, 0, spell_range=8.0,
+              cd=60, bp=0, ds=0),
+    10888: _sd(10888, "Psychic Scream", FAMILY_PSYCHIC_SCREAM, 0, spell_range=8.0,
+              cd=60, bp=0, ds=0),
+    10890: _sd(10890, "Psychic Scream", FAMILY_PSYCHIC_SCREAM, 0, spell_range=8.0,
+              cd=60, bp=0, ds=0),
+
+    # ── Shadow Protection (R1-R3) ── instant, 10min buff, shadow resistance
+    976:   _sd(976, "Shadow Protection", FAMILY_SHADOW_PROTECTION, 0,
+              is_buff=True, buff_dur=1200, buff_val=30),
+    10957: _sd(10957, "Shadow Protection", FAMILY_SHADOW_PROTECTION, 0,
+              is_buff=True, buff_dur=1200, buff_val=45),
+    10958: _sd(10958, "Shadow Protection", FAMILY_SHADOW_PROTECTION, 0,
+              is_buff=True, buff_dur=1200, buff_val=60),
+
+    # ── Divine Spirit (R1-R4) ── instant, 30min buff, +Spirit
+    14752: _sd(14752, "Divine Spirit", FAMILY_DIVINE_SPIRIT, 0,
+              is_buff=True, buff_dur=3600, buff_val=17),
+    14818: _sd(14818, "Divine Spirit", FAMILY_DIVINE_SPIRIT, 0,
+              is_buff=True, buff_dur=3600, buff_val=23),
+    14819: _sd(14819, "Divine Spirit", FAMILY_DIVINE_SPIRIT, 0,
+              is_buff=True, buff_dur=3600, buff_val=33),
+    27681: _sd(27681, "Divine Spirit", FAMILY_DIVINE_SPIRIT, 0,
+              is_buff=True, buff_dur=3600, buff_val=40),
+
+    # ── Fear Ward (R1) ── instant, 3min buff, absorbs one fear effect
+    6346:  _sd(6346, "Fear Ward", FAMILY_FEAR_WARD, 0,
+              is_buff=True, buff_dur=360, buff_val=1),
+
+    # ── Holy Nova (R1-R6) ── instant, PBAoE 10yd, damage + self-heal
+    # DBC: Causes Holy damage to all enemies within 10 yards and heals
+    # all friendly targets (self in sim). No target required.
+    15237: _sd(15237, "Holy Nova", FAMILY_HOLY_NOVA, 0, spell_range=10.0,
+              bp=28, ds=5, rpl=0.5, ml=101),
+    15430: _sd(15430, "Holy Nova", FAMILY_HOLY_NOVA, 0, spell_range=10.0,
+              bp=52, ds=7, rpl=0.7, ml=101),
+    15431: _sd(15431, "Holy Nova", FAMILY_HOLY_NOVA, 0, spell_range=10.0,
+              bp=85, ds=11, rpl=0.9, ml=101),
+    27799: _sd(27799, "Holy Nova", FAMILY_HOLY_NOVA, 0, spell_range=10.0,
+              bp=127, ds=15, rpl=1.2, ml=101),
+    27800: _sd(27800, "Holy Nova", FAMILY_HOLY_NOVA, 0, spell_range=10.0,
+              bp=173, ds=19, rpl=1.5, ml=101),
+    27801: _sd(27801, "Holy Nova", FAMILY_HOLY_NOVA, 0, spell_range=10.0,
+              bp=234, ds=25, rpl=1.8, ml=101),
+
+    # ── Dispel Magic (R1-R2) ── instant, range 30, removes 1/2 buffs or debuffs
+    527:   _sd(527, "Dispel Magic", FAMILY_DISPEL_MAGIC, 0, spell_range=30.0),
+    988:   _sd(988, "Dispel Magic", FAMILY_DISPEL_MAGIC, 0, spell_range=30.0),
 }
 
 
@@ -481,6 +552,14 @@ class Player:
     fortitude_remaining: int = 0   # ticks
     fortitude_hp_bonus: int = 0    # legacy (unused, kept for compat)
     fortitude_stamina_bonus: int = 0  # DBC: +3 Stamina (Rank 1)
+    # Buff: Shadow Protection (+shadow resistance)
+    shadow_prot_remaining: int = 0
+    shadow_prot_value: int = 0     # shadow resistance amount
+    # Buff: Divine Spirit (+Spirit)
+    divine_spirit_remaining: int = 0
+    divine_spirit_bonus: int = 0   # Spirit bonus amount
+    # Buff: Fear Ward (absorbs one fear)
+    fear_ward_remaining: int = 0
     # Accumulated rewards (consumed on read like real server)
     xp_gained: int = 0
     loot_copper: int = 0
@@ -617,6 +696,16 @@ class Mob:
     dot2_remaining: int = 0
     dot2_timer: int = 0
     dot2_damage_per_tick: int = 0
+    # DoT tracking (slot 3: Devouring Plague — also heals caster)
+    dot3_remaining: int = 0
+    dot3_timer: int = 0
+    dot3_damage_per_tick: int = 0
+    dot3_heals_caster: bool = False  # Devouring Plague heals for damage dealt
+    # Fear state (Psychic Scream)
+    feared: bool = False
+    fear_remaining: int = 0  # ticks until fear ends
+    fear_dx: float = 0.0     # fear flee direction X
+    fear_dy: float = 0.0     # fear flee direction Y
     looted: bool = False
     spawn_x: float = 0.0
     spawn_y: float = 0.0

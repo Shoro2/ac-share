@@ -63,6 +63,9 @@ from sim.constants import (
     get_best_rank, FAMILY_SMITE, FAMILY_HEAL, FAMILY_FLASH_HEAL,
     FAMILY_SW_PAIN, FAMILY_PW_SHIELD, FAMILY_MIND_BLAST,
     FAMILY_RENEW, FAMILY_HOLY_FIRE, FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
+    FAMILY_DEVOURING_PLAGUE, FAMILY_PSYCHIC_SCREAM, FAMILY_SHADOW_PROTECTION,
+    FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD, FAMILY_HOLY_NOVA, FAMILY_DISPEL_MAGIC,
+    SP_COEFF_HOLY_NOVA_HEAL,
     ALL_RANKED_SPELL_IDS,
 )
 
@@ -583,7 +586,9 @@ class CombatSimulation:
         fort_sta = p.fortitude_stamina_bonus if p.fortitude_remaining > 0 else 0
         p.total_stamina = class_base_stat(cls, 2, p.level) + p.gear_stamina + fort_sta
         p.total_intellect = class_base_stat(cls, 3, p.level) + p.gear_intellect
-        p.total_spirit = class_base_stat(cls, 4, p.level) + p.gear_spirit
+        # Divine Spirit adds Spirit bonus
+        ds_spi = p.divine_spirit_bonus if p.divine_spirit_remaining > 0 else 0
+        p.total_spirit = class_base_stat(cls, 4, p.level) + p.gear_spirit + ds_spi
 
         # ─── Max HP (preserve ratio) ────────────────────────────────
         old_max_hp = max(p.max_hp, 1)
@@ -1249,6 +1254,41 @@ class CombatSimulation:
         sid = get_best_rank(FAMILY_FORTITUDE, self.player.level)
         return self._start_cast(sid) if sid else False
 
+    def do_cast_devouring_plague(self) -> bool:
+        """Cast Devouring Plague (best rank for level)."""
+        sid = get_best_rank(FAMILY_DEVOURING_PLAGUE, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_psychic_scream(self) -> bool:
+        """Cast Psychic Scream (best rank for level)."""
+        sid = get_best_rank(FAMILY_PSYCHIC_SCREAM, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_shadow_protection(self) -> bool:
+        """Cast Shadow Protection (best rank for level)."""
+        sid = get_best_rank(FAMILY_SHADOW_PROTECTION, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_divine_spirit(self) -> bool:
+        """Cast Divine Spirit (best rank for level)."""
+        sid = get_best_rank(FAMILY_DIVINE_SPIRIT, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_fear_ward(self) -> bool:
+        """Cast Fear Ward (best rank for level)."""
+        sid = get_best_rank(FAMILY_FEAR_WARD, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_holy_nova(self) -> bool:
+        """Cast Holy Nova (best rank for level). PBAoE, no target needed."""
+        sid = get_best_rank(FAMILY_HOLY_NOVA, self.player.level)
+        return self._start_cast(sid) if sid else False
+
+    def do_cast_dispel_magic(self) -> bool:
+        """Cast Dispel Magic (best rank for level)."""
+        sid = get_best_rank(FAMILY_DISPEL_MAGIC, self.player.level)
+        return self._start_cast(sid) if sid else False
+
     def do_eat_drink(self) -> bool:
         """Start eating/drinking. Regenerates 5% HP and Mana per second.
 
@@ -1382,7 +1422,10 @@ class CombatSimulation:
         return True
 
     # Offensive spell families (need alive target + range)
-    _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE}
+    _OFFENSIVE_FAMILIES = {FAMILY_SMITE, FAMILY_SW_PAIN, FAMILY_MIND_BLAST, FAMILY_HOLY_FIRE,
+                           FAMILY_DEVOURING_PLAGUE}
+    # AoE families: no target needed, hits mobs in range
+    _AOE_FAMILIES = {FAMILY_HOLY_NOVA, FAMILY_PSYCHIC_SCREAM}
 
     def _start_cast(self, spell_id: int) -> bool:
         """Attempt to start casting a spell."""
@@ -1442,6 +1485,23 @@ class CombatSimulation:
         # Fortitude: block if already active
         if family == FAMILY_FORTITUDE and self.player.fortitude_remaining > 0:
             return False
+
+        # Shadow Protection: block if already active
+        if family == FAMILY_SHADOW_PROTECTION and self.player.shadow_prot_remaining > 0:
+            return False
+
+        # Divine Spirit: block if already active
+        if family == FAMILY_DIVINE_SPIRIT and self.player.divine_spirit_remaining > 0:
+            return False
+
+        # Fear Ward: block if already active
+        if family == FAMILY_FEAR_WARD and self.player.fear_ward_remaining > 0:
+            return False
+
+        # Devouring Plague: block if already active on target (one per target)
+        if family == FAMILY_DEVOURING_PLAGUE:
+            if self.target and self.target.dot3_remaining > 0:
+                return False
 
         # Spend mana (% of BaseMana)
         self.player.mana -= mana_cost
@@ -1589,6 +1649,99 @@ class CombatSimulation:
             if hp_gain > 0:
                 self.player.hp = min(self.player.hp + hp_gain, self.player.max_hp)
 
+        elif family == FAMILY_DEVOURING_PLAGUE:
+            # Shadow DoT (slot 3) that heals caster for damage dealt
+            if self.target and self.target.alive:
+                outcome = self._resolve_offensive_spell(self.target.level)
+                if outcome == SPELL_MISS:
+                    return
+                dmg_per_tick = spell_dot_per_tick(spell_id, sp)
+                self.target.dot3_remaining = spell.dot_ticks
+                self.target.dot3_timer = spell.dot_interval
+                self.target.dot3_damage_per_tick = dmg_per_tick
+                self.target.dot3_heals_caster = True
+
+        elif family == FAMILY_PSYCHIC_SCREAM:
+            # AoE Fear: fears up to 5 mobs within 8 yards for 8 seconds (16 ticks)
+            px, py = self.player.x, self.player.y
+            feared_count = 0
+            for mob in self.mobs:
+                if feared_count >= 5:
+                    break
+                if not mob.alive or not mob.in_combat:
+                    continue
+                dx = mob.x - px
+                dy = mob.y - py
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist <= spell.spell_range:
+                    mob.feared = True
+                    mob.fear_remaining = 16  # 8 seconds = 16 ticks
+                    # Flee direction: away from player (normalized)
+                    if dist > 0.1:
+                        mob.fear_dx = dx / dist
+                        mob.fear_dy = dy / dist
+                    else:
+                        angle = self.rng.random() * math.pi * 2
+                        mob.fear_dx = math.cos(angle)
+                        mob.fear_dy = math.sin(angle)
+                    feared_count += 1
+
+        elif family == FAMILY_SHADOW_PROTECTION:
+            # Shadow resistance buff
+            val = spell_buff_value(spell_id)
+            self.player.shadow_prot_remaining = spell.buff_duration
+            self.player.shadow_prot_value = val
+
+        elif family == FAMILY_DIVINE_SPIRIT:
+            # Spirit buff (recalculates stats for mana regen)
+            spi_bonus = spell_buff_value(spell_id)
+            self.player.divine_spirit_remaining = spell.buff_duration
+            self.player.divine_spirit_bonus = spi_bonus
+            self.recalculate_stats()
+
+        elif family == FAMILY_FEAR_WARD:
+            # Fear immunity buff (absorbs one fear effect)
+            self.player.fear_ward_remaining = spell.buff_duration
+
+        elif family == FAMILY_HOLY_NOVA:
+            # PBAoE: damage all mobs within 10 yards + heal self
+            px, py = self.player.x, self.player.y
+            min_dmg, max_dmg = spell_direct_value(spell_id, sp)
+            hit_any = False
+            for mob in self.mobs:
+                if not mob.alive:
+                    continue
+                dx = mob.x - px
+                dy = mob.y - py
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist <= spell.spell_range:
+                    outcome = self._resolve_offensive_spell(mob.level)
+                    if outcome == SPELL_MISS:
+                        continue
+                    dmg = self.rng.randint(min_dmg, max(min_dmg, max_dmg))
+                    if outcome == SPELL_CRIT:
+                        dmg = int(dmg * 1.5)
+                    self._damage_mob(mob, dmg)
+                    hit_any = True
+            # Self-heal component (Holy Nova Heal has separate base values)
+            # Heal base values per rank (from DBC, separate healing spell IDs)
+            _nova_heal_base = {
+                15237: (29, 5), 15430: (54, 7), 15431: (86, 11),
+                27799: (124, 15), 27800: (163, 19), 27801: (220, 25),
+            }
+            hb, hd = _nova_heal_base.get(spell_id, (29, 5))
+            heal = self.rng.randint(hb + 1, hb + hd) + int(sp * SP_COEFF_HOLY_NOVA_HEAL)
+            if self.rng.random() * 100 < self.player.total_spell_crit:
+                heal = int(heal * 1.5)
+                self.player.spell_crits += 1
+            self.player.hp = min(self.player.max_hp, self.player.hp + heal)
+
+        elif family == FAMILY_DISPEL_MAGIC:
+            # Remove debuffs from self (in sim: no mob debuffs currently)
+            # Rank 2 can also be used offensively to dispel mob buffs
+            # For now: utility spell, no direct combat effect
+            pass
+
     def _damage_mob(self, mob: Mob, damage: int):
         """Apply damage to a mob, handle death."""
         old_hp = mob.hp
@@ -1698,6 +1851,15 @@ class CombatSimulation:
                         if mob.dot2_timer <= 0:
                             self._damage_mob(mob, mob.dot2_damage_per_tick)
                             mob.dot2_timer = 6
+                    if mob.dot3_remaining > 0:
+                        mob.dot3_remaining -= 1
+                        mob.dot3_timer -= 1
+                        if mob.dot3_timer <= 0:
+                            tick_dmg = mob.dot3_damage_per_tick
+                            self._damage_mob(mob, tick_dmg)
+                            if mob.dot3_heals_caster:
+                                p.hp = min(p.max_hp, p.hp + tick_dmg)
+                            mob.dot3_timer = 6
                     continue
 
             if mob.target_player:
@@ -1708,64 +1870,85 @@ class CombatSimulation:
                     self._evade_mob(mob)
                     continue
 
-                # Chase player
-                if dist > 2.0:
-                    move = min(self.MOB_SPEED, dist - 1.5)
-                    new_mx = mob.x + (-_dx / dist) * move
-                    new_my = mob.y + (-_dy / dist) * move
-                    if self.terrain:
-                        new_mz = self.terrain.get_height(new_mx, new_my)
-                        if self.terrain.check_walkable(mob.x, mob.y, mob.z, new_mx, new_my, new_mz):
+                # Fear: mob flees instead of chasing/attacking
+                if mob.feared:
+                    mob.fear_remaining -= 1
+                    if mob.fear_remaining <= 0:
+                        mob.feared = False
+                    else:
+                        # Move in flee direction
+                        move = self.MOB_SPEED
+                        new_mx = mob.x + mob.fear_dx * move
+                        new_my = mob.y + mob.fear_dy * move
+                        if self.terrain:
+                            new_mz = self.terrain.get_height(new_mx, new_my)
+                            if self.terrain.check_walkable(mob.x, mob.y, mob.z, new_mx, new_my, new_mz):
+                                mob.x = new_mx
+                                mob.y = new_my
+                                mob.z = new_mz
+                        else:
                             mob.x = new_mx
                             mob.y = new_my
-                            mob.z = new_mz
-                    else:
-                        mob.x = new_mx
-                        mob.y = new_my
-                    # Recompute distance after move
-                    _dx = mob.x - px
-                    _dy = mob.y - py
-                    dist = _sqrt(_dx * _dx + _dy * _dy)
+                    # Skip chase and melee while feared — fall through to DoTs
+                else:
+                    # Chase player (not feared)
+                    if dist > 2.0:
+                        move = min(self.MOB_SPEED, dist - 1.5)
+                        new_mx = mob.x + (-_dx / dist) * move
+                        new_my = mob.y + (-_dy / dist) * move
+                        if self.terrain:
+                            new_mz = self.terrain.get_height(new_mx, new_my)
+                            if self.terrain.check_walkable(mob.x, mob.y, mob.z, new_mx, new_my, new_mz):
+                                mob.x = new_mx
+                                mob.y = new_my
+                                mob.z = new_mz
+                        else:
+                            mob.x = new_mx
+                            mob.y = new_my
+                        # Recompute distance after move
+                        _dx = mob.x - px
+                        _dy = mob.y - py
+                        dist = _sqrt(_dx * _dx + _dy * _dy)
 
-                # Melee attack (WotLK single-roll attack table)
-                if dist <= 5.0:
-                    mob.attack_timer -= 1
-                    if mob.attack_timer <= 0:
-                        dmg = self.rng.randint(mob.template.min_damage, mob.template.max_damage)
-                        roll = self.rng.random() * 100.0
-                        outcome = resolve_mob_melee_attack(
-                            attacker_level=mob.level,
-                            defender_level=p.level,
-                            defender_dodge=p.total_dodge,
-                            defender_parry=p.total_parry,
-                            defender_block=p.total_block,
-                            defender_defense_bonus=p.total_defense,
-                            defender_resilience_pct=p.total_resilience,
-                            roll=roll,
-                        )
-                        if outcome == MELEE_MISS:
-                            p.mob_misses += 1
-                        elif outcome == MELEE_DODGE:
-                            p.dodges += 1
-                        elif outcome == MELEE_PARRY:
-                            p.parries += 1
-                        elif outcome == MELEE_BLOCK:
-                            p.blocks += 1
-                            # Block reduces damage by block_value, not a full avoid
-                            dmg = max(0, dmg - p.total_block_value)
-                            self._damage_player(dmg, mob)
-                        elif outcome == MELEE_CRIT:
-                            p.mob_crits += 1
-                            dmg = int(dmg * 2.0)  # mob crit = 200% damage
-                            self._damage_player(dmg, mob)
-                        elif outcome == MELEE_CRUSHING:
-                            p.mob_crushings += 1
-                            dmg = int(dmg * 1.5)  # crushing = 150% damage
-                            self._damage_player(dmg, mob)
-                        else:  # MELEE_NORMAL
-                            self._damage_player(dmg, mob)
-                        mob.attack_timer = mob.template.attack_speed
-                        p.combat_timer = 0
+                    # Melee attack (WotLK single-roll attack table)
+                    if dist <= 5.0:
+                        mob.attack_timer -= 1
+                        if mob.attack_timer <= 0:
+                            dmg = self.rng.randint(mob.template.min_damage, mob.template.max_damage)
+                            roll = self.rng.random() * 100.0
+                            outcome = resolve_mob_melee_attack(
+                                attacker_level=mob.level,
+                                defender_level=p.level,
+                                defender_dodge=p.total_dodge,
+                                defender_parry=p.total_parry,
+                                defender_block=p.total_block,
+                                defender_defense_bonus=p.total_defense,
+                                defender_resilience_pct=p.total_resilience,
+                                roll=roll,
+                            )
+                            if outcome == MELEE_MISS:
+                                p.mob_misses += 1
+                            elif outcome == MELEE_DODGE:
+                                p.dodges += 1
+                            elif outcome == MELEE_PARRY:
+                                p.parries += 1
+                            elif outcome == MELEE_BLOCK:
+                                p.blocks += 1
+                                # Block reduces damage by block_value, not a full avoid
+                                dmg = max(0, dmg - p.total_block_value)
+                                self._damage_player(dmg, mob)
+                            elif outcome == MELEE_CRIT:
+                                p.mob_crits += 1
+                                dmg = int(dmg * 2.0)  # mob crit = 200% damage
+                                self._damage_player(dmg, mob)
+                            elif outcome == MELEE_CRUSHING:
+                                p.mob_crushings += 1
+                                dmg = int(dmg * 1.5)  # crushing = 150% damage
+                                self._damage_player(dmg, mob)
+                            else:  # MELEE_NORMAL
+                                self._damage_player(dmg, mob)
+                            mob.attack_timer = mob.template.attack_speed
+                            p.combat_timer = 0
 
             # DoT processing (slot 1: SW:Pain)
             if mob.dot_remaining > 0:
@@ -1781,6 +1964,16 @@ class CombatSimulation:
                 if mob.dot2_timer <= 0:
                     self._damage_mob(mob, mob.dot2_damage_per_tick)
                     mob.dot2_timer = 6
+            # DoT processing (slot 3: Devouring Plague — heals caster)
+            if mob.dot3_remaining > 0:
+                mob.dot3_remaining -= 1
+                mob.dot3_timer -= 1
+                if mob.dot3_timer <= 0:
+                    tick_dmg = mob.dot3_damage_per_tick
+                    self._damage_mob(mob, tick_dmg)
+                    if mob.dot3_heals_caster:
+                        p.hp = min(p.max_hp, p.hp + tick_dmg)
+                    mob.dot3_timer = 6
 
         # --- Shield decay ---
         if p.shield_remaining > 0:
@@ -1823,6 +2016,23 @@ class CombatSimulation:
                 p.fortitude_hp_bonus = 0
                 self.recalculate_stats()
                 p.hp = min(p.hp, p.max_hp)
+
+        # --- Buff: Shadow Protection ---
+        if p.shadow_prot_remaining > 0:
+            p.shadow_prot_remaining -= 1
+            if p.shadow_prot_remaining <= 0:
+                p.shadow_prot_value = 0
+
+        # --- Buff: Divine Spirit ---
+        if p.divine_spirit_remaining > 0:
+            p.divine_spirit_remaining -= 1
+            if p.divine_spirit_remaining <= 0:
+                p.divine_spirit_bonus = 0
+                self.recalculate_stats()
+
+        # --- Buff: Fear Ward ---
+        if p.fear_ward_remaining > 0:
+            p.fear_ward_remaining -= 1
 
         # --- Regen ---
         if p.in_combat:
@@ -1927,6 +2137,12 @@ class CombatSimulation:
         mob.dot_remaining = 0
         mob.dot_timer = 0
         mob.dot_damage_per_tick = 0
+        mob.dot3_remaining = 0
+        mob.dot3_timer = 0
+        mob.dot3_damage_per_tick = 0
+        mob.dot3_heals_caster = False
+        mob.feared = False
+        mob.fear_remaining = 0
         mob.respawn_timer = 0
 
     def _evade_mob(self, mob: Mob):
@@ -1939,6 +2155,10 @@ class CombatSimulation:
         mob.z = mob.spawn_z
         mob.attack_timer = 0
         mob.dot_remaining = 0
+        mob.dot3_remaining = 0
+        mob.dot3_heals_caster = False
+        mob.feared = False
+        mob.fear_remaining = 0
         self._check_combat_end()
 
     # ─── State Query ─────────────────────────────────────────────
@@ -2037,6 +2257,7 @@ class CombatSimulation:
             "level": self.target.level,
             "has_sw_pain": self.target.dot_remaining > 0,
             "has_holy_fire": self.target.dot2_remaining > 0,
+            "has_devouring_plague": self.target.dot3_remaining > 0,
         }
 
     def get_state_dict(self) -> dict:
@@ -2077,6 +2298,11 @@ class CombatSimulation:
             "holy_fire_ready": "true" if p.spell_cooldowns.get(FAMILY_HOLY_FIRE, 0) <= 0 else "false",
             "target_has_sw_pain": "true" if t_info.get("has_sw_pain") else "false",
             "target_has_holy_fire": "true" if t_info.get("has_holy_fire") else "false",
+            "target_has_devouring_plague": "true" if (self.target and self.target.alive and self.target.dot3_remaining > 0) else "false",
+            "has_shadow_protection": "true" if p.shadow_prot_remaining > 0 else "false",
+            "has_divine_spirit": "true" if p.divine_spirit_remaining > 0 else "false",
+            "has_fear_ward": "true" if p.fear_ward_remaining > 0 else "false",
+            "psychic_scream_ready": "true" if p.spell_cooldowns.get(FAMILY_PSYCHIC_SCREAM, 0) <= 0 else "false",
             "is_eating": "true" if p.is_eating else "false",
             "nearby_mobs": [
                 {
