@@ -49,6 +49,7 @@ class SimEpisodeLogger:
         self._trail.clear()
         self._events.clear()
         self._mobs.clear()
+        self._mob_positions = set()
 
     def record_step(self, step: int, x: float, y: float, hp_pct: float,
                     level: int, in_combat: bool, orientation: float):
@@ -88,6 +89,24 @@ class SimEpisodeLogger:
             }
             for m in mobs
         ]
+        self._mob_positions = {(m["x"], m["y"]) for m in self._mobs}
+
+    def record_mobs_incremental(self, mobs: list):
+        """Add newly discovered mobs (e.g. from new chunks) to the snapshot.
+
+        Deduplicates by spawn position so mobs are never recorded twice.
+        """
+        for m in mobs:
+            rx, ry = round(m["x"], 2), round(m["y"], 2)
+            if (rx, ry) not in self._mob_positions:
+                self._mob_positions.add((rx, ry))
+                self._mobs.append({
+                    "e": m["entry"],
+                    "n": m["name"],
+                    "x": rx,
+                    "y": ry,
+                    "lv": m["level"],
+                })
 
     def flush_episode(self, stats: dict):
         """Write buffered episode data to the JSONL file.
