@@ -1389,18 +1389,12 @@ def main():
         model = PPO.load(args.model)
         print(f"Loaded model: {args.model}")
 
-    # Load map background — auto-detect from repo data/ or dev machine
+    # Load map background — auto-detect from Data dir if not specified
     map_image_data = None
     if not args.map_image:
-        _repo_root = os.path.normpath(os.path.join(os.path.dirname(__file__),
-                                                    "..", ".."))
-        for auto_path in [
-            os.path.join(_repo_root, "data", "world_map.png"),
-            os.path.join(r"C:\wowstuff\WoWKI_serv\Data", "world_map.png"),
-        ]:
-            if os.path.exists(auto_path):
-                args.map_image = auto_path
-                break
+        auto_path = os.path.join(r"C:\wowstuff\WoWKI_serv\Data", "world_map.png")
+        if os.path.exists(auto_path):
+            args.map_image = auto_path
     if args.map_image:
         wow_bounds = None
         if args.map_bounds:

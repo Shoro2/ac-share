@@ -44,22 +44,11 @@ import zipfile
 from io import BytesIO
 from dataclasses import dataclass
 
-# Default paths — repo data/ directory, with dev-machine fallback
-_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_REPO_DATA = os.path.join(_REPO_ROOT, "data")
-_DEV_DATA_ROOT = r"C:\wowstuff\WoWKI_serv\Data"
-
-def _pick(repo_path, dev_path):
-    """Return repo path if it exists, else dev path."""
-    return repo_path if os.path.exists(repo_path) else dev_path
-
-_DEFAULT_ZIP = _pick(
-    os.path.join(_REPO_DATA, "1659008088-atlasworldmap_wotlk.zip"),
-    os.path.join(_DEV_DATA_ROOT, "1659008088-atlasworldmap_wotlk.zip"))
-_DEFAULT_DBC = _pick(
-    os.path.join(_REPO_DATA, "dbc", "WorldMapArea.dbc"),
-    os.path.join(_DEV_DATA_ROOT, "dbc", "WorldMapArea.dbc"))
-_DEFAULT_OUTPUT = os.path.join(_REPO_DATA, "world_map.png")
+# Default paths on the dev machine
+_DEFAULT_DATA_ROOT = r"C:\wowstuff\WoWKI_serv\Data"
+_DEFAULT_ZIP = os.path.join(_DEFAULT_DATA_ROOT, "1659008088-atlasworldmap_wotlk.zip")
+_DEFAULT_DBC = os.path.join(_DEFAULT_DATA_ROOT, "dbc", "WorldMapArea.dbc")
+_DEFAULT_OUTPUT = os.path.join(_DEFAULT_DATA_ROOT, "world_map.png")
 
 try:
     from PIL import Image
