@@ -974,6 +974,14 @@ SP_COEFFICIENTS = {
     # Dispel Magic — no SP coefficient (utility)
     527: (0.0, 0.0),
     988: (0.0, 0.0),
+    # Mind Flay (R1-R7) — channeled, per-tick coeff ~0.257 (3 ticks = 0.771 total)
+    15407: (0.0, 0.257), 17311: (0.0, 0.257), 17312: (0.0, 0.257),
+    17313: (0.0, 0.257), 17314: (0.0, 0.257), 18807: (0.0, 0.257),
+    25387: (0.0, 0.257),
+    # Vampiric Touch (R1-R3) — DoT, per-tick coeff ~0.2 (5 ticks = 1.0 total)
+    34914: (0.0, 0.2), 34916: (0.0, 0.2), 34917: (0.0, 0.2),
+    # Dispersion — no SP coefficient
+    47585: (0.0, 0.0),
 }
 
 # Legacy SP_COEFF_* aliases for backward compatibility
@@ -988,6 +996,8 @@ SP_COEFF_HOLY_FIRE_DOT_TICK = 0.0529
 SP_COEFF_DEVOURING_PLAGUE_TICK = 0.18
 SP_COEFF_HOLY_NOVA = 0.161
 SP_COEFF_HOLY_NOVA_HEAL = 0.303
+SP_COEFF_MIND_FLAY_TICK = 0.257
+SP_COEFF_VAMPIRIC_TOUCH_TICK = 0.2
 
 def get_sp_coeff(spell_id):
     """Get (direct_bonus, dot_bonus_per_tick) for a spell ID."""
@@ -1012,6 +1022,9 @@ FAMILY_DIVINE_SPIRIT = 14752
 FAMILY_FEAR_WARD = 6346
 FAMILY_HOLY_NOVA = 15237
 FAMILY_DISPEL_MAGIC = 527
+FAMILY_MIND_FLAY = 15407       # Talent-granted: Mind Flay (channeled Shadow)
+FAMILY_VAMPIRIC_TOUCH = 34914  # Talent-granted: Vampiric Touch (Shadow DoT)
+FAMILY_DISPERSION = 47585      # Talent-granted: Dispersion (defensive CD)
 
 # Each entry: (train_level, spell_id)
 SPELL_RANKS = {
@@ -1078,6 +1091,16 @@ SPELL_RANKS = {
     ],
     FAMILY_DISPEL_MAGIC: [
         (18, 527), (36, 988),
+    ],
+    FAMILY_MIND_FLAY: [
+        (20, 15407), (28, 17311), (36, 17312), (44, 17313),
+        (52, 17314), (60, 18807), (68, 25387),
+    ],
+    FAMILY_VAMPIRIC_TOUCH: [
+        (50, 34914), (60, 34916), (70, 34917),
+    ],
+    FAMILY_DISPERSION: [
+        (60, 47585),
     ],
 }
 
@@ -1154,6 +1177,13 @@ SPELL_MANA_PCT = {
     15237: 20, 15430: 20, 15431: 20, 27799: 20, 27800: 20, 27801: 20,
     # Dispel Magic: all 14%
     527: 14, 988: 14,
+    # Mind Flay: all 9% (Spell.dbc)
+    15407: 9, 17311: 9, 17312: 9, 17313: 9,
+    17314: 9, 18807: 9, 25387: 9,
+    # Vampiric Touch: all 16%
+    34914: 16, 34916: 16, 34917: 16,
+    # Dispersion: 0% (no mana cost)
+    47585: 0,
 }
 
 

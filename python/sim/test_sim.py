@@ -130,32 +130,32 @@ def test_gym_env():
     env = WoWSimEnv(num_mobs=10, seed=42)
 
     # Check spaces
-    assert env.observation_space.shape == (45,), f"Obs shape: {env.observation_space.shape}"
-    assert env.action_space.n == 26, f"Action space: {env.action_space.n}"
+    assert env.observation_space.shape == (49,), f"Obs shape: {env.observation_space.shape}"
+    assert env.action_space.n == 30, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
     # Reset
     obs, info = env.reset()
-    assert obs.shape == (45,), f"Obs shape after reset: {obs.shape}"
+    assert obs.shape == (49,), f"Obs shape after reset: {obs.shape}"
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
     # Check action_masks
     mask = env.action_masks()
-    assert mask.shape == (26,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (30,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
-    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/19")
+    print(f"  Action mask: shape={mask.shape}, valid={mask.sum()}/{env.action_space.n}")
 
     # Step with each action
-    for action in range(26):
+    for action in range(30):
         obs, reward, done, trunc, info = env.step(action)
-        assert obs.shape == (45,)
+        assert obs.shape == (49,)
         if done:
             obs, info = env.reset()
 
-    print(f"  All 19 actions executed successfully")
+    print(f"  All {env.action_space.n} actions executed successfully")
     print("  PASSED\n")
 
 
@@ -1114,12 +1114,12 @@ def test_quest_system():
     # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
-    assert obs.shape == (45,), f"Expected obs(45,), got {obs.shape}"
-    assert env.action_space.n == 26, f"Expected 26 actions, got {env.action_space.n}"
+    assert obs.shape == (49,), f"Expected obs(49,), got {obs.shape}"
+    assert env.action_space.n == 30, f"Expected 30 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
-    assert obs[34] > 0 or obs[32] == 0.0, "Quest NPC obs should reflect nearby NPCs"
+    assert obs[38] > 0 or obs[36] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
-          f"quest_dims={obs[33:39]} ✓")
+          f"quest_dims={obs[43:49]} ✓")
 
     # --- Test 9l: Quest reward in env ---
     # Set up: accept quest, complete it, turn in, check reward
@@ -1509,17 +1509,18 @@ def test_attribute_system():
     env = WoWSimEnv(num_mobs=5, seed=42)
     obs, _ = env.reset()
     # obs[22] = is_eating (0/1)
-    # Stat obs at indices 23-32 (10 dims: SP, spell_crit, spell_haste, armor,
+    # Talent obs at indices 29-32 (4 dims: target_has_vt, shadowform, dispersion, channeling)
+    # Stat obs at indices 33-42 (10 dims: SP, spell_crit, spell_haste, armor,
     # AP, melee_crit, dodge, hit, expertise, ArP)
     assert obs[22] == 0.0, f"is_eating obs should be 0 at start, got {obs[22]}"
-    assert obs[29] == 0.0, f"SP obs should be 0 with no gear, got {obs[29]}"
-    assert obs[30] >= 0.0, f"Spell crit obs should be >= 0, got {obs[30]}"
-    assert obs[31] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[31]}"
-    assert obs[32] >= 0.0, f"Armor obs should be >= 0, got {obs[32]}"  # agi*2 gives base armor
-    assert obs[33] >= 0.0, f"AP obs should be >= 0, got {obs[33]}"
-    assert obs[34] >= 0.0, f"Melee crit obs should be >= 0, got {obs[34]}"
-    assert obs[35] >= 0.0, f"Dodge obs should be >= 0, got {obs[35]}"
-    print(f"  11m: Stat obs [23:33]={obs[23:33]} ✓")
+    assert obs[33] == 0.0, f"SP obs should be 0 with no gear, got {obs[33]}"
+    assert obs[34] >= 0.0, f"Spell crit obs should be >= 0, got {obs[34]}"
+    assert obs[35] == 0.0, f"Spell haste obs should be 0 with no gear, got {obs[35]}"
+    assert obs[36] >= 0.0, f"Armor obs should be >= 0, got {obs[36]}"  # agi*2 gives base armor
+    assert obs[37] >= 0.0, f"AP obs should be >= 0, got {obs[37]}"
+    assert obs[38] >= 0.0, f"Melee crit obs should be >= 0, got {obs[38]}"
+    assert obs[39] >= 0.0, f"Dodge obs should be >= 0, got {obs[39]}"
+    print(f"  11m: Stat obs [33:43]={obs[33:43]} ✓")
 
     # --- Test 11n: Equipment persists across ticks ---
     sim4 = CombatSimulation(num_mobs=5, seed=42)
@@ -2386,7 +2387,7 @@ def test_action_masking():
 
     # --- 15a: Initial mask — basic validity ---
     mask = env.action_masks()
-    assert mask.shape == (26,), f"Mask shape: {mask.shape}"
+    assert mask.shape == (30,), f"Mask shape: {mask.shape}"
     assert mask.dtype == bool, f"Mask dtype: {mask.dtype}"
     assert mask[0] == True, "Noop should always be valid"
     assert mask[1] == True, "Move forward should be valid when not casting"
@@ -2533,7 +2534,7 @@ def test_action_masking():
     obs6, _ = env6.reset()
     env6.sim.player.mana = 0
     obs6, reward, done, trunc, info = env6.step(5)  # try Smite with no mana
-    assert obs6.shape == (45,), "Step with invalid action should not crash"
+    assert obs6.shape == (49,), "Step with invalid action should not crash"
     print(f"  15k: Stepping with masked action is graceful (no crash) ✓")
 
     print("  PASSED\n")
@@ -2878,6 +2879,263 @@ def test_spell_learning():
     print("  PASSED\n")
 
 
+def test_talent_system():
+    """Test 18: Talent system — auto-assignment, gated spells, modifiers."""
+    print("=== Test 18: Talent System ===")
+    from sim.talent_data import get_talent_for_level, TALENT_DEFS, SHADOW_PRIEST_BUILD
+
+    # --- 18a: No talents before level 10 ---
+    sim = CombatSimulation(num_mobs=10, seed=42)
+    p = sim.player
+    assert p.level == 1
+    assert len(p.talent_points) == 0, "No talents at level 1"
+    assert get_talent_for_level(1) is None
+    assert get_talent_for_level(9) is None
+    assert get_talent_for_level(10) == "spirit_tap"
+    print(f"  18a: No talents before L10, first talent=spirit_tap ✓")
+
+    # --- 18b: Talent auto-assignment on level-up ---
+    # Manually level to 12 (should get Spirit Tap 3/3)
+    for lvl in range(2, 13):
+        p.xp = XP_TABLE[lvl]
+        sim._check_level_up()
+    assert p.level == 12, f"Expected level 12, got {p.level}"
+    assert p.talent_points.get("spirit_tap", 0) == 3, \
+        f"Spirit Tap should be 3/3 at L12, got {p.talent_points.get('spirit_tap', 0)}"
+    print(f"  18b: L12 talents: spirit_tap={p.talent_points.get('spirit_tap')} ✓")
+
+    # --- 18c: Darkness at level 19 (5/5) ---
+    for lvl in range(13, 20):
+        p.xp = XP_TABLE[lvl]
+        sim._check_level_up()
+    assert p.level == 19
+    assert p.talent_points.get("darkness", 0) == 5, \
+        f"Darkness should be 5/5 at L19, got {p.talent_points.get('darkness', 0)}"
+    assert p.talent_points.get("improved_spirit_tap", 0) == 2
+    print(f"  18c: L19 talents: darkness={p.talent_points['darkness']}, "
+          f"imp_spirit_tap={p.talent_points['improved_spirit_tap']} ✓")
+
+    # --- 18d: Mind Flay unlocked at level 20 ---
+    assert sim.do_cast_mind_flay() is False, "Mind Flay should fail before talent"
+    p.xp = XP_TABLE[20]
+    sim._check_level_up()
+    assert p.level == 20
+    assert p.talent_points.get("mind_flay", 0) == 1, "Mind Flay talent should be 1/1 at L20"
+    # Now target a mob and try Mind Flay
+    for _ in range(30):
+        sim.do_move_forward()
+        sim.tick()
+    sim.do_target_nearest()
+    if sim.target and sim.target.alive:
+        result = sim.do_cast_mind_flay()
+        assert result is True, "Mind Flay should succeed at L20 with talent + target"
+        assert p.channel_remaining > 0 or p.is_casting, "Should be channeling Mind Flay"
+    print(f"  18d: Mind Flay unlocked at L20 ✓")
+
+    # --- 18e: Shadowform auto-activation at level 40 ---
+    sim2 = CombatSimulation(num_mobs=5, seed=42)
+    p2 = sim2.player
+    assert not p2.shadowform_active
+    for lvl in range(2, 41):
+        p2.xp = XP_TABLE[lvl]
+        sim2._check_level_up()
+    assert p2.level == 40
+    assert p2.talent_points.get("shadowform", 0) == 1, "Shadowform talent should be 1/1 at L40"
+    assert p2.shadowform_active, "Shadowform should auto-activate at L40"
+    print(f"  18e: Shadowform auto-activated at L40 ✓")
+
+    # --- 18f: Shadowform toggle ---
+    sim2.do_toggle_shadowform()  # turn off
+    assert not p2.shadowform_active, "Shadowform should be toggled off"
+    p2.gcd_remaining = 0
+    sim2.do_toggle_shadowform()  # turn on
+    assert p2.shadowform_active, "Shadowform should be toggled on"
+    print(f"  18f: Shadowform toggle works ✓")
+
+    # --- 18g: Shadow damage modifiers (Darkness + Shadowform) ---
+    # At L40: Darkness 5/5 (+10%) and Shadowform (+15%) = 1.10 * 1.15 = 1.265
+    mob = sim2.mobs[0]
+    mob.shadow_weaving_stacks = 0
+    mod = sim2._shadow_damage_mod(mob)
+    expected = 1.10 * 1.15  # Darkness 5/5 * Shadowform
+    assert abs(mod - expected) < 0.001, \
+        f"Shadow mod expected {expected:.3f}, got {mod:.3f}"
+    # With Shadow Weaving 3 stacks: +6%
+    mob.shadow_weaving_stacks = 3
+    mod_sw = sim2._shadow_damage_mod(mob)
+    expected_sw = expected * 1.06
+    assert abs(mod_sw - expected_sw) < 0.001, \
+        f"Shadow mod with SW3 expected {expected_sw:.3f}, got {mod_sw:.3f}"
+    mob.shadow_weaving_stacks = 0
+    print(f"  18g: Shadow damage mod: base={mod:.3f}, +SW3={mod_sw:.3f} ✓")
+
+    # --- 18h: Vampiric Embrace healing ---
+    sim3 = CombatSimulation(num_mobs=5, seed=42)
+    p3 = sim3.player
+    for lvl in range(2, 34):
+        p3.xp = XP_TABLE[lvl]
+        sim3._check_level_up()
+    assert p3.level == 33
+    assert p3.talent_points.get("vampiric_embrace", 0) == 1
+    assert p3.talent_points.get("improved_vampiric_embrace", 0) == 2
+    # VE 1/1 + Imp VE 2/2 = 25% healing
+    p3.hp = p3.max_hp // 2
+    hp_before = p3.hp
+    sim3._vampiric_embrace_heal(100)  # 100 shadow damage
+    expected_heal = int(100 * 0.25)
+    assert p3.hp == hp_before + expected_heal, \
+        f"VE heal: expected +{expected_heal}, got +{p3.hp - hp_before}"
+    print(f"  18h: Vampiric Embrace: 100 shadow dmg → +{p3.hp - hp_before} HP ✓")
+
+    # --- 18i: Spirit Tap proc on kill ---
+    sim4 = CombatSimulation(num_mobs=5, seed=42)
+    p4 = sim4.player
+    for lvl in range(2, 13):
+        p4.xp = XP_TABLE[lvl]
+        sim4._check_level_up()
+    assert p4.talent_points.get("spirit_tap", 0) == 3
+    assert p4.spirit_tap_remaining == 0
+    # Kill a mob directly
+    mob4 = sim4.mobs[0]
+    mob4.alive = True
+    mob4.hp = 1
+    mob4.in_combat = True
+    mob4.target_player = True
+    p4.in_combat = True
+    sim4._damage_mob(mob4, 100)  # overkill
+    assert not mob4.alive
+    assert p4.spirit_tap_remaining > 0, "Spirit Tap should proc on kill"
+    print(f"  18i: Spirit Tap proc: remaining={p4.spirit_tap_remaining} ticks ✓")
+
+    # --- 18j: Dispersion at level 60 ---
+    sim5 = CombatSimulation(num_mobs=5, seed=42)
+    p5 = sim5.player
+    assert sim5.do_cast_dispersion() is False, "Dispersion should fail without talent"
+    for lvl in range(2, 61):
+        p5.xp = XP_TABLE[lvl]
+        sim5._check_level_up()
+    assert p5.level == 60
+    assert p5.talent_points.get("dispersion", 0) == 1
+    print(f"  18j: Dispersion unlocked at L60 ✓")
+
+    # --- 18k: Dispersion damage reduction ---
+    sim6 = CombatSimulation(num_mobs=5, seed=42)
+    p6 = sim6.player
+    for lvl in range(2, 61):
+        p6.xp = XP_TABLE[lvl]
+        sim6._check_level_up()
+    p6.hp = p6.max_hp
+    # Take damage without dispersion
+    hp_full = p6.hp
+    sim6._damage_player(100)
+    dmg_normal = hp_full - p6.hp
+    # Heal and take damage WITH dispersion
+    p6.hp = p6.max_hp
+    p6.dispersion_remaining = 12  # active
+    hp_full2 = p6.hp
+    sim6._damage_player(100)
+    dmg_dispersion = hp_full2 - p6.hp
+    assert dmg_dispersion < dmg_normal, \
+        f"Dispersion should reduce damage: normal={dmg_normal}, dispersion={dmg_dispersion}"
+    # Dispersion is -90%, so dispersion damage should be ~10% of raw
+    assert dmg_dispersion < dmg_normal * 0.5, \
+        f"Dispersion should reduce by ~90%: {dmg_dispersion} vs {dmg_normal}"
+    p6.dispersion_remaining = 0
+    print(f"  18k: Dispersion damage: normal={dmg_normal}, with dispersion={dmg_dispersion} ✓")
+
+    # --- 18l: Shadowform physical damage reduction ---
+    sim7 = CombatSimulation(num_mobs=5, seed=42)
+    p7 = sim7.player
+    for lvl in range(2, 41):
+        p7.xp = XP_TABLE[lvl]
+        sim7._check_level_up()
+    # Remove armor to isolate Shadowform effect
+    p7.total_armor = 0
+    p7.hp = p7.max_hp
+    hp1 = p7.hp
+    # Turn OFF Shadowform
+    p7.shadowform_active = False
+    sim7._damage_player(100)
+    dmg_no_sf = hp1 - p7.hp
+    # Turn ON Shadowform
+    p7.hp = p7.max_hp
+    hp2 = p7.hp
+    p7.shadowform_active = True
+    sim7._damage_player(100)
+    dmg_sf = hp2 - p7.hp
+    assert dmg_sf < dmg_no_sf, \
+        f"Shadowform should reduce physical damage: without={dmg_no_sf}, with={dmg_sf}"
+    print(f"  18l: Shadowform physical DR: without={dmg_no_sf}, with={dmg_sf} ✓")
+
+    # --- 18m: VT talent gate ---
+    sim8 = CombatSimulation(num_mobs=5, seed=42)
+    assert sim8.do_cast_vampiric_touch() is False, "VT should fail without talent"
+    p8 = sim8.player
+    for lvl in range(2, 51):
+        p8.xp = XP_TABLE[lvl]
+        sim8._check_level_up()
+    assert p8.talent_points.get("vampiric_touch", 0) == 1
+    print(f"  18m: Vampiric Touch unlocked at L50 ✓")
+
+    # --- 18n: Action masking for talent-gated spells ---
+    env = WoWSimEnv(num_mobs=10, seed=42)
+    obs, _ = env.reset()
+    mask = env.action_masks()
+    # At L1: Mind Flay (26), VT (27), Dispersion (28), Shadowform (29) all masked
+    assert not mask[26], "Mind Flay should be masked at L1 (no talent)"
+    assert not mask[27], "Vampiric Touch should be masked at L1 (no talent)"
+    assert not mask[28], "Dispersion should be masked at L1 (no talent)"
+    assert not mask[29], "Shadowform should be masked at L1 (no talent)"
+    print(f"  18n: Talent-gated spells masked at L1 ✓")
+
+    # --- 18o: Obs vector talent dims (indices 29-32) ---
+    env2 = WoWSimEnv(num_mobs=5, seed=42)
+    obs2, _ = env2.reset()
+    # At L1: target_has_vt=0, shadowform=0, dispersion=0, channeling=0
+    assert obs2[29] == 0.0, f"target_has_vt should be 0, got {obs2[29]}"
+    assert obs2[30] == 0.0, f"shadowform_active should be 0, got {obs2[30]}"
+    assert obs2[31] == 0.0, f"dispersion_active should be 0, got {obs2[31]}"
+    assert obs2[32] == 0.0, f"is_channeling should be 0, got {obs2[32]}"
+    # Level up to 40 for Shadowform
+    p_env = env2.sim.player
+    for lvl in range(2, 41):
+        p_env.xp = XP_TABLE[lvl]
+        env2.sim._check_level_up()
+    assert p_env.shadowform_active
+    obs3 = env2._build_obs(env2.sim.get_state_dict())
+    assert obs3[30] == 1.0, f"shadowform_active obs should be 1.0, got {obs3[30]}"
+    print(f"  18o: Talent obs dims [29-32] correct ✓")
+
+    # --- 18p: Build totals match 13/0/58 at L80 ---
+    sim9 = CombatSimulation(num_mobs=5, seed=42)
+    p9 = sim9.player
+    for lvl in range(2, 81):
+        p9.xp = XP_TABLE[lvl]
+        sim9._check_level_up()
+    assert p9.level == 80
+    total_pts = sum(p9.talent_points.values())
+    assert total_pts == 71, f"Expected 71 total talent points at L80, got {total_pts}"
+    shadow_pts = sum(v for k, v in p9.talent_points.items()
+                     if TALENT_DEFS[k]["tree"] == "shadow")
+    disc_pts = sum(v for k, v in p9.talent_points.items()
+                   if TALENT_DEFS[k]["tree"] == "discipline")
+    assert shadow_pts == 58, f"Expected 58 Shadow points, got {shadow_pts}"
+    assert disc_pts == 13, f"Expected 13 Discipline points, got {disc_pts}"
+    # Meditation should be 3/3
+    assert p9.talent_points.get("meditation", 0) == 3
+    print(f"  18p: L80 build: {shadow_pts}/0/{disc_pts} = 13/0/58, total={total_pts} ✓")
+
+    # --- 18q: Talents reset on sim reset ---
+    sim9.reset()
+    assert len(sim9.player.talent_points) == 0, "Talents should reset"
+    assert not sim9.player.shadowform_active, "Shadowform should reset"
+    assert sim9.player.spirit_tap_remaining == 0
+    assert sim9.player.dispersion_remaining == 0
+    print(f"  18q: Talents cleared on reset ✓")
+
+    print("  PASSED\n")
+
+
 if __name__ == "__main__":
     print("WoW Combat Simulation — Validation Tests\n")
     test_combat_engine()
@@ -2896,4 +3154,5 @@ if __name__ == "__main__":
     test_action_masking()
     test_eat_drink()
     test_spell_learning()
+    test_talent_system()
     print("=== ALL TESTS PASSED ===")

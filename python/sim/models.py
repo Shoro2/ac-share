@@ -16,6 +16,7 @@ from sim.constants import (
     FAMILY_INNER_FIRE, FAMILY_FORTITUDE,
     FAMILY_DEVOURING_PLAGUE, FAMILY_PSYCHIC_SCREAM, FAMILY_SHADOW_PROTECTION,
     FAMILY_DIVINE_SPIRIT, FAMILY_FEAR_WARD, FAMILY_HOLY_NOVA, FAMILY_DISPEL_MAGIC,
+    FAMILY_MIND_FLAY, FAMILY_VAMPIRIC_TOUCH, FAMILY_DISPERSION,
 )
 
 
@@ -364,6 +365,38 @@ SPELLS = {
     # ── Dispel Magic (R1-R2) ── instant, range 30, removes 1/2 buffs or debuffs
     527:   _sd(527, "Dispel Magic", FAMILY_DISPEL_MAGIC, 0, spell_range=30.0),
     988:   _sd(988, "Dispel Magic", FAMILY_DISPEL_MAGIC, 0, spell_range=30.0),
+
+    # ── Mind Flay (R1-R7) ── channeled 3s (6 ticks), range 30, 3 damage ticks
+    # DBC: Shadow channeled spell, 3 ticks over 3 seconds. Talent-granted (Mind Flay 1/1).
+    # dot_per_tick = per-tick base damage, dot_dur_ticks = 6 (3s channel), dot_interval = 2 (1s)
+    15407: _sd(15407, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=26, dot_dur_ticks=6, dot_interval=2),
+    17311: _sd(17311, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=43, dot_dur_ticks=6, dot_interval=2),
+    17312: _sd(17312, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=61, dot_dur_ticks=6, dot_interval=2),
+    17313: _sd(17313, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=84, dot_dur_ticks=6, dot_interval=2),
+    17314: _sd(17314, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=109, dot_dur_ticks=6, dot_interval=2),
+    18807: _sd(18807, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=136, dot_dur_ticks=6, dot_interval=2),
+    25387: _sd(25387, "Mind Flay", FAMILY_MIND_FLAY, 6, spell_range=30.0,
+              is_dot=True, dot_per_tick=165, dot_dur_ticks=6, dot_interval=2),
+
+    # ── Vampiric Touch (R1-R3) ── cast 1.5s, range 30, 15s DoT (3s ticks, 5 ticks)
+    # DBC: Shadow DoT, replenishes mana to party. Talent-granted (Vampiric Touch 1/1).
+    34914: _sd(34914, "Vampiric Touch", FAMILY_VAMPIRIC_TOUCH, 3, spell_range=30.0,
+              is_dot=True, dot_per_tick=65, dot_dur_ticks=30, dot_interval=6),
+    34916: _sd(34916, "Vampiric Touch", FAMILY_VAMPIRIC_TOUCH, 3, spell_range=30.0,
+              is_dot=True, dot_per_tick=100, dot_dur_ticks=30, dot_interval=6),
+    34917: _sd(34917, "Vampiric Touch", FAMILY_VAMPIRIC_TOUCH, 3, spell_range=30.0,
+              is_dot=True, dot_per_tick=145, dot_dur_ticks=30, dot_interval=6),
+
+    # ── Dispersion (R1) ── instant, 6s duration, 3min CD
+    # Talent-granted. -90% damage taken, +6% mana per second for 6 seconds.
+    47585: _sd(47585, "Dispersion", FAMILY_DISPERSION, 0,
+              is_buff=True, buff_dur=12, buff_val=0, cd=360),  # 3min CD = 360 ticks
 }
 
 
@@ -659,6 +692,21 @@ class Player:
     quests_completed_tick: int = 0      # quests completed this tick (consume-on-read)
     # Eat/Drink state
     is_eating: bool = False             # True while eating/drinking (regen 5% HP+Mana/s)
+    # ─── Talent System ─────────────────────────────────────────────────
+    talent_points: dict = field(default_factory=dict)  # talent_name -> current points
+    # Shadowform state (talent-granted persistent buff)
+    shadowform_active: bool = False
+    # Spirit Tap proc (after kill)
+    spirit_tap_remaining: int = 0       # ticks remaining on Spirit Tap proc
+    # Shadow Weaving stacks on current target (0-5)
+    # (tracked per mob via mob.shadow_weaving_stacks)
+    # Dispersion state
+    dispersion_remaining: int = 0       # ticks remaining (12 = 6s)
+    # Mind Flay channel state (using existing cast system)
+    channel_remaining: int = 0          # ticks remaining in channel
+    channel_spell_id: int = 0           # spell being channeled
+    channel_tick_timer: int = 0         # ticks until next channel damage tick
+    channel_target_uid: int = 0         # UID of channel target (for VT DoT slot)
 
     @property
     def total_bag_slots(self) -> int:
@@ -710,5 +758,14 @@ class Mob:
     spawn_x: float = 0.0
     spawn_y: float = 0.0
     spawn_z: float = 82.0
+    # Shadow Weaving debuff stacks (from talent, max 5)
+    shadow_weaving_stacks: int = 0
+    shadow_weaving_timer: int = 0     # ticks until stacks expire
+    # Vampiric Touch DoT (slot 4)
+    dot4_remaining: int = 0
+    dot4_timer: int = 0
+    dot4_damage_per_tick: int = 0
+    # Misery debuff (+spell hit, from talent)
+    misery_stacks: int = 0            # 0 or 1 (debuff active)
 
 

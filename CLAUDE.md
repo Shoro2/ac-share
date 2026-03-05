@@ -22,7 +22,8 @@ The sim environment (`python/sim/`) replicates the WoW combat system in pure Pyt
 - **~1000x faster** than live server training (no TCP, no server needed)
 - **WotLK 3.3.5 stat system** — all 10 classes, 5 primary stats, full combat rating conversions from DBC tables
 - **19-slot equipment system** — equip/unequip with automatic stat recalculation, combat-locked
-- **9 Priest spells** with spell power coefficients from AzerothCore `spell_bonus_data`
+- **13 Priest spells** (9 base + 4 talent-granted) with spell power coefficients from AzerothCore `spell_bonus_data`
+- **Talent system** — WotLK Shadow Priest 13/0/58 build, auto-assigned 1 point/level from L10-80 (71 points)
 - **Armor mitigation** using WotLK formula (Unit.cpp), spell crit from Intellect + rating
 - **Optional 3D terrain data** from real WoW files (maps/vmaps) via `test_3d_env.py`
 - **Full-world creature spawning** from AzerothCore CSV exports via `creature_db.py`
@@ -60,6 +61,7 @@ ac-share/
 │   │   ├── wow_sim_env.py       <- Gymnasium environment for the sim (Box(23), Discrete(12))
 │   │   ├── train_sim.py         <- MaskablePPO training on the sim (5 bots, action masking, no server needed)
 │   │   ├── test_sim.py          <- Validation tests (16 tests: engine, spaces, episode, benchmark, combat, levels, loot, vendor, quests, quest CSV loading, attributes, equipment, bags, combat resolution, action masking, eat/drink)
+│   │   ├── talent_data.py        <- Talent definitions + Shadow Priest 13/0/58 build order (71 points)
 │   │   ├── quest_db.py          <- Quest system: CSV loader + hardcoded fallback, objectives, NPC data, quest chains
 │   │   ├── terrain.py           <- SimTerrain wrapper for 3D terrain in the sim
 │   │   ├── creature_db.py       <- AzerothCore CSV creature loader with spatial indexing
@@ -291,7 +293,8 @@ Simulates the complete WoW 3.3.5 WotLK combat system in pure Python. All formula
 - **Natural difficulty gradient**: Wolves (L1) in the north -> Kobolds (L1-3) in the south/east
 - **WotLK 3.3.5 Attribute System** (see details below): 5 primary stats, combat ratings, spell power, armor mitigation
 - **19 Equipment Slots**: Full WoW gearing with stat recalculation on equip/unequip, combat-locked
-- **9 Priest Spells**: Smite (585), Lesser Heal (2050), SW:Pain (589), PW:Shield (17), Mind Blast (8092), Renew (139), Holy Fire (14914), Inner Fire (588), PW:Fortitude (1243)
+- **13 Priest Spells**: Smite (585), Lesser Heal (2050), SW:Pain (589), PW:Shield (17), Mind Blast (8092), Renew (139), Holy Fire (14914), Inner Fire (588), PW:Fortitude (1243), Mind Flay (15407, talent), Vampiric Touch (34914, talent), Dispersion (47585, talent), Shadowform (toggle)
+- **Talent System**: Shadow Priest 13/0/58 build from WarcraftTavern leveling guide, 1 point/level from L10-80. Includes passive bonuses (Darkness, Shadow Weaving, Misery, Spirit Tap, Twisted Faith, etc.) and talent-granted spells (Mind Flay@20, VE@30, Shadowform@40, VT@50, Dispersion@60)
 - **Spell Power Scaling**: All spells scale with `total_spell_power` via WotLK coefficients from `spell_bonus_data`
 - **Spell Crit**: All damage/heal spells can crit (150% multiplier) based on `total_spell_crit` from Intellect + rating
 - **Spell Miss**: Offensive spells use WotLK two-roll hit system — base 4% miss at equal level, +1% per level diff (up to +2), 17% at +3 level diff (boss penalty), hit rating reduces miss (floor 1%)
@@ -456,6 +459,17 @@ Called on equip, unequip, level-up, and buff changes. Computes:
 - `env3d`: `WoW3DEnvironment` instance for Area/Zone lookups via AreaTable.dbc
 - `creature_db`: `CreatureDB` instance for full-world chunk-based mob spawning
 
+### talent_data.py — Talent System
+
+Defines the WotLK Shadow Priest 13/0/58 talent build for the simulation:
+- **`TALENT_DEFS`**: Dict of all talent definitions (tree, tier, max points, effect description)
+- **`SHADOW_PRIEST_BUILD`**: List of 71 talent names in level order (L10-80)
+- **`get_talent_for_level(level)`**: Returns the talent to assign at a given level (None if <10 or >80)
+- **Key Milestones**: Spirit Tap@10, Darkness@15-19, Mind Flay@20, Imp Mind Blast@21-25, Shadow Weaving@26-28, VE@30, Shadow Focus@37-39, Shadowform@40, Misery@47-49, VT@50, Pain and Suffering@51-53, Twisted Faith@57-62, Dispersion@60, Shadow Power@63-67, Twin Disciplines@68-72, Imp Inner Fire@73-75, Imp PW:Fort@76-77, Meditation@78-80
+- **Passive Talents**: Darkness (+10% Shadow), Shadow Weaving (stacking debuff, +10% Shadow), Spirit Tap (Spirit on kill), Imp SW:Pain (+6%), Focused Mind (-15% mana MB/MF), Mind Melt (+6% crit MB/MF), Shadow Power (+100% crit bonus), Misery (+3% spell hit debuff), Twisted Faith (Spirit→SP, +10% MB/MF with SWP), Meditation (50% combat Spirit regen), Imp Inner Fire (+45% armor), Imp PW:Fort (+30% Stamina)
+- **Talent-Granted Spells**: Mind Flay (channeled, 3 ticks), Vampiric Touch (DoT + mana return), Shadowform (toggle, +15%/-15%), Dispersion (-90% dmg, +6% mana/s, 3min CD)
+- **Integration**: `CombatSimulation._assign_talent_point()` called on each level-up, `_get_talent_points()` for checking talent state
+
 ### quest_db.py — Quest System
 
 Loads quest definitions from AzerothCore CSV exports with hardcoded fallback:
@@ -518,15 +532,15 @@ Loads AzerothCore CSV exports for realistic item drops with full group/reference
 ### wow_sim_env.py — Gymnasium Sim Environment
 
 Extended replacement for `wow_env.py` with optional quest system:
-- **Action Space**: `Discrete(18)` — 17 base actions + Quest Interact
-- **Obs Space**: `Box(39,)` — 23 base dims + 10 stat dims + 6 quest dims
+- **Action Space**: `Discrete(30)` — 25 base actions + Quest Interact + 4 talent actions (Mind Flay, VT, Dispersion, Shadowform)
+- **Obs Space**: `Box(49,)` — 29 base dims + 4 talent dims + 10 stat dims + 6 quest dims
 - **Sparse Reward Design**: Focused on real outcomes only (see reward table below)
 - **Action Masking**: Invalid actions masked out (casting lock, GCD, mana, cooldowns, buff duplication, loot-in-combat). Bot learns strategic decisions (when to loot, heal timing, range, aggro). Vendor/quest NPC navigation remains as multi-step overrides.
 - **No Episode Step Limit**: Episode runs until death (bot should level as far as possible)
 - **Stall Detection**: Truncates episode after 3,000 steps without kill XP (quest XP alone does not reset the counter)
 - **OOM is NOT terminal**: Bot must learn to wait for mana regen
 
-**Action Space** — `Discrete(18)`:
+**Action Space** — `Discrete(30)`:
 | ID | Action |
 |---|---|
 | 0 | No-op (wait) |
@@ -547,8 +561,13 @@ Extended replacement for `wow_env.py` with optional quest system:
 | 15 | Cast Inner Fire (588) — self-buff: armor + spell power |
 | 16 | Cast PW:Fortitude (1243) — self-buff: +HP |
 | 17 | Eat/Drink — regen 5% HP+Mana/s, OOC only, interrupted by movement/damage/full |
+| 18-25 | Additional spell families (Flash Heal, DP, Psychic Scream, Shadow Prot, Divine Spirit, Fear Ward, Holy Nova, Dispel) |
+| 26 | Cast Mind Flay (15407) — channeled Shadow, talent-gated |
+| 27 | Cast Vampiric Touch (34914) — Shadow DoT, talent-gated |
+| 28 | Cast Dispersion (47585) — defensive CD, talent-gated |
+| 29 | Toggle Shadowform — +15% Shadow dmg, -15% phys taken, talent-gated |
 
-**Observation Vector** — `Box(shape=(39,), dtype=float32)`:
+**Observation Vector** — `Box(shape=(49,), dtype=float32)`:
 
 | Index | Value | Range |
 |---|---|---|
@@ -575,24 +594,29 @@ Extended replacement for `wow_env.py` with optional quest system:
 | 20 | mind_blast_ready | 0/1 |
 | 21 | target_has_holy_fire | 0/1 |
 | 22 | is_eating | 0/1 |
-| 23 | spell_power / 200 | 0-inf |
-| 24 | spell_crit / 50 | 0-inf |
-| 25 | spell_haste / 50 | 0-inf |
-| 26 | total_armor / 2000 | 0-inf |
-| 27 | attack_power / 500 | 0-inf |
-| 28 | melee_crit / 50 | 0-inf |
-| 29 | dodge / 50 | 0-inf |
-| 30 | hit_spell / 50 | 0-inf |
-| 31 | expertise / 50 | 0-inf |
-| 32 | armor_pen / 100 | 0-inf |
-| 33 | has_active_quest | 0/1 |
-| 34 | quest_progress (objectives ratio) | 0-1 |
-| 35 | quest_npc_nearby | 0/1 |
-| 36 | quest_npc_distance / 40 | 0-1 |
-| 37 | quest_npc_angle / pi | -1 to 1 |
-| 38 | quests_completed / 10 | 0-inf |
+| 23-28 | Additional buff/debuff dims (DP, Shadow Prot, Divine Spirit, Fear Ward, Psychic Scream CD, feared count) | 0/1 or 0-inf |
+| 29 | target_has_vampiric_touch | 0/1 |
+| 30 | shadowform_active | 0/1 |
+| 31 | dispersion_active | 0/1 |
+| 32 | is_channeling | 0/1 |
+| 33 | spell_power / 200 | 0-inf |
+| 34 | spell_crit / 50 | 0-inf |
+| 35 | spell_haste / 50 | 0-inf |
+| 36 | total_armor / 2000 | 0-inf |
+| 37 | attack_power / 500 | 0-inf |
+| 38 | melee_crit / 50 | 0-inf |
+| 39 | dodge / 50 | 0-inf |
+| 40 | hit_spell / 50 | 0-inf |
+| 41 | expertise / 50 | 0-inf |
+| 42 | armor_pen / 100 | 0-inf |
+| 43 | has_active_quest | 0/1 |
+| 44 | quest_progress (objectives ratio) | 0-1 |
+| 45 | quest_npc_nearby | 0/1 |
+| 46 | quest_npc_distance / 40 | 0-1 |
+| 47 | quest_npc_angle / pi | -1 to 1 |
+| 48 | quests_completed / 10 | 0-inf |
 
-Stat dims (23-32) reflect gear + buffs and update as the bot equips items or levels. Quest dims (33-38) are always present but zero when quests are disabled (`enable_quests=False`).
+Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect gear + buffs and update as the bot equips items or levels. Quest dims (43-48) are always present but zero when quests are disabled (`enable_quests=False`).
 
 **Initialization**: `WoWSimEnv(bot_name="SimBot", num_mobs=None, seed=None, data_root=None, creature_csv_dir=None, log_dir=None, log_interval=1, enable_quests=False)`
 - `data_root`: Path to WoW `Data/` directory -> enables 3D terrain (`SimTerrain`) + area lookups (`WoW3DEnvironment` with AreaTable.dbc)
@@ -683,7 +707,7 @@ Interactive map visualization for analyzing training episodes:
 
 ### test_sim.py — Validation Tests
 
-16 test functions:
+18 test functions:
 1. **test_combat_engine()**: Basic engine initialization, movement, targeting, spell casting (all 9 spells)
 2. **test_gym_env()**: Gymnasium spaces validation — Box(38,) obs, Discrete(17) actions
 3. **test_random_episode()**: 1000-step episode with random actions
@@ -700,6 +724,8 @@ Interactive map visualization for analyzing training episodes:
 14. **test_combat_resolution()**: WotLK melee attack table (single-roll: miss/dodge/parry/block/crit/crushing/normal), spell miss with level difference (4%/5%/6%/17%), spell hit two-roll system, mob crit 200% damage, block damage reduction by block_value, hit rating reduces miss, heal spells never miss, consume_events combat counters
 15. **test_action_masking()**: Action masking system: mask shape/dtype, casting lock (only noop), offensive spells need target, buff duplication masks, loot masked in combat (fight first), loot available OOC, OOM masks all spells, GCD blocks spells but allows movement, sell/quest masking, graceful fallback for masked actions
 16. **test_eat_drink()**: Eat/drink action: regen rate (5% HP+Mana/s), auto-stop when full, can't eat when full/in combat/casting, movement/turn/damage/aggro interrupts, state_dict is_eating field, action masking (masked in combat/full, only noop while eating), obs vector is_eating dim
+17. **test_spell_learning()**: Spell level gates, % mana costs from Spell.dbc, BaseMana scaling, level gate in combat_sim and action masks, PW:Fortitude Stamina bonus, Inner Fire armor/SP, Holy Fire/Mind Blast/Renew DBC values, buff durations
+18. **test_talent_system()**: Talent auto-assignment at L10+, Spirit Tap 3/3 at L12, Darkness 5/5 at L19, Mind Flay talent gate at L20, Shadowform auto-activation at L40, Shadowform toggle, Shadow damage modifiers (Darkness + Shadowform + Shadow Weaving), Vampiric Embrace healing (25% with Imp VE), Spirit Tap proc on kill, Dispersion unlock at L60, Dispersion -90% damage reduction, Shadowform -15% physical DR, VT talent gate at L50, action masking for talent-gated spells, obs vector talent dims [29-32], build totals 13/0/58 at L80, talent reset
 
 ### test_3d_env.py — 3D Terrain + Area System from Real WoW Data
 
@@ -921,13 +947,14 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 
 | Component | Status | Details |
 |---|---|---|
-| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 9 Priest spells, WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, full combat resolution (melee attack table + spell miss/crit), dodge/parry/block, mob AI, loot, XP, respawn, exploration, leveling (1-80) |
+| **CombatSimulation Engine** | done | 84 spawns + CreatureDB, 13 Priest spells (9 base + 4 talent), WotLK stat system (all 10 classes), 19-slot equipment, armor mitigation, full combat resolution (melee attack table + spell miss/crit), dodge/parry/block, mob AI, loot, XP, respawn, exploration, leveling (1-80), talent system |
+| **Talent System** | done | Shadow Priest 13/0/58 build, 71 talent points (L10-80), auto-assignment from predefined build order, talent-granted spells (Mind Flay, VT, Shadowform, Dispersion), passive bonuses (Darkness, Shadow Weaving, Misery, Spirit Tap, Twisted Faith, Meditation, etc.), action masking + obs vector integration |
 | **WotLK Attribute System** | done | 5 primary stats, all combat ratings (hit/crit/haste/dodge/parry/block/expertise/ArP/resilience), spell power coefficients, DBC-derived formulas, diminishing returns |
 | **Equipment System** | done | 19 WoW equipment slots, equip/unequip with stat recalculation, combat-locked, two-hand offhand clearing, dual-slot logic (rings/trinkets), item stats from CSV |
-| **WoWSimEnv (Gym Interface)** | done | Discrete(18) actions, Box(39) obs (23 base + 10 stat + 6 quest), sparse rewards, stall detection |
+| **WoWSimEnv (Gym Interface)** | done | Discrete(30) actions, Box(49) obs (29 base + 4 talent + 10 stat + 6 quest), sparse rewards, stall detection |
 | **train_sim.py (PPO Training)** | done | 5 bots, SubprocVecEnv, TensorBoard, gameplay metrics, episode logging |
 | **Loot Table System** | done | LootDB CSV loader, AzerothCore group/reference logic, item scores + individual stat types, upgrade detection, sim integration with fallback |
-| **test_sim.py (Validation)** | done | 10+ tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables, vendor system, quest system, quest CSV loading, attribute system, equipment |
+| **test_sim.py (Validation)** | done | 18 tests: engine, gym spaces, random episode, benchmark, scripted combat, level system, loot tables, vendor system, quest system, quest CSV loading, attribute system, bags, combat resolution, action masking, eat/drink, spell learning, talent system |
 | **3D Terrain System** | done | Maps/VMAPs parser, HeightCache, SpatialLOSChecker, SimTerrain wrapper |
 | **AreaTable.dbc Parser** | done | Reads all areas/zones/maps of the WoW world, on-demand tile loading |
 | **Exploration System** | done | 3-tier tracking (Area/Zone/Map), rewards, TensorBoard metrics |
