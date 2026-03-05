@@ -1400,6 +1400,19 @@ def main():
             else:
                 print("WARNING: --map-bounds needs exactly 4 values "
                       "(x_min,y_min,x_max,y_max), using defaults")
+        else:
+            # Auto-detect JSON sidecar file with bounds
+            sidecar = args.map_image.rsplit(".", 1)[0] + ".json"
+            if os.path.exists(sidecar):
+                try:
+                    import json
+                    with open(sidecar) as f:
+                        bd = json.load(f)
+                    wow_bounds = (bd["x_min"], bd["y_min"],
+                                  bd["x_max"], bd["y_max"])
+                    print(f"  Auto-loaded bounds from: {sidecar}")
+                except Exception:
+                    pass
         map_image_data = _load_map_background(args.map_image, wow_bounds)
         bounds_used = wow_bounds or EK_DEFAULT_BOUNDS
         print(f"Map background: {args.map_image}")
