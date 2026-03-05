@@ -376,6 +376,7 @@ class WoWSimEnv(gym.Env):
         obs = self._build_obs(self.last_state)
 
         # Log initial state
+        self._logged_mob_positions = set()
         if self._logger:
             self._logger.reset()
             self._logger.record_mobs([
@@ -383,6 +384,10 @@ class WoWSimEnv(gym.Env):
                  "x": m.spawn_x, "y": m.spawn_y, "level": m.level}
                 for m in self.sim.mobs
             ])
+            self._logged_mob_positions = {
+                (round(m.spawn_x, 2), round(m.spawn_y, 2))
+                for m in self.sim.mobs
+            }
             p = self.sim.player
             self._logger.record_step(
                 0, p.x, p.y, p.hp / max(1, p.max_hp),
@@ -486,6 +491,24 @@ class WoWSimEnv(gym.Env):
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
+
+        # Record newly loaded chunk mobs for the visualizer
+        if self._logger and self.sim.creature_db:
+            new_mobs = [
+                m for m in self.sim.mobs
+                if (round(m.spawn_x, 2), round(m.spawn_y, 2))
+                not in self._logged_mob_positions
+            ]
+            if new_mobs:
+                self._logger.record_mobs_incremental([
+                    {"entry": m.template.entry, "name": m.template.name,
+                     "x": m.spawn_x, "y": m.spawn_y, "level": m.level}
+                    for m in new_mobs
+                ])
+                self._logged_mob_positions.update(
+                    (round(m.spawn_x, 2), round(m.spawn_y, 2))
+                    for m in new_mobs
+                )
 
         # ─── Consume Events ───────────────────────────────────────
         events = self.sim.consume_events()
