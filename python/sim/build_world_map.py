@@ -44,11 +44,22 @@ import zipfile
 from io import BytesIO
 from dataclasses import dataclass
 
-# Default paths on the dev machine
-_DEFAULT_DATA_ROOT = r"C:\wowstuff\WoWKI_serv\Data"
-_DEFAULT_ZIP = os.path.join(_DEFAULT_DATA_ROOT, "1659008088-atlasworldmap_wotlk.zip")
-_DEFAULT_DBC = os.path.join(_DEFAULT_DATA_ROOT, "dbc", "WorldMapArea.dbc")
-_DEFAULT_OUTPUT = os.path.join(_DEFAULT_DATA_ROOT, "world_map.png")
+# Default paths — repo data/ directory, with dev-machine fallback
+_REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_REPO_DATA = os.path.join(_REPO_ROOT, "data")
+_DEV_DATA_ROOT = r"C:\wowstuff\WoWKI_serv\Data"
+
+def _pick(repo_path, dev_path):
+    """Return repo path if it exists, else dev path."""
+    return repo_path if os.path.exists(repo_path) else dev_path
+
+_DEFAULT_ZIP = _pick(
+    os.path.join(_REPO_DATA, "1659008088-atlasworldmap_wotlk.zip"),
+    os.path.join(_DEV_DATA_ROOT, "1659008088-atlasworldmap_wotlk.zip"))
+_DEFAULT_DBC = _pick(
+    os.path.join(_REPO_DATA, "dbc", "WorldMapArea.dbc"),
+    os.path.join(_DEV_DATA_ROOT, "dbc", "WorldMapArea.dbc"))
+_DEFAULT_OUTPUT = os.path.join(_REPO_DATA, "world_map.png")
 
 try:
     from PIL import Image
@@ -211,22 +222,20 @@ def make_zip_tile_loader(zf: zipfile.ZipFile):
     Only uses BLP files. Auto-detects any path prefix inside the ZIP
     (e.g. ``1659008088-atlasworldmap_wotlk/Interface/WorldMap/...``).
     """
-    # Build a lookup: normalised suffix -> actual zip path (BLP only)
+    # Build a lookup: lower-cased suffix -> actual zip path (BLP only)
     blp_lookup = {}
     for name in zf.namelist():
         if not name.lower().endswith(".blp"):
             continue
-        # Find "Interface/WorldMap/" part and key on everything after it
-        idx = name.find("Interface/WorldMap/")
-        if idx == -1:
-            # try case-insensitive
-            idx = name.lower().find("interface/worldmap/")
+        # Find "interface/worldmap/" part (case-insensitive) and key on it
+        low = name.lower()
+        idx = low.find("interface/worldmap/")
         if idx != -1:
-            suffix = name[idx:]  # e.g. Interface/WorldMap/Elwynn/Elwynn1.blp
+            suffix = low[idx:]  # e.g. interface/worldmap/elwynn/elwynn1.blp
             blp_lookup[suffix] = name
 
     def loader(zone_name, tile_num):
-        key = f"Interface/WorldMap/{zone_name}/{zone_name}{tile_num}.blp"
+        key = f"interface/worldmap/{zone_name.lower()}/{zone_name.lower()}{tile_num}.blp"
         actual = blp_lookup.get(key)
         if actual:
             try:
