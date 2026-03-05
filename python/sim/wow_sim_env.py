@@ -179,6 +179,7 @@ class WoWSimEnv(gym.Env):
         self._ep_equipment_upgrades = 0
         self._steps_since_kill_xp = 0      # stall detector: reset episode after 3k steps without kill XP
         self._idle_steps = 0              # noop-without-casting steps (idle time tracking)
+        self._prev_vendor_dist = None     # vendor approach shaping state
 
     # Family ID -> action ID mapping for mask building
     _FAMILY_ACTION = {
@@ -438,6 +439,7 @@ class WoWSimEnv(gym.Env):
         self._ep_equipment_upgrades = 0
         self._steps_since_kill_xp = 0
         self._idle_steps = 0
+        self._prev_vendor_dist = None
         self._prev_sim_kills = 0            # track sim.kills for event logging
         self._prev_target_dist = None       # for approach shaping
         self.last_state = self.sim.get_state_dict()
@@ -571,12 +573,25 @@ class WoWSimEnv(gym.Env):
             curr_target_hp = state.get('target_hp', 0)
 
         # 1. Step-Penalty (time pressure — forces the bot to act)
-        reward -= 0.001
+        #    Reduced from 0.001 to 0.0005: longer episodes (better survival)
+        #    were being punished more than short ones, causing reward decline
+        #    despite improving gameplay metrics.
+        reward -= 0.0005
 
-        # 2. Idle-Penalty (Noop without casting = wasted time)
-        if executed_action == 0 and not is_casting_now:
-            reward -= 0.005
+        # 2. Idle-Penalty (Noop without casting/eating = wasted time)
+        #    Increased from 0.005 to 0.01 to reduce ~60% idle ratio.
+        #    Eating counts as productive (regenerating), so not penalized.
+        is_eating_now = state.get('is_eating') == 'true'
+        if executed_action == 0 and not is_casting_now and not is_eating_now:
+            reward -= 0.01
             self._idle_steps += 1
+
+        # 2b. Eat/Drink shaping — small reward for eating when low on HP/Mana
+        #     Encourages using eat/drink instead of idle-waiting for regen.
+        #     Only rewards while actively eating and not yet full.
+        if is_eating_now:
+            missing = (1.0 - hp_pct) + (1.0 - mana_pct)  # 0-2 range
+            reward += 0.003 * missing  # up to +0.006/tick when both bars empty
 
         # 3. Damage-Reward (gradient toward kills — can't be faked)
         if (t_exists > 0.5
@@ -661,6 +676,27 @@ class WoWSimEnv(gym.Env):
         if sell_copper > 0:
             reward += min(sell_copper * 0.005, 2.0)
             self._ep_sell_copper += sell_copper
+
+        # 8b. Vendor approach shaping — nudge bot toward vendor when inventory is filling up
+        #     Only active when inventory ≥60% full and not in combat.
+        #     Scales with fullness so nearly-full inventory creates stronger pull.
+        p = self.sim.player
+        free = state.get('free_slots', p.total_bag_slots)
+        total = max(p.total_bag_slots, 1)
+        inv_fullness = 1.0 - (free / total)  # 0.0 = empty, 1.0 = full
+        if inv_fullness >= 0.6 and not p.in_combat:
+            vendor = self.sim.get_nearest_vendor()
+            if vendor is not None:
+                vdist = math.sqrt((vendor.x - p.x) ** 2 + (vendor.y - p.y) ** 2)
+                if self._prev_vendor_dist is not None:
+                    delta = self._prev_vendor_dist - vdist  # positive = closer
+                    # Scale by fullness: 60% full = 0.6x, 100% full = 1.0x
+                    reward += max(-0.05, min(delta * 0.02 * inv_fullness, 0.1))
+                self._prev_vendor_dist = vdist
+            else:
+                self._prev_vendor_dist = None
+        else:
+            self._prev_vendor_dist = None
 
         # 9. Exploration (new area/zone/map — naturally capped, can't be farmed)
         new_areas = events.get("new_areas", 0)

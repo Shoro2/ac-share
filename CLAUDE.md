@@ -633,8 +633,9 @@ Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect
 
 | Signal | Value | Notes |
 |---|---|---|
-| Step Penalty | -0.001 | per tick |
-| Idle Penalty | -0.005 | Noop without casting |
+| Step Penalty | -0.0005 | per tick (reduced from -0.001 to avoid punishing longer survival) |
+| Idle Penalty | -0.01 | Noop without casting/eating (increased from -0.005) |
+| Eat/Drink Shaping | +0.003 * missing | missing = (1-hp%) + (1-mana%), encourages eating over idle-waiting |
 | Approach | clip(delta * 0.03, -0.1, +0.15) | potential-based, closer to target |
 | Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
 | XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill, scales with XP |
@@ -642,6 +643,7 @@ Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect
 | Equipment Upgrade | min(1.0 + diff * 0.15, 5.0) | class-aware scoring, scaled by score improvement |
 | Loot | per-item quality reward (0.1 grey to 5.0 epic) + min(copper * 0.01, 1.0) | penalty if inventory full |
 | Sell | 1.0 + 7.0 * fullness + min(copper * 0.005, 2.0) | scales with inventory fill (1-8) + copper bonus |
+| Vendor Approach | clip(delta * 0.02 * fullness, -0.05, +0.1) | only when inventory ≥60% full, OOC, scales with fullness |
 | New Area Entered | +1.0 | real WoW Area ID or grid fallback (once per episode) |
 | New Zone Entered | +3.0 | real WoW Zone ID (once per episode) |
 | New Map Entered | +10.0 | real WoW Map ID (once per episode) |
