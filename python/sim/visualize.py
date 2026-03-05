@@ -143,6 +143,35 @@ def _load_map_background(image_path, wow_bounds=None):
     img = Image.open(image_path)
     img_arr = np.asarray(img)
 
+    # Auto-crop uniform-color bars at image edges (e.g. blue bars from
+    # map generation tools).  A row/column is considered a "bar" if its
+    # per-channel standard deviation is very low (< 8) — meaning it's
+    # nearly a single solid colour that differs from the map content.
+    def _is_bar_row(arr, row_idx):
+        row = arr[row_idx, :, :3].astype(float)
+        return np.all(np.std(row, axis=0) < 8)
+
+    def _is_bar_col(arr, col_idx):
+        col = arr[:, col_idx, :3].astype(float)
+        return np.all(np.std(col, axis=0) < 8)
+
+    h, w = img_arr.shape[:2]
+    top, bottom, left, right = 0, h, 0, w
+    # Crop from bottom
+    while bottom > top + 1 and _is_bar_row(img_arr, bottom - 1):
+        bottom -= 1
+    # Crop from top
+    while top < bottom - 1 and _is_bar_row(img_arr, top):
+        top += 1
+    # Crop from right
+    while right > left + 1 and _is_bar_col(img_arr, right - 1):
+        right -= 1
+    # Crop from left
+    while left < right - 1 and _is_bar_col(img_arr, left):
+        left += 1
+    if top != 0 or bottom != h or left != 0 or right != w:
+        img_arr = img_arr[top:bottom, left:right]
+
     # After coordinate rotation: display_x = -wow_y, display_y = wow_x
     disp_x_min = -y_max
     disp_x_max = -y_min
