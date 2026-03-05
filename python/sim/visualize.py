@@ -48,6 +48,11 @@ import matplotlib.patches as mpatches
 from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from matplotlib.widgets import Slider, CheckButtons, Button, RadioButtons
+try:
+    from PIL import Image
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(THIS_DIR)
@@ -101,6 +106,65 @@ def _rot_xy(x, y):
 def _rot_xs_ys(xs, ys):
     """Rotate lists of WoW coordinates 90° CCW for display."""
     return ([-y for y in ys], list(xs))
+
+
+# ─── Map Background ─────────────────────────────────────────────────────
+
+# Default bounds for the Eastern Kingdoms continent map.
+# These are the WoW world-coordinates (x_min, y_min, x_max, y_max) that the
+# map image covers.  The values below correspond to the full EK continent map
+# as exported by common WoW map tools.  Override with --map-bounds if your
+# image uses different extents.
+EK_DEFAULT_BOUNDS = (-11700.0, -12000.0, 4000.0, 4000.0)  # x_min, y_min, x_max, y_max
+
+
+def _load_map_background(image_path, wow_bounds=None):
+    """Load a map background image and prepare it for display.
+
+    Args:
+        image_path: Path to the map image file.
+        wow_bounds: Tuple (x_min, y_min, x_max, y_max) in WoW world coords
+                    describing the area covered by the image.  If None, uses
+                    EK_DEFAULT_BOUNDS.
+
+    Returns:
+        (rotated_image_array, display_extent) where display_extent is
+        (disp_x_min, disp_x_max, disp_y_min, disp_y_max) in rotated coords.
+    """
+    if wow_bounds is None:
+        wow_bounds = EK_DEFAULT_BOUNDS
+
+    x_min, y_min, x_max, y_max = wow_bounds
+
+    if not _HAS_PIL:
+        raise ImportError("Pillow is required for --map-image. "
+                          "Install with: pip install Pillow")
+    img = Image.open(image_path)
+    # Rotate image 90° CCW to match coordinate rotation (x,y) → (-y, x)
+    img_rot = img.rotate(90, expand=True)
+    img_arr = np.asarray(img_rot)
+
+    # After coordinate rotation: display_x = -wow_y, display_y = wow_x
+    disp_x_min = -y_max
+    disp_x_max = -y_min
+    disp_y_min = x_min
+    disp_y_max = x_max
+
+    return img_arr, (disp_x_min, disp_x_max, disp_y_min, disp_y_max)
+
+
+def _draw_map_background(ax, map_image_data):
+    """Draw the map background image onto the axes.
+
+    Args:
+        ax: matplotlib Axes.
+        map_image_data: Tuple (image_array, extent) from _load_map_background.
+    """
+    if map_image_data is None:
+        return
+    img_arr, extent = map_image_data
+    ax.imshow(img_arr, extent=extent, aspect="equal", zorder=0, alpha=0.7,
+              interpolation="bilinear")
 
 
 # ─── Data structures ────────────────────────────────────────────────────
@@ -520,7 +584,8 @@ def _draw_trail(ax, rec, color_idx):
 # ─── Static plot (PNG export) ────────────────────────────────────────────
 
 def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
-             output: str = None, show: bool = True):
+             output: str = None, show: bool = True,
+             map_image_data=None):
     """Plot the full map with bot trails and events (rotated 90° CCW)."""
     fig, ax = plt.subplots(1, 1, figsize=(14, 10))
     fig.set_facecolor("#1a1a2e")
@@ -538,6 +603,9 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
         spine.set_color("#444")
 
     ax.grid(True, alpha=0.15, color="white", linewidth=0.5)
+
+    # Map background
+    _draw_map_background(ax, map_image_data)
 
     # Mob spawns
     all_snapshots = []
@@ -623,7 +691,8 @@ class InteractiveViewer:
     selector, and a toggleable log window."""
 
     def __init__(self, recordings, title="WoW Sim \u2014 Interactive Map",
-                 runs=None, top_kills=5, bot_name=None):
+                 runs=None, top_kills=5, bot_name=None,
+                 map_image_data=None):
         """
         Args:
             recordings: List of BotRecording for the initially selected run.
@@ -631,10 +700,12 @@ class InteractiveViewer:
             runs: Dict {run_name: dir_path} for run selection. None = no selector.
             top_kills: Show only top N episodes by kills (0 = all).
             bot_name: Bot name filter for loading (passed to load_recordings_from_logs).
+            map_image_data: Tuple (image_array, extent) from _load_map_background.
         """
         self._runs = runs or {}
         self._top_kills = top_kills
         self._bot_name_filter = bot_name
+        self._map_image_data = map_image_data
         self._run_names = sorted(self._runs.keys()) if self._runs else []
         self._current_run_idx = 0
 
@@ -1138,6 +1209,9 @@ class InteractiveViewer:
             spine.set_color("#444")
         self.ax_map.grid(True, alpha=0.15, color="white", linewidth=0.5)
 
+        # ── Map background ────────────────────────────────────────────
+        _draw_map_background(self.ax_map, self._map_image_data)
+
         # ── Mob spawns ───────────────────────────────────────────────
         all_snaps = []
         for rec in visible:
@@ -1206,7 +1280,8 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
                        output: str = None,
                        data_root: str = None,
                        creature_csv_dir: str = None,
-                       show: bool = True):
+                       show: bool = True,
+                       map_image_data=None):
     """Run multiple episodes and overlay all routes on one map."""
     from sim.wow_sim_env import WoWSimEnv
 
@@ -1232,17 +1307,20 @@ def run_multi_episodes(n_episodes: int = 5, max_steps: int = 4000,
         # Static PNG only
         plot_map(recordings,
                  title=f"WoW Sim \u2014 {n_episodes} Episodes Overlay",
-                 output=output, show=False)
+                 output=output, show=False,
+                 map_image_data=map_image_data)
     else:
         # Interactive viewer
         if output:
             plot_map(recordings,
                      title=f"WoW Sim \u2014 {n_episodes} Episodes Overlay",
-                     output=output, show=False)
+                     output=output, show=False,
+                     map_image_data=map_image_data)
             print(f"Map saved: {output}")
         viewer = InteractiveViewer(
             recordings,
-            title=f"WoW Sim \u2014 {n_episodes} Episodes")
+            title=f"WoW Sim \u2014 {n_episodes} Episodes",
+            map_image_data=map_image_data)
         viewer.show()
 
     return recordings
@@ -1288,6 +1366,15 @@ def main():
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
 
+    # Map background
+    parser.add_argument("--map-image", type=str, default=None,
+                        help="Path to a map background image (e.g. Eastern "
+                             "Kingdoms continent map PNG/JPG)")
+    parser.add_argument("--map-bounds", type=str, default=None,
+                        help="WoW world-coordinate bounds of the map image "
+                             "as 'x_min,y_min,x_max,y_max' (default: EK "
+                             "continent bounds -11700,-12000,4000,4000)")
+
     # Shared options
     parser.add_argument("--output", type=str, default=None,
                         help="Also save a static PNG to this path")
@@ -1301,6 +1388,23 @@ def main():
         from stable_baselines3 import PPO
         model = PPO.load(args.model)
         print(f"Loaded model: {args.model}")
+
+    # Load map background if specified
+    map_image_data = None
+    if args.map_image:
+        wow_bounds = None
+        if args.map_bounds:
+            parts = [float(v.strip()) for v in args.map_bounds.split(",")]
+            if len(parts) == 4:
+                wow_bounds = tuple(parts)
+            else:
+                print("WARNING: --map-bounds needs exactly 4 values "
+                      "(x_min,y_min,x_max,y_max), using defaults")
+        map_image_data = _load_map_background(args.map_image, wow_bounds)
+        bounds_used = wow_bounds or EK_DEFAULT_BOUNDS
+        print(f"Map background: {args.map_image}")
+        print(f"  WoW bounds: x=[{bounds_used[0]}, {bounds_used[2]}] "
+              f"y=[{bounds_used[1]}, {bounds_used[3]}]")
 
     if args.run:
         # ─── Fallback mode: run simulation directly ─────────────────
@@ -1318,6 +1422,7 @@ def main():
             data_root=args.data_root,
             creature_csv_dir=args.creature_data,
             show=not args.no_show,
+            map_image_data=map_image_data,
         )
 
     else:
@@ -1366,13 +1471,15 @@ def main():
             n_eps = len(filtered)
             plot_map(filtered,
                      title=f"WoW Sim \u2014 Top {n_eps} Episodes by Kills",
-                     output=args.output, show=False)
+                     output=args.output, show=False,
+                     map_image_data=map_image_data)
 
         # Interactive viewer (default)
         if not args.no_show:
             viewer = InteractiveViewer(
                 recordings, runs=runs, top_kills=top_n,
-                bot_name=args.bot)
+                bot_name=args.bot,
+                map_image_data=map_image_data)
             viewer.show()
         elif not args.output:
             print("Nothing to do: --no-show without --output.")
