@@ -130,14 +130,14 @@ def test_gym_env():
     env = WoWSimEnv(num_mobs=10, seed=42)
 
     # Check spaces
-    assert env.observation_space.shape == (49,), f"Obs shape: {env.observation_space.shape}"
+    assert env.observation_space.shape == (52,), f"Obs shape: {env.observation_space.shape}"
     assert env.action_space.n == 30, f"Action space: {env.action_space.n}"
     print(f"  Obs space: {env.observation_space.shape}, dtype={env.observation_space.dtype}")
     print(f"  Action space: Discrete({env.action_space.n})")
 
     # Reset
     obs, info = env.reset()
-    assert obs.shape == (49,), f"Obs shape after reset: {obs.shape}"
+    assert obs.shape == (52,), f"Obs shape after reset: {obs.shape}"
     assert obs.dtype == np.float32
     print(f"  Reset obs: shape={obs.shape}, range=[{obs.min():.3f}, {obs.max():.3f}]")
 
@@ -151,7 +151,7 @@ def test_gym_env():
     # Step with each action
     for action in range(30):
         obs, reward, done, trunc, info = env.step(action)
-        assert obs.shape == (49,)
+        assert obs.shape == (52,)
         if done:
             obs, info = env.reset()
 
@@ -909,10 +909,10 @@ def test_vendor_system():
     assert p_items.items_sold == 0, "items_sold should be cleared after consume"
     print(f"  8k: items_sold in consume_events: {events['items_sold']} ✓")
 
-    # --- Test 8l: AI-driven sell via WoWSimEnv (action 8 triggers vendor nav) ---
+    # --- Test 8l: Proximity-based sell via WoWSimEnv (no nav override) ---
     env = WoWSimEnv(num_mobs=5, seed=42)
     obs, _ = env.reset()
-    # Fill inventory with items (fill to near capacity)
+    # Fill inventory with items
     fill_count = DEFAULT_BACKPACK_SLOTS - 2
     for i in range(fill_count):
         env.sim.player.inventory.append(InventoryItem(
@@ -920,26 +920,24 @@ def test_vendor_system():
             sell_price=10, score=3.0, inventory_type=0))
     env.sim.player.recalculate_free_slots()
 
-    # Action 8 should activate vendor navigation
+    # Sell should be masked when far from vendor
+    mask = env.action_masks()
+    assert mask[8] == False, "Sell should be masked when far from vendor"
+
+    # Place player at vendor and sell should be unmasked
+    v = VENDOR_DATA[0]
+    env.sim.player.x = v["x"]
+    env.sim.player.y = v["y"]
     total_slots = env.sim.player.total_bag_slots
-    assert not env._vendor_nav_active, "Should start inactive"
+    mask = env.action_masks()
+    assert mask[8] == True, "Sell should be valid when near vendor with items"
+
+    # Execute sell
     obs, reward, done, trunc, info = env.step(8)
-    assert env._vendor_nav_active or env.sim.player.free_slots == total_slots, \
-        "Action 8 should activate vendor nav (or sell if already at vendor)"
-
-    # Run steps until vendor nav completes (max 500 steps)
-    for _ in range(500):
-        obs, reward, done, trunc, info = env.step(0)  # noop while override navigates
-        if done or trunc:
-            break
-        if env.sim.player.free_slots == total_slots:
-            break  # sold!
-
     assert env.sim.player.free_slots == total_slots, \
         f"Bot should have sold all items, but free_slots={env.sim.player.free_slots}"
-    assert not env._vendor_nav_active, "Vendor nav should be deactivated after sell"
     assert env.sim.player.copper > 0, "Should have earned copper from selling"
-    print(f"  8l: AI-driven sell: copper={env.sim.player.copper}, "
+    print(f"  8l: Proximity-based sell: copper={env.sim.player.copper}, "
           f"slots={env.sim.player.free_slots} ✓")
 
     # --- Test 8m: Sell reward scales with inventory fullness ---
@@ -1114,12 +1112,12 @@ def test_quest_system():
     # --- Test 9k: WoWSimEnv with quests ---
     env = WoWSimEnv(seed=42, enable_quests=True)
     obs, _ = env.reset()
-    assert obs.shape == (49,), f"Expected obs(49,), got {obs.shape}"
+    assert obs.shape == (52,), f"Expected obs(52,), got {obs.shape}"
     assert env.action_space.n == 30, f"Expected 30 actions, got {env.action_space.n}"
     # Quest dims should be non-zero (quest NPCs are visible)
-    assert obs[38] > 0 or obs[36] == 0.0, "Quest NPC obs should reflect nearby NPCs"
+    assert obs[48] > 0 or obs[46] == 0.0, "Quest NPC obs should reflect nearby NPCs"
     print(f"  9k: WoWSimEnv(enable_quests=True): obs={obs.shape}, "
-          f"quest_dims={obs[43:49]} ✓")
+          f"quest_dims={obs[46:52]} ✓")
 
     # --- Test 9l: Quest reward in env ---
     # Set up: accept quest, complete it, turn in, check reward
@@ -2508,7 +2506,7 @@ def test_action_masking():
     p3.gcd_remaining = 0
     print(f"  15h: GCD blocks all spells but allows movement ✓")
 
-    # --- 15i: Sell masked in combat / without inventory ---
+    # --- 15i: Sell masked in combat / without inventory / far from vendor ---
     env4 = WoWSimEnv(seed=300)
     obs4, _ = env4.reset()
     p4 = env4.sim.player
@@ -2519,7 +2517,21 @@ def test_action_masking():
     assert len(p4.inventory) == 0
     mask = env4.action_masks()
     assert mask[8] == False, "Sell should be masked with empty inventory"
-    print(f"  15i: Sell correctly masked (combat / empty inventory) ✓")
+    # Add items but stay far from vendor
+    for i in range(5):
+        p4.inventory.append(InventoryItem(
+            entry=100+i, name=f"Junk_{i}", quality=0,
+            sell_price=10, score=3.0, inventory_type=0))
+    p4.recalculate_free_slots()
+    mask = env4.action_masks()
+    assert mask[8] == False, "Sell should be masked when far from vendor"
+    # Move to vendor — sell should be valid
+    v = VENDOR_DATA[0]
+    p4.x = v["x"]
+    p4.y = v["y"]
+    mask = env4.action_masks()
+    assert mask[8] == True, "Sell should be valid near vendor with items"
+    print(f"  15i: Sell correctly masked (combat / empty / far from vendor) ✓")
 
     # --- 15j: Quest interact masked without quest system ---
     env5 = WoWSimEnv(seed=400, enable_quests=False)
@@ -2534,7 +2546,7 @@ def test_action_masking():
     obs6, _ = env6.reset()
     env6.sim.player.mana = 0
     obs6, reward, done, trunc, info = env6.step(5)  # try Smite with no mana
-    assert obs6.shape == (49,), "Step with invalid action should not crash"
+    assert obs6.shape == (52,), "Step with invalid action should not crash"
     print(f"  15k: Stepping with masked action is graceful (no crash) ✓")
 
     print("  PASSED\n")

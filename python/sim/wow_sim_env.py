@@ -1,8 +1,8 @@
 """
 WoW Simulation Gymnasium Environment — Drop-in replacement for WoWEnv.
 
-Observation space: Box(45,) — 29 base dims + 10 stat dims + 6 quest dims.
-Action space: Discrete(26) — 25 base actions + 1 quest action.
+Observation space: Box(52,) — 29 base dims + 10 stat dims + 3 vendor dims + 4 talent dims + 6 quest dims.
+Action space: Discrete(30) — 25 base actions + 1 quest action + 4 talent actions.
 Runs ~1000x faster than the real server.
 
 All spells auto-select the highest rank available at the player's current level.
@@ -14,10 +14,11 @@ Uses **action masking** instead of override logic: invalid actions are masked
 out so the bot can only choose from valid actions.  Game-mechanic constraints
 (casting lock, GCD, cooldowns, buff duplication, etc.) are hard-masked.
 Strategic decisions (when to loot, heal timing, range management, aggro
-recovery) are left to the bot to learn.
+recovery, vendor/quest NPC navigation) are left to the bot to learn.
 
-Vendor and quest NPC navigation remain as multi-step overrides (too complex
-for the bot to learn pathfinding from scratch at this stage).
+Sell (action 8) is only unmasked when within SELL_RANGE of a vendor.
+Quest interact (action 11) is only unmasked when within QUEST_NPC_RANGE.
+The bot must navigate using move_forward + turn to reach NPCs.
 
 Usage:
     env = WoWSimEnv()                        # single bot (no quests)
@@ -72,14 +73,16 @@ class WoWSimEnv(gym.Env):
     """
     Simulated WoW environment with optional quest system.
 
-    Observation Space: Box(39,) — 23 base + 10 stat + 6 quest dimensions
-    Action Space: Discrete(19) — 18 base actions + quest interact
+    Observation Space: Box(52,) — 29 base + 10 stat + 3 vendor + 4 talent + 6 quest dims
+    Action Space: Discrete(30)
 
-    Stat dimensions (indices 23-32):
-      [23] spell_power/200, [24] spell_crit/50, [25] spell_haste/50,
-      [26] total_armor/2000, [27] attack_power/500, [28] melee_crit/50,
-      [29] dodge/50, [30] hit_spell/50, [31] expertise/50, [32] armor_pen/100
-    Quest dimensions (indices 33-38) are always present but zero when
+    Stat dimensions (indices 33-42):
+      [33] spell_power/200, [34] spell_crit/50, [35] spell_haste/50,
+      [36] total_armor/2000, [37] attack_power/500, [38] melee_crit/50,
+      [39] dodge/50, [40] hit_spell/50, [41] expertise/50, [42] armor_pen/100
+    Vendor dimensions (indices 43-45):
+      [43] vendor_nearby (0/1), [44] vendor_distance/40, [45] vendor_angle/pi
+    Quest dimensions (indices 46-51) are always present but zero when
     quests are disabled, keeping the interface stable for model transfer.
     """
 
@@ -93,7 +96,7 @@ class WoWSimEnv(gym.Env):
 
         self.action_space = spaces.Discrete(30)
         self.observation_space = spaces.Box(
-            low=-1.0, high=float('inf'), shape=(49,), dtype=np.float32
+            low=-1.0, high=float('inf'), shape=(52,), dtype=np.float32
         )
 
         self.bot_name = bot_name
@@ -176,8 +179,6 @@ class WoWSimEnv(gym.Env):
         self._ep_equipment_upgrades = 0
         self._steps_since_kill_xp = 0      # stall detector: reset episode after 3k steps without kill XP
         self._idle_steps = 0              # noop-without-casting steps (idle time tracking)
-        self._vendor_nav_active = False    # True while bot is walking to vendor / selling
-        self._quest_nav_active = False     # True while bot is walking to quest NPC
 
     # Family ID -> action ID mapping for mask building
     _FAMILY_ACTION = {
@@ -223,7 +224,8 @@ class WoWSimEnv(gym.Env):
         - Buff already active → that buff masked
         - No dead mob in loot range → loot masked
         - In combat → loot masked (don't run to corpse mid-fight)
-        - Vendor/quest nav not active → sell/quest interact masked
+        - Not near vendor → sell masked (proximity-based)
+        - Not near quest NPC → quest interact masked (proximity-based)
 
         Strategic decisions (bot must learn):
         - When to loot vs keep fighting (loot only available OOC + in range)
@@ -232,6 +234,7 @@ class WoWSimEnv(gym.Env):
         - Aggro recovery (targeting in combat)
         - Walking to corpse after kill
         - When to eat/drink vs keep going
+        - Navigating to vendor/quest NPCs (move_forward + turn)
         """
         mask = np.ones(self.action_space.n, dtype=bool)
         p = self.sim.player
@@ -367,25 +370,31 @@ class WoWSimEnv(gym.Env):
         if not has_lootable:
             mask[7] = False
 
-        # ── Sell (8): only valid during vendor nav (override handles walk) ──
-        # Bot triggers action 8 to START vendor nav; once active, override walks there.
-        # Mask sell if: in combat, no inventory, or nav already active (wait for arrival)
+        # ── Sell (8): proximity-based — must be within SELL_RANGE of vendor ──
         if in_combat or len(p.inventory) == 0:
             mask[8] = False
-        elif self._vendor_nav_active:
-            mask[8] = False  # already walking to vendor, wait
+        else:
+            vendor = self.sim.get_nearest_vendor()
+            if vendor is None:
+                mask[8] = False
+            else:
+                vdist = math.sqrt((vendor.x - p.x) ** 2 + (vendor.y - p.y) ** 2)
+                if vdist > self.sim.SELL_RANGE:
+                    mask[8] = False
 
-        # ── Quest interact (11): only when quests enabled and NPC reachable ──
+        # ── Quest interact (11): proximity-based — must be within QUEST_NPC_RANGE ──
         if not self._quest_db:
             mask[11] = False
         elif in_combat:
             mask[11] = False
-        elif self._quest_nav_active:
-            mask[11] = False  # already walking to quest NPC, wait
         else:
             qnpc, _ = self.sim.get_best_quest_npc()
             if qnpc is None:
                 mask[11] = False
+            else:
+                qdist = math.sqrt((qnpc.x - p.x) ** 2 + (qnpc.y - p.y) ** 2)
+                if qdist > self.sim.QUEST_NPC_RANGE:
+                    mask[11] = False
 
         # ── Eat/Drink (17): only OOC, not casting, not already eating, not full ──
         if in_combat or p.is_casting:
@@ -431,8 +440,6 @@ class WoWSimEnv(gym.Env):
         self._idle_steps = 0
         self._prev_sim_kills = 0            # track sim.kills for event logging
         self._prev_target_dist = None       # for approach shaping
-        self._vendor_nav_active = False
-        self._quest_nav_active = False
         self.last_state = self.sim.get_state_dict()
         obs = self._build_obs(self.last_state)
 
@@ -461,116 +468,69 @@ class WoWSimEnv(gym.Env):
         p = self.sim.player
         action = int(action)
 
-        # ─── Vendor/Quest Navigation Overrides ──────────────────────
-        # These are multi-step macro actions: bot triggers action 8/11,
-        # then the override auto-walks to the NPC over multiple ticks.
-        # Combat interrupts navigation (aggro takes priority).
         executed_action = action  # track what actually ran (for idle detection)
 
-        if action == 8 and not p.in_combat and not self._vendor_nav_active:
-            self._vendor_nav_active = True
-        if action == 11 and not p.in_combat and not self._quest_nav_active:
-            self._quest_nav_active = True
-
-        if p.in_combat and self._vendor_nav_active:
-            self._vendor_nav_active = False
-        if p.in_combat and self._quest_nav_active:
-            self._quest_nav_active = False
-
-        nav_handled = False  # True when nav override consumed this tick
-
-        if self._quest_nav_active and not p.in_combat:
-            qnpc, _ = self.sim.get_best_quest_npc()
-            if qnpc:
-                qdist = math.sqrt((qnpc.x - p.x) ** 2 + (qnpc.y - p.y) ** 2)
-                if qdist <= self.sim.QUEST_NPC_RANGE:
-                    self.sim.do_quest_interact()
-                    self._quest_nav_active = False
-                    executed_action = 11
-                else:
-                    self.sim.do_move_to(qnpc.x, qnpc.y)
-                    executed_action = 0
-                nav_handled = True
-            else:
-                self._quest_nav_active = False
-
-        if self._vendor_nav_active and not p.in_combat and not nav_handled:
-            vendor = self.sim.get_nearest_vendor()
-            if vendor:
-                vdist = math.sqrt((vendor.x - p.x) ** 2 + (vendor.y - p.y) ** 2)
-                if vdist <= self.sim.SELL_RANGE:
-                    self.sim.do_sell()
-                    self._vendor_nav_active = False
-                    executed_action = 8
-                else:
-                    self.sim.do_move_to(vendor.x, vendor.y)
-                    executed_action = 0
-                nav_handled = True
-            else:
-                self._vendor_nav_active = False
-
-        # ─── Execute Action (no overrides — masking handles validity) ──
-        if not nav_handled:
-            if action == 0:
-                self.sim.do_noop()
-            elif action == 1:
-                self.sim.do_move_forward()
-            elif action == 2:
-                self.sim.do_turn_left()
-            elif action == 3:
-                self.sim.do_turn_right()
-            elif action == 4:
-                self.sim.do_target_nearest()
-            elif action == 5:
-                self.sim.do_cast_smite()
-            elif action == 6:
-                self.sim.do_cast_heal()
-            elif action == 7:
-                self.sim.do_loot()
-            elif action == 8:
-                self.sim.do_sell()
-            elif action == 9:
-                self.sim.do_cast_sw_pain()
-            elif action == 10:
-                self.sim.do_cast_pw_shield()
-            elif action == 11:
-                self.sim.do_quest_interact()
-            elif action == 12:
-                self.sim.do_cast_mind_blast()
-            elif action == 13:
-                self.sim.do_cast_renew()
-            elif action == 14:
-                self.sim.do_cast_holy_fire()
-            elif action == 15:
-                self.sim.do_cast_inner_fire()
-            elif action == 16:
-                self.sim.do_cast_fortitude()
-            elif action == 17:
-                self.sim.do_eat_drink()
-            elif action == 18:
-                self.sim.do_cast_flash_heal()
-            elif action == 19:
-                self.sim.do_cast_devouring_plague()
-            elif action == 20:
-                self.sim.do_cast_psychic_scream()
-            elif action == 21:
-                self.sim.do_cast_shadow_protection()
-            elif action == 22:
-                self.sim.do_cast_divine_spirit()
-            elif action == 23:
-                self.sim.do_cast_fear_ward()
-            elif action == 24:
-                self.sim.do_cast_holy_nova()
-            elif action == 25:
-                self.sim.do_cast_dispel_magic()
-            elif action == 26:
-                self.sim.do_cast_mind_flay()
-            elif action == 27:
-                self.sim.do_cast_vampiric_touch()
-            elif action == 28:
-                self.sim.do_cast_dispersion()
-            elif action == 29:
-                self.sim.do_toggle_shadowform()
+        # ─── Execute Action (masking handles validity — no overrides) ──
+        if action == 0:
+            self.sim.do_noop()
+        elif action == 1:
+            self.sim.do_move_forward()
+        elif action == 2:
+            self.sim.do_turn_left()
+        elif action == 3:
+            self.sim.do_turn_right()
+        elif action == 4:
+            self.sim.do_target_nearest()
+        elif action == 5:
+            self.sim.do_cast_smite()
+        elif action == 6:
+            self.sim.do_cast_heal()
+        elif action == 7:
+            self.sim.do_loot()
+        elif action == 8:
+            self.sim.do_sell()
+        elif action == 9:
+            self.sim.do_cast_sw_pain()
+        elif action == 10:
+            self.sim.do_cast_pw_shield()
+        elif action == 11:
+            self.sim.do_quest_interact()
+        elif action == 12:
+            self.sim.do_cast_mind_blast()
+        elif action == 13:
+            self.sim.do_cast_renew()
+        elif action == 14:
+            self.sim.do_cast_holy_fire()
+        elif action == 15:
+            self.sim.do_cast_inner_fire()
+        elif action == 16:
+            self.sim.do_cast_fortitude()
+        elif action == 17:
+            self.sim.do_eat_drink()
+        elif action == 18:
+            self.sim.do_cast_flash_heal()
+        elif action == 19:
+            self.sim.do_cast_devouring_plague()
+        elif action == 20:
+            self.sim.do_cast_psychic_scream()
+        elif action == 21:
+            self.sim.do_cast_shadow_protection()
+        elif action == 22:
+            self.sim.do_cast_divine_spirit()
+        elif action == 23:
+            self.sim.do_cast_fear_ward()
+        elif action == 24:
+            self.sim.do_cast_holy_nova()
+        elif action == 25:
+            self.sim.do_cast_dispel_magic()
+        elif action == 26:
+            self.sim.do_cast_mind_flay()
+        elif action == 27:
+            self.sim.do_cast_vampiric_touch()
+        elif action == 28:
+            self.sim.do_cast_dispersion()
+        elif action == 29:
+            self.sim.do_toggle_shadowform()
 
         # ─── Advance Simulation ───────────────────────────────────
         self.sim.tick()
@@ -804,7 +764,7 @@ class WoWSimEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _build_obs(self, data: dict) -> np.ndarray:
-        """Build observation vector — 23 base + 10 stat + 6 quest = 39 total."""
+        """Build observation vector — 29 base + 10 stat + 3 vendor + 4 talent + 6 quest = 52 total."""
         max_hp = max(1, data['max_hp'])
         hp_pct = data['hp'] / max_hp
         mana_pct = data['power'] / max(1, data['max_power'])
@@ -870,7 +830,10 @@ class WoWSimEnv(gym.Env):
         stat_expertise = data.get('expertise', 0) / 50.0       # expertise% / 50
         stat_arp = data.get('armor_pen', 0) / 100.0            # ArP% / 100
 
-        # Quest observations (dims 33-38) — always present, zero when quests disabled
+        # Vendor observations (dims 43-45) — nearest vendor info for navigation
+        vendor_obs = self._compute_vendor_obs(data)
+
+        # Quest observations (dims 46-51) — always present, zero when quests disabled
         quest_obs = self._compute_quest_obs(data)
 
         return np.array([
@@ -889,18 +852,44 @@ class WoWSimEnv(gym.Env):
             stat_sp, stat_spell_crit, stat_spell_haste, stat_armor,
             stat_ap, stat_melee_crit, stat_dodge, stat_hit,
             stat_expertise, stat_arp,
+            *vendor_obs,
             *quest_obs,
         ], dtype=np.float32)
+
+    def _compute_vendor_obs(self, data: dict):
+        """Compute vendor observation features (3 dimensions).
+
+        [43] vendor_nearby           (0/1, vendor exists in world)
+        [44] vendor_distance / 40    (0-1, normalized distance to nearest vendor)
+        [45] vendor_angle / pi       (-1 to 1, relative angle to nearest vendor)
+        """
+        vendor = self.sim.get_nearest_vendor()
+        if vendor is None:
+            return (0.0, 0.0, 0.0)
+
+        dx = vendor.x - data['x']
+        dy = vendor.y - data['y']
+        dist = math.sqrt(dx * dx + dy * dy)
+        vendor_dist = min(dist, 40.0) / 40.0
+        vendor_angle_abs = math.atan2(dy, dx)
+        rel = vendor_angle_abs - data['o']
+        while rel > math.pi:
+            rel -= 2 * math.pi
+        while rel < -math.pi:
+            rel += 2 * math.pi
+        vendor_angle = rel / math.pi
+
+        return (1.0, vendor_dist, vendor_angle)
 
     def _compute_quest_obs(self, data: dict):
         """Compute quest observation features (6 dimensions).
 
-        [39] has_active_quest        (0/1)
-        [40] quest_progress          (0-1, ratio of completed objectives)
-        [41] quest_npc_nearby        (0/1, relevant quest NPC exists)
-        [42] quest_npc_distance / 40 (0-1, normalized distance)
-        [43] quest_npc_angle / pi    (-1 to 1, relative angle)
-        [44] quests_completed / 10   (0-inf, total completed this episode)
+        [46] has_active_quest        (0/1)
+        [47] quest_progress          (0-1, ratio of completed objectives)
+        [48] quest_npc_nearby        (0/1, relevant quest NPC exists)
+        [49] quest_npc_distance / 40 (0-1, normalized distance)
+        [50] quest_npc_angle / pi    (-1 to 1, relative angle)
+        [51] quests_completed / 10   (0-inf, total completed this episode)
         """
         if not self._quest_db:
             return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
