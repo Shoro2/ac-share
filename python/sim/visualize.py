@@ -116,7 +116,7 @@ def _rot_xs_ys(xs, ys):
 # map image covers.  The values below correspond to the full EK continent map
 # as exported by common WoW map tools.  Override with --map-bounds if your
 # image uses different extents.
-EK_DEFAULT_BOUNDS = (-11700.0, -12000.0, 4000.0, 4000.0)  # x_min, y_min, x_max, y_max
+EK_DEFAULT_BOUNDS = (-11300.0, -12000.0, 4400.0, 4000.0)  # x_min, y_min, x_max, y_max
 
 
 def _load_map_background(image_path, wow_bounds=None):
