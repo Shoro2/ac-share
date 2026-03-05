@@ -112,25 +112,25 @@ ac-share/
   +----------------------------+          |  |   TCP :5000, JSON state stream   |
   | 84 hardcoded spawns        |          |  +----------------+-----------------+
   | + CreatureDB (full world)  |          |                   | TCP
-  | 9 Spells, WotLK Stats     |          |                   |
+  | 17 Spells, WotLK Stats    |          |                   |
   | 19-slot Gearing, Leveling  |          |  +----------------v-----------------+
   | Optional: 3D terrain       |          |  |   WoWEnv (python/wow_env.py)     |
-  +------------+---------------+          |  |   Action: Discrete(12)           |
-               | direct (in-process)      |  |   Obs:    Box(23,)               |
+  +------------+---------------+          |  |   Action: Discrete(30)           |
+               | direct (in-process)      |  |   Obs:    Box(52,)               |
                |                          |  +----------------+-----------------+
   +------------v---------------+          |                   |
   |  WoWSimEnv (Gymnasium)     |          |          +--------v----------+
   |  python/sim/wow_sim_env    |          |          | train.py / etc.   |
   +----------------------------+          |          +-------------------+
-  | Action: Discrete(18)      |          |
-  | Obs:    Box(39,)           |          |
-  | Similar override logic     |          |
+  | Action: Discrete(30)      |          |
+  | Obs:    Box(52,)           |          |
+  | Action masking (MaskPPO)   |          |
   | Sparse reward design       |<---------+  ** Same interface **
   +----------+-----------------+          |
              |                            |
     +--------v----------+                 |
     |  train_sim.py     |                 |
-    |  5 bots, PPO      |                 |
+    |  5 bots, MaskPPO  |                 |
     |  ~5000 FPS        |                 |
     +-------------------+                 |
 ```
@@ -156,6 +156,33 @@ Every 400ms (or 500ms keepalive) the server sends a JSON line:
       "casting": "false",
       "free_slots": 14,
       "equipped_upgrade": "false",
+      "has_shield": "false",
+      "target_has_sw_pain": "false",
+      "has_renew": "false",
+      "has_inner_fire": "false",
+      "has_fortitude": "false",
+      "mind_blast_ready": "true",
+      "target_has_holy_fire": "false",
+      "is_eating": "false",
+      "target_has_devouring_plague": "false",
+      "has_shadow_protection": "false",
+      "has_divine_spirit": "false",
+      "has_fear_ward": "false",
+      "psychic_scream_ready": "true",
+      "target_has_vampiric_touch": "false",
+      "shadowform_active": "false",
+      "dispersion_active": "false",
+      "is_channeling": "false",
+      "spell_power": 0,
+      "spell_crit": 0.0,
+      "spell_haste": 0.0,
+      "total_armor": 0,
+      "attack_power": 0.0,
+      "melee_crit": 0.0,
+      "dodge": 0.0,
+      "hit_spell": 0.0,
+      "expertise": 0.0,
+      "armor_pen": 0.0,
       "target_status": "alive",
       "target_hp": 42,
       "target_level": 1,
@@ -163,8 +190,6 @@ Every 400ms (or 500ms keepalive) the server sends a JSON line:
       "loot_copper": 0,
       "loot_score": 0,
       "leveled_up": "false",
-      "has_shield": "false",
-      "target_has_sw_pain": "false",
       "tx": -8900.0, "ty": -110.0, "tz": 81.0,
       "nearby_mobs": [
         {
@@ -183,7 +208,7 @@ Every 400ms (or 500ms keepalive) the server sends a JSON line:
 }
 ```
 
-**Important**: `combat`, `casting`, `equipped_upgrade`, `leveled_up`, `has_shield`, `target_has_sw_pain` are strings (`"true"`/`"false"`), not JSON booleans. `xp_gained`, `loot_copper`, `loot_score` are reset after sending (consume-on-read).
+**Important**: All boolean fields (`combat`, `casting`, `has_shield`, `has_renew`, `has_inner_fire`, `has_fortitude`, `mind_blast_ready`, `target_has_holy_fire`, `is_eating`, `target_has_devouring_plague`, `has_shadow_protection`, `has_divine_spirit`, `has_fear_ward`, `psychic_scream_ready`, `target_has_vampiric_touch`, `shadowform_active`, `dispersion_active`, `is_channeling`, `equipped_upgrade`, `leveled_up`, `target_has_sw_pain`) are strings (`"true"`/`"false"`), not JSON booleans. `xp_gained`, `loot_copper`, `loot_score` are reset after sending (consume-on-read). Stat fields (`spell_power`, `spell_crit`, etc.) are numeric values.
 
 ### Python -> Server (Commands)
 
@@ -207,13 +232,14 @@ Format: `<playerName>:<actionType>:<value>\n`
 
 ### wow_env.py — Gymnasium Environment (Live Server)
 
-**Class**: `WoWEnv(gym.Env)`
+**Class**: `WoWEnv(gym.Env)` — **Sim-parity edition**: same spaces, rewards, and masking as `WoWSimEnv`.
 
-**Initialization**: `WoWEnv(host='127.0.0.1', port=5000, bot_name=None)`
+**Initialization**: `WoWEnv(host='127.0.0.1', port=5000, bot_name=None, enable_quests=False)`
 - `bot_name=None`: adopts the first player in the stream
 - `bot_name="Bota"`: explicitly filters for this name
+- `enable_quests=True`: enables quest observations (requires server support)
 
-**Action Space** — `Discrete(12)`:
+**Action Space** — `Discrete(30)` — identical to WoWSimEnv:
 | ID | Action |
 |---|---|
 | 0 | No-op (wait) |
@@ -222,52 +248,55 @@ Format: `<playerName>:<actionType>:<value>\n`
 | 3 | turn_right |
 | 4 | Target mob (nearest from nearby_mobs via target_guid) |
 | 5 | Cast Smite (Spell 585) |
-| 6 | Cast Heal (Spell 2050) |
+| 6 | Cast Lesser Heal (Spell 2050) |
 | 7 | Loot (nearest dead creature via loot_guid) |
-| 8 | Sell (to vendor, only in vendor mode) |
+| 8 | Sell (to vendor, proximity-based) |
 | 9 | Cast SW:Pain (Spell 589) |
 | 10 | Cast PW:Shield (Spell 17) |
-| 11 | Quest NPC Interact (accept/turn-in, with auto-navigation) |
+| 11 | Quest NPC Interact |
+| 12 | Cast Mind Blast (Spell 8092) |
+| 13 | Cast Renew (Spell 139) |
+| 14 | Cast Holy Fire (Spell 14914) |
+| 15 | Cast Inner Fire (Spell 588) |
+| 16 | Cast PW:Fortitude (Spell 1243) |
+| 17 | Eat/Drink |
+| 18-25 | Additional spells (Flash Heal, DP, Psychic Scream, Shadow Prot, Divine Spirit, Fear Ward, Holy Nova, Dispel) |
+| 26 | Cast Mind Flay (Spell 15407) — talent-gated |
+| 27 | Cast Vampiric Touch (Spell 34914) — talent-gated |
+| 28 | Cast Dispersion (Spell 47585) — talent-gated |
+| 29 | Toggle Shadowform — talent-gated |
 
-**Observation Vector** — `Box(shape=(23,), dtype=float32)`:
+**Observation Vector** — `Box(shape=(52,), dtype=float32)` — identical to WoWSimEnv:
 | Index | Value | Range |
 |---|---|---|
-| 0 | hp_pct (HP/MaxHP) | 0-1 |
-| 1 | mana_pct (Mana/MaxMana) | 0-1 |
-| 2 | target_hp / 100 | 0-inf |
-| 3 | target_exists (1=alive, 0=else) | 0/1 |
-| 4 | in_combat | 0/1 |
-| 5 | target_distance / 40 (clamped) | 0-1 |
-| 6 | relative_angle / pi | -1 to 1 |
-| 7 | is_casting | 0/1 |
-| 8 | mob_count (nearby mobs / 10) | 0-inf |
-| 9 | free_slots / 20 | 0-1 |
-| 10 | closest_mob_distance / 40 | 0-1 |
-| 11 | closest_mob_angle / pi | -1 to 1 |
-| 12 | num_attackers / 5 | 0-inf |
-| 13 | target_level / 10 | 0-inf |
-| 14 | player_level / 10 | 0-inf |
-| 15 | has_shield | 0/1 |
-| 16 | target_has_sw_pain | 0/1 |
-| 17 | has_active_quest | 0/1 |
-| 18 | quest_progress (objectives ratio) | 0-1 |
-| 19 | quest_npc_nearby | 0/1 |
-| 20 | quest_npc_distance / 40 | 0-1 |
-| 21 | quest_npc_angle / pi | -1 to 1 |
-| 22 | quests_completed / 10 | 0-inf |
+| 0-16 | Same base dims as sim (HP%, Mana%, target, combat, distance, etc.) | mixed |
+| 17-22 | Buff states (has_renew, has_inner_fire, has_fortitude, mind_blast_ready, target_has_holy_fire, is_eating) | 0/1 |
+| 23-28 | Extended states (target_has_dp, has_shadow_prot, has_divine_spirit, has_fear_ward, psychic_scream_ready, num_feared) | 0/1 or 0-inf |
+| 29-32 | Talent states (target_has_vt, shadowform_active, dispersion_active, is_channeling) | 0/1 |
+| 33-42 | Combat stats (spell_power/200, spell_crit/50, spell_haste/50, armor/2000, AP/500, melee_crit/50, dodge/50, hit_spell/50, expertise/50, armor_pen/100) | 0-inf |
+| 43-45 | Vendor navigation (vendor_nearby, vendor_distance/40, vendor_angle/pi) | 0/1 or -1 to 1 |
+| 46-51 | Quest tracking (has_active_quest, quest_progress, quest_npc_nearby, distance, angle, quests_completed/10) | mixed |
 
-Quest dims (17-22) are always present but zero when quests are disabled (`enable_quests=False`).
+**Action Masking** (replaces old override logic — same as sim):
+- Casting → only noop allowed
+- Eating → only noop allowed
+- GCD active (client-side tracking) → all spells masked
+- OOM (<5% mana) → all spells masked
+- Offensive spells → need alive target
+- Buff duplication → already-active buff masked
+- Loot → need dead mob in range AND not in combat
+- Sell → need vendor within SELL_RANGE (proximity-based)
+- Quest interact → disabled unless `enable_quests=True`
 
-**Override Logic** (overrides RL decisions):
-1. **Vendor Mode**: If `free_slots < 2` and not in combat -> navigates to nearest vendor from NPC memory, sells automatically
-2. **Aggro Recovery**: In combat without target -> finds mob attacking the bot, targets it
-3. **Cast Guard**: During casting, movement/turning/other casts are suppressed
-4. **Loot Automation**: Dead target -> navigates to corpse via `do_move_to`, loots automatically at <=3 units
-5. **Range Management**: Stops forward movement at <25 units to target
-6. **Heal Block**: Heal is blocked at HP > 85%
-7. **Shield Block**: PW:Shield blocked if already shielded
-8. **SW:Pain Block**: SW:Pain blocked if already active on target
-9. **Sell Block**: Action 8 only allowed in vendor mode
+**Reward Design** — Sparse, matching sim:
+- Step penalty: -0.001 (was -0.01)
+- Idle penalty: -0.005 (was -0.03)
+- XP/Kill: 10.0 + xp * 0.5 (was 3.0 + xp * 0.05)
+- Death: -15.0 terminal (was -5.0)
+- Level-up: +15.0 NOT terminal (was +15.0 terminal)
+- OOM: NOT terminal (was -2.0 terminal)
+- Exploration: +1.0/area, +3.0/zone, +10.0/map (grid-based, was missing)
+- Stall detection: 3k steps without kill XP (was hard 4k step limit)
 
 **NPC Memory System**:
 - File: `npc_memory_{bot_name}.json` (isolated per bot)
@@ -648,26 +677,27 @@ Talent dims (29-32) track talent-granted spell states. Stat dims (33-42) reflect
 | Quest Completion | +20.0 * quests | per quest turned in (+ quest XP via kill signal) |
 | Death | -15.0 | terminal, overrides all other rewards |
 
-#### Live Rewards (wow_env.py — More Shaped)
+#### Live Rewards (wow_env.py — Sim Parity)
 
 | Signal | Value | Notes |
 |---|---|---|
-| Step Penalty | -0.01 | per tick |
-| Idle Penalty | -0.03 | Noop without casting |
-| Discovery | +0.5 | new mob GUID added to memory |
-| Approach | clip(delta * 0.05, -0.2, +0.3) | potential-based, closer to target |
-| Damage Dealt | min(dmg * 0.03, 1.0) | damage to target |
-| Facing | quality * 0.08 | in combat, facing target |
-| XP/Kill | 3.0 + min(xp * 0.05, 2.0) | ~5 per kill |
-| Level-Up | +15.0 | terminal |
-| Equipment Upgrade | +3.0 | |
-| Loot | min((copper * 0.01) + (score * 0.2), 3.0) | capped |
-| Sell | +2.0 | slots freed |
-| Action-Specific | +/-0.1 to 0.5 | context-based bonuses for Smite/Heal/SW:Pain/PW:Shield |
-| Death | -5.0 | terminal |
-| OOM (<5% Mana) | -2.0 | terminal |
+| Step Penalty | -0.001 | per tick (matches sim) |
+| Idle Penalty | -0.005 | Noop without casting (matches sim) |
+| Approach | clip(delta * 0.03, -0.1, +0.15) | potential-based (matches sim) |
+| Damage Dealt | min(dmg * 0.03, 1.0) | damage to target (matches sim) |
+| XP/Kill | 10.0 + xp * 0.5 | ~35 per 50-XP kill (matches sim) |
+| Level-Up | +15.0 * levels | NOT terminal (matches sim) |
+| Equipment Upgrade | min(1.0 + diff * 0.15, 5.0) | class-aware scoring (matches sim) |
+| Loot | per-item quality reward (0.1 grey to 5.0 epic) + min(copper * 0.01, 1.0) | quality-based (matches sim) |
+| Sell | 1.0 + 7.0 * fullness + min(copper * 0.005, 2.0) | scales with inventory fill (matches sim) |
+| New Area Entered | +1.0 | grid-based (50x50 units, matches sim fallback) |
+| New Zone Entered | +3.0 | grid-based (200x200 units, matches sim fallback) |
+| New Map Entered | +10.0 | hardcoded Map 0 for now |
+| Quest Completion | +20.0 * quests | per quest turned in (matches sim) |
+| Death | -15.0 | terminal (matches sim) |
+| OOM | NOT terminal | bot must learn to wait for regen (matches sim) |
 
-**Key Differences**: The sim uses a **mostly sparse reward** design with light approach shaping, while the live env uses **more reward shaping** (facing, discovery, action-specific bonuses). Both have approach shaping (sim: clip to [-0.1, +0.15], live: clip to [-0.2, +0.3]). The sim has a harsher death penalty (-15 vs -5) and higher XP/kill reward (10+xp*0.5 vs 3+xp*0.05). OOM is only terminal in the live env. Stall detection: sim truncates after 3k steps without kill XP (quest XP does not count).
+**Parity**: Both sim and live now use **identical sparse reward design**. Approach shaping: clip to [-0.1, +0.15]. Same XP/kill multiplier (10+xp*0.5). Same death penalty (-15). OOM is not terminal in either. Stall detection: both truncate after 3k steps without kill XP.
 
 ### sim_logger.py — Episode Logging System
 
@@ -767,15 +797,18 @@ Map 0 (Eastern Kingdoms)
        +- ...
 ```
 
-### train.py — PPO Training (Live Server)
+### train.py — MaskablePPO Training (Live Server)
 
 - **Bots**: `["Bota", "Botb", "Botc", "Botd", "Bote"]` (5 parallel environments)
 - **Vectorization**: `SubprocVecEnv` (separate processes per bot)
-- **Algorithm**: PPO with `MlpPolicy` (2-layer FC network)
-- **Hyperparameters**: `n_steps=128`, `batch_size=64`, `ent_coef=0.01`, `total_timesteps=10000`
-- **Logs**: TensorBoard in `logs/PPO_0/`
-- **Model Saving**: `models/PPO/wow_bot_v1.zip` (on completion), `wow_bot_interrupted.zip` (on Ctrl+C)
-- **Status**: Only `wow_bot_interrupted.zip` would exist — training was never fully completed
+- **Algorithm**: **MaskablePPO** (from `sb3_contrib`) with `ActionMasker` wrapper — matching sim
+- **Hyperparameters**: `n_steps=512`, `batch_size=128`, `ent_coef=0.01`, `learning_rate=3e-4`, `gamma=0.97`, `n_epochs=8` — matching sim
+- **Logs**: TensorBoard in `logs/`
+- **TensorBoard Metrics**: Same as sim — `gameplay/ep_areas_explored`, `gameplay/ep_zones_explored`, `gameplay/ep_levels_gained`, `gameplay/ep_final_level`, `gameplay/ep_quests_completed`, `gameplay/ep_equipment_upgrades`, etc.
+- **Model Saving**: `models/PPO/wow_bot_v1.zip` (auto-versioned), `wow_bot_interrupted.zip` (on Ctrl+C)
+- **Transfer from sim**: `python train.py --resume models/PPO/wow_bot_sim_v1.zip --lr 1e-4`
+- **`--enable-quests`**: Optional, enables quest system observations
+- **Status**: Ready for sim-pretrained model transfer
 
 ### run_model.py — Inference
 
@@ -966,20 +999,25 @@ Logs go to `logs/PPO_2/`. Shows: FPS, Rewards, KL, Entropy, Value/Policy Loss + 
 | **Quest System** | done | CSV loading (~9500 quests from AzerothCore DB) + 3 hardcoded fallback quests, quest NPCs (~3170 from CSV), quest chains, obs/action space extended, rewards, TensorBoard metrics |
 | **Visualization** | done | Interactive map viewer with episode slider, zoom, bot filters, event log |
 | **Action Masking (sim)** | done | Game-mechanic masks (casting, GCD, mana, cooldowns, buffs, loot-in-combat). Bot learns strategy (loot timing, heal, range, aggro). Vendor/quest nav remain as overrides. MaskablePPO from sb3_contrib. |
-| **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, override logic, shaped rewards |
-| **C++ AI Controller Module** | done | Bot spawning, TCP server, state publishing, command processing, per-player mob lists |
+| **wow_env.py (Live Server)** | done | TCP connection, NPC memory, blacklist, action masking (sim parity), sparse rewards, Discrete(30) actions, Box(52) obs, exploration tracking, stall detection, MaskablePPO compatible |
+| **C++ AI Controller Module** | done | Bot spawning, TCP server, state publishing (all buff/debuff/stat fields for sim parity), command processing, per-player mob lists |
 | **auto_grind.py** | done | Hybrid runner with farm route + RL policy |
-| **train.py (Live Training)** | done | Multi-bot PPO, but only interrupted runs so far |
+| **train.py (Live Training)** | done | Multi-bot MaskablePPO with action masking (sim parity), sim hyperparameters, extended TensorBoard metrics, --resume for sim model transfer |
 
 ### Known Gaps & Parity Differences
 
 | Problem | Area | Severity | Details |
 |---|---|---|---|
-| **Exploration missing in wow_env.py** | Live Env | medium | Sim has Area/Zone/Map exploration rewards, live env does not yet — these rewards will be missing during sim->live transfer |
-| **Reward parity gap** | Both Envs | medium | Sim uses sparse design (XP=10+xp*0.5, death=-15), live uses more shaping (XP=3+xp*0.05, death=-5) — trained model may not transfer cleanly |
+| ~~**Exploration missing in wow_env.py**~~ | Live Env | **FIXED** | Live env now has grid-based exploration (50x50 areas, 200x200 zones) matching sim fallback |
+| ~~**Reward parity gap**~~ | Both Envs | **FIXED** | Both envs now use identical sparse rewards (XP=10+xp*0.5, death=-15, OOM=not terminal) |
+| ~~**Action space mismatch**~~ | Both Envs | **FIXED** | Both envs now use Discrete(30) with identical action mapping |
+| ~~**Observation space mismatch**~~ | Both Envs | **FIXED** | Both envs now use Box(52,) with identical dim layout |
+| ~~**Override logic vs masking**~~ | Both Envs | **FIXED** | Both envs now use action masking with MaskablePPO |
+| **GCD tracking approximation** | Live Env | low | Live env tracks GCD client-side (1.5s timer) — may drift slightly vs server state |
+| **Mana cost approximation** | Live Env | low | Live env blocks all spells at <5% mana — sim uses exact per-spell mana costs |
 | **run_bot.py broken** | Script | low | Syntax errors (missing quotes, colons, brackets) — not usable |
 | **run_model.py references wow_bot_v1** | Script | low | Model does not exist, only wow_bot_interrupted.zip available |
-| **COLLECT quest source creatures** | Sim | low | CSV-loaded COLLECT objectives use first RequiredNpcOrGo as source creature heuristic. Some quests may have wrong or missing source creatures — would need loot table cross-reference for accuracy. |
+| **COLLECT quest source creatures** | Sim | low | CSV-loaded COLLECT objectives use first RequiredNpcOrGo as source creature heuristic |
 | **No training artifacts** | Training | info | Neither models/ nor logs/ directories exist currently — no completed training run stored |
 
 ## Roadmap

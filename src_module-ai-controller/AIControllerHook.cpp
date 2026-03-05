@@ -736,11 +736,97 @@ public:
                     tLevel = target->GetLevel();
                     tx = target->GetPositionX(); ty = target->GetPositionY(); tz = target->GetPositionZ();
                 }
-                // Aura states for priest spells
-                bool hasShield = p->HasAura(17); // Power Word: Shield
-                bool targetHasSwPain = (target && target->HasAura(589)); // Shadow Word: Pain
+                // Aura states for priest spells (all ranks checked)
+                // Helper lambda: check if player has any rank of a spell family
+                auto hasAnyRank = [](Unit* u, std::initializer_list<uint32> ids) -> bool {
+                    for (uint32 id : ids) { if (u->HasAura(id)) return true; }
+                    return false;
+                };
+
+                // Player buffs
+                bool hasShield = hasAnyRank(p, {17, 592, 600, 3747, 6065, 6066, 10898, 10899, 10900, 10901, 25217, 25218, 48065, 48066}); // PW:Shield all ranks
+                bool hasRenew = hasAnyRank(p, {139, 6074, 6075, 6076, 6077, 6078, 10927, 10928, 10929, 25315, 25221, 25222, 48067, 48068}); // Renew all ranks
+                bool hasInnerFire = hasAnyRank(p, {588, 7128, 602, 1006, 10951, 10952, 25431, 48040, 48168}); // Inner Fire all ranks
+                bool hasFortitude = hasAnyRank(p, {1243, 1244, 1245, 2791, 10937, 10938, 25389, 48161}); // PW:Fortitude all ranks
+                bool hasShadowProt = hasAnyRank(p, {976, 10957, 10958, 25433, 48169}); // Shadow Protection all ranks
+                bool hasDivineSpirit = hasAnyRank(p, {14752, 14818, 14819, 27841, 25312, 48073}); // Divine Spirit all ranks
+                bool hasFearWard = p->HasAura(6346); // Fear Ward (single rank)
+                bool shadowformActive = p->HasAura(15473); // Shadowform aura
+                bool dispersionActive = p->HasAura(47585); // Dispersion aura
+                bool isChanneling = p->HasUnitState(UNIT_STATE_CHANNELING);
+                bool isEating = p->HasAura(433) || p->HasAura(434) || p->HasAura(435) || p->HasAura(1127) || p->HasAura(1129) || p->HasAura(1131);  // Food/Drink auras
+
+                // Mind Blast cooldown check (1.5-8s CD depending on talents)
+                bool mindBlastReady = true;
+                SpellCooldowns const& cds = p->GetSpellCooldownMap();
+                for (uint32 mbId : {8092u, 8102u, 8103u, 8104u, 8105u, 8106u, 10945u, 10946u, 10947u, 25372u, 25375u, 48126u, 48127u}) {
+                    auto it = cds.find(mbId);
+                    if (it != cds.end() && it->second.end > GameTime::GetGameTimeMS()) { mindBlastReady = false; break; }
+                }
+                // Psychic Scream cooldown check (30s CD)
+                bool psychicScreamReady = true;
+                for (uint32 psId : {8122u, 8124u, 10888u, 10890u}) {
+                    auto it = cds.find(psId);
+                    if (it != cds.end() && it->second.end > GameTime::GetGameTimeMS()) { psychicScreamReady = false; break; }
+                }
+
+                // Target debuffs
+                bool targetHasSwPain = false;
+                bool targetHasHolyFire = false;
+                bool targetHasDP = false;
+                bool targetHasVT = false;
+                if (target) {
+                    targetHasSwPain = hasAnyRank(target, {589, 594, 970, 992, 2767, 10892, 10893, 10894, 25367, 25368, 48124, 48125});
+                    targetHasHolyFire = hasAnyRank(target, {14914, 15262, 15263, 15264, 15265, 15266, 15267, 15261, 25384, 48134, 48135});
+                    targetHasDP = hasAnyRank(target, {2944, 19276, 19277, 19278, 19279, 19280, 25467, 48299, 48300});
+                    targetHasVT = hasAnyRank(target, {34914, 34916, 34917, 48159, 48160});
+                }
+
                 ss << "\"has_shield\": \"" << (hasShield ? "true" : "false") << "\", ";
                 ss << "\"target_has_sw_pain\": \"" << (targetHasSwPain ? "true" : "false") << "\", ";
+                ss << "\"has_renew\": \"" << (hasRenew ? "true" : "false") << "\", ";
+                ss << "\"has_inner_fire\": \"" << (hasInnerFire ? "true" : "false") << "\", ";
+                ss << "\"has_fortitude\": \"" << (hasFortitude ? "true" : "false") << "\", ";
+                ss << "\"mind_blast_ready\": \"" << (mindBlastReady ? "true" : "false") << "\", ";
+                ss << "\"target_has_holy_fire\": \"" << (targetHasHolyFire ? "true" : "false") << "\", ";
+                ss << "\"is_eating\": \"" << (isEating ? "true" : "false") << "\", ";
+                ss << "\"target_has_devouring_plague\": \"" << (targetHasDP ? "true" : "false") << "\", ";
+                ss << "\"has_shadow_protection\": \"" << (hasShadowProt ? "true" : "false") << "\", ";
+                ss << "\"has_divine_spirit\": \"" << (hasDivineSpirit ? "true" : "false") << "\", ";
+                ss << "\"has_fear_ward\": \"" << (hasFearWard ? "true" : "false") << "\", ";
+                ss << "\"psychic_scream_ready\": \"" << (psychicScreamReady ? "true" : "false") << "\", ";
+                ss << "\"target_has_vampiric_touch\": \"" << (targetHasVT ? "true" : "false") << "\", ";
+                ss << "\"shadowform_active\": \"" << (shadowformActive ? "true" : "false") << "\", ";
+                ss << "\"dispersion_active\": \"" << (dispersionActive ? "true" : "false") << "\", ";
+                ss << "\"is_channeling\": \"" << (isChanneling ? "true" : "false") << "\", ";
+
+                // Combat stats (WotLK formulas)
+                float spellPower = 0;
+                for (int school = 1; school < 7; ++school) {
+                    float sp = p->GetUInt32Value(PLAYER_FIELD_MOD_DAMAGE_DONE_POS + school);
+                    if (sp > spellPower) spellPower = sp;
+                }
+                float spellCrit = p->GetFloatValue(PLAYER_SPELL_CRIT_PERCENTAGE1 + 1); // Holy school
+                float spellHaste = p->GetFloatValue(UNIT_MOD_CAST_SPEED) > 0 ? ((1.0f / p->GetFloatValue(UNIT_MOD_CAST_SPEED)) - 1.0f) * 100.0f : 0.0f;
+                uint32 totalArmor = p->GetArmor();
+                float attackPower = p->GetTotalAttackPowerValue(BASE_ATTACK);
+                float meleeCrit = p->GetFloatValue(PLAYER_CRIT_PERCENTAGE);
+                float dodge = p->GetFloatValue(PLAYER_DODGE_PERCENTAGE);
+                float hitSpell = p->GetFloatValue(PLAYER_FIELD_COMBAT_RATING_1 + CR_HIT_SPELL) / 26.23f; // rating to %
+                float expertise = p->GetFloatValue(PLAYER_EXPERTISE) * 0.25f; // expertise to dodge/parry reduction %
+                float armorPen = p->GetFloatValue(PLAYER_FIELD_COMBAT_RATING_1 + CR_ARMOR_PENETRATION) / 13.99f;
+
+                ss << "\"spell_power\": " << (int)spellPower << ", ";
+                ss << "\"spell_crit\": " << spellCrit << ", ";
+                ss << "\"spell_haste\": " << spellHaste << ", ";
+                ss << "\"total_armor\": " << totalArmor << ", ";
+                ss << "\"attack_power\": " << attackPower << ", ";
+                ss << "\"melee_crit\": " << meleeCrit << ", ";
+                ss << "\"dodge\": " << dodge << ", ";
+                ss << "\"hit_spell\": " << hitSpell << ", ";
+                ss << "\"expertise\": " << expertise << ", ";
+                ss << "\"armor_pen\": " << armorPen << ", ";
+
                 ss << "\"target_status\": \"" << tStatus << "\", ";
                 ss << "\"target_hp\": " << tHp << ", ";
                 ss << "\"target_level\": " << tLevel << ", ";
