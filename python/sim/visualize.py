@@ -50,6 +50,7 @@ from matplotlib.colors import Normalize
 from matplotlib.widgets import Slider, CheckButtons, Button, RadioButtons
 try:
     from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 300_000_000
     _HAS_PIL = True
 except ImportError:
     _HAS_PIL = False
