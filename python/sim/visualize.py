@@ -141,9 +141,7 @@ def _load_map_background(image_path, wow_bounds=None):
         raise ImportError("Pillow is required for --map-image. "
                           "Install with: pip install Pillow")
     img = Image.open(image_path)
-    # Rotate image 90° CCW to match coordinate rotation (x,y) → (-y, x)
-    img_rot = img.rotate(90, expand=True)
-    img_arr = np.asarray(img_rot)
+    img_arr = np.asarray(img)
 
     # After coordinate rotation: display_x = -wow_y, display_y = wow_x
     disp_x_min = -y_max
@@ -165,7 +163,7 @@ def _draw_map_background(ax, map_image_data):
         return
     img_arr, extent = map_image_data
     ax.imshow(img_arr, extent=extent, aspect="equal", zorder=0, alpha=0.7,
-              interpolation="bilinear", origin="lower")
+              interpolation="bilinear")
 
 
 # ─── Data structures ────────────────────────────────────────────────────
