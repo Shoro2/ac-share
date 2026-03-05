@@ -165,7 +165,7 @@ def _draw_map_background(ax, map_image_data):
         return
     img_arr, extent = map_image_data
     ax.imshow(img_arr, extent=extent, aspect="equal", zorder=0, alpha=0.7,
-              interpolation="bilinear")
+              interpolation="bilinear", origin="lower")
 
 
 # ─── Data structures ────────────────────────────────────────────────────
