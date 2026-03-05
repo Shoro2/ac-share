@@ -1389,8 +1389,12 @@ def main():
         model = PPO.load(args.model)
         print(f"Loaded model: {args.model}")
 
-    # Load map background if specified
+    # Load map background — auto-detect from Data dir if not specified
     map_image_data = None
+    if not args.map_image:
+        auto_path = os.path.join(r"C:\wowstuff\WoWKI_serv\Data", "world_map.png")
+        if os.path.exists(auto_path):
+            args.map_image = auto_path
     if args.map_image:
         wow_bounds = None
         if args.map_bounds:

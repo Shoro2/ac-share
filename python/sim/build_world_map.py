@@ -44,6 +44,12 @@ import zipfile
 from io import BytesIO
 from dataclasses import dataclass
 
+# Default paths on the dev machine
+_DEFAULT_DATA_ROOT = r"C:\wowstuff\WoWKI_serv\Data"
+_DEFAULT_ZIP = os.path.join(_DEFAULT_DATA_ROOT, "1659008088-atlasworldmap_wotlk.zip")
+_DEFAULT_DBC = os.path.join(_DEFAULT_DATA_ROOT, "dbc", "WorldMapArea.dbc")
+_DEFAULT_OUTPUT = os.path.join(_DEFAULT_DATA_ROOT, "world_map.png")
+
 try:
     from PIL import Image
     _HAS_PIL = True
@@ -343,11 +349,11 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Build a stitched world-map PNG from WoW WorldMap tiles.")
-    parser.add_argument("--zip", type=str, default=None,
+    parser.add_argument("--zip", type=str, default=_DEFAULT_ZIP,
                         help="Path to ZIP archive with Interface/WorldMap/ tiles")
     parser.add_argument("--dir", type=str, default=None,
                         help="Path to extracted directory with Interface/WorldMap/")
-    parser.add_argument("--dbc", type=str, default=None,
+    parser.add_argument("--dbc", type=str, default=_DEFAULT_DBC,
                         help="Path to WorldMapArea.dbc")
     parser.add_argument("--map-id", type=int, default=0,
                         help="Map ID to render (0=Eastern Kingdoms, 1=Kalimdor)")
@@ -358,32 +364,18 @@ def main():
                         help="Only render the continent overview (no zone detail)")
     parser.add_argument("--ppu", type=float, default=0.5,
                         help="Pixels per world unit (default: 0.5)")
-    parser.add_argument("--output", type=str, default="data/world_map.png",
-                        help="Output PNG path (default: data/world_map.png)")
+    parser.add_argument("--output", type=str, default=_DEFAULT_OUTPUT,
+                        help="Output PNG path (default: Data/world_map.png)")
     parser.add_argument("--list-zones", action="store_true",
                         help="List available zones and exit")
     args = parser.parse_args()
 
-    # Auto-detect paths
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.dirname(os.path.dirname(script_dir))
-    data_dir = os.path.join(repo_root, "data")
-
     dbc_path = args.dbc
-    if not dbc_path:
-        dbc_path = os.path.join(data_dir, "dbc", "WorldMapArea.dbc")
     if not os.path.exists(dbc_path):
         print(f"ERROR: WorldMapArea.dbc not found: {dbc_path}")
         sys.exit(1)
 
     zip_path = args.zip
-    if not zip_path and not args.dir:
-        # Auto-detect ZIP in data/
-        for f in os.listdir(data_dir):
-            if f.endswith(".zip") and "worldmap" in f.lower():
-                zip_path = os.path.join(data_dir, f)
-                break
-
     if not zip_path and not args.dir:
         print("ERROR: No tile source specified. Use --zip or --dir")
         sys.exit(1)
