@@ -1162,7 +1162,7 @@ class CombatSimulation:
             self.terrain.ensure_loaded(new_x, new_y)
             new_z = self.terrain.get_height(new_x, new_y)
             if not self.terrain.check_walkable(p.x, p.y, p.z, new_x, new_y, new_z):
-                return  # blocked by terrain slope/step
+                return  # blocked by terrain (AC IsWalkableClimb / slope)
             p.z = new_z
 
         p.x = new_x
