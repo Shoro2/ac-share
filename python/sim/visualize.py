@@ -60,7 +60,6 @@ PARENT_DIR = os.path.dirname(THIS_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-from sim.combat_sim import SPAWN_POSITIONS, MOB_TEMPLATES
 
 
 # ─── Color Palette ───────────────────────────────────────────────────────
@@ -437,14 +436,6 @@ def _get_map_bounds(recordings: list):
             all_x.append(rx)
             all_y.append(ry)
 
-    has_snapshots = any(len(rec.mob_snapshots) > 0 for rec in recordings)
-    if not has_snapshots:
-        for positions in SPAWN_POSITIONS.values():
-            for (x, y) in positions:
-                rx, ry = _rot_xy(x, y)
-                all_x.append(rx)
-                all_y.append(ry)
-
     margin = 30.0
     return (min(all_x) - margin, max(all_x) + margin,
             min(all_y) - margin, max(all_y) + margin)
@@ -482,18 +473,6 @@ def _plot_mobs_from_snapshots(ax, all_snapshots: list):
                    zorder=2)
 
 
-def _plot_mobs_from_hardcoded(ax):
-    """Plot mob positions from hardcoded SPAWN_POSITIONS."""
-    for entry, positions in SPAWN_POSITIONS.items():
-        tmpl = MOB_TEMPLATES[entry]
-        plot_xs, plot_ys = _rot_xs_ys(
-            [p[0] for p in positions], [p[1] for p in positions])
-        ax.scatter(plot_xs, plot_ys,
-                   c=MOB_COLORS[entry],
-                   marker=MOB_MARKERS[entry],
-                   s=40, alpha=0.6, edgecolors="white", linewidths=0.3,
-                   label=f"{tmpl.name} (L{tmpl.min_level}-{tmpl.max_level})",
-                   zorder=2)
 
 
 def _draw_trail(ax, rec, color_idx):
@@ -620,8 +599,6 @@ def plot_map(recordings: list, title: str = "WoW Sim — Bot Routes",
                 seen.add(key)
                 unique.append(snap)
         _plot_mobs_from_snapshots(ax, unique)
-    else:
-        _plot_mobs_from_hardcoded(ax)
 
     # Player spawn
     sp_rx, sp_ry = _rot_xy(SPAWN_X, SPAWN_Y)
@@ -1224,8 +1201,6 @@ class InteractiveViewer:
                     seen.add(key)
                     unique.append(snap)
             _plot_mobs_from_snapshots(self.ax_map, unique)
-        else:
-            _plot_mobs_from_hardcoded(self.ax_map)
 
         # ── Player spawn marker ──────────────────────────────────────
         sp_rx, sp_ry = _rot_xy(SPAWN_X, SPAWN_Y)

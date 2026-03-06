@@ -12,6 +12,7 @@ Tick-based: 1 tick = 0.5 seconds (matches WoWEnv decision interval).
 """
 
 import math
+import os
 import random
 from typing import Optional, TYPE_CHECKING
 
@@ -97,7 +98,7 @@ from sim.formulas import (
 
 from sim.models import (
     EquippedItem, EquippedBag, SpellDef, SPELLS,
-    MobTemplate, MOB_TEMPLATES, SPAWN_POSITIONS,
+    MobTemplate,
     InventoryItem, VendorNPC, QuestNPC, VENDOR_DATA,
     INVENTORY_SLOTS, Player, Mob,
 )
@@ -150,7 +151,23 @@ class CombatSimulation:
         self.num_mobs = num_mobs  # None = all spawns
         self.terrain = terrain
         self.env3d = env3d        # WoW3DEnvironment for area/zone lookups
+        # Auto-discover data/ directory for DB fallback loading
+        _data_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            '..', 'data')
+        _data_dir = os.path.normpath(_data_dir)
+        # Auto-load creature_db from data/ directory if not provided
+        if creature_db is None:
+            from sim.creature_db import CreatureDB
+            if os.path.isfile(os.path.join(_data_dir, 'creature_template.csv')):
+                creature_db = CreatureDB(_data_dir, quiet=True)
         self.creature_db = creature_db
+        # Auto-load loot_db from data/ directory if not provided
+        if loot_db is None:
+            from sim.loot_db import LootDB
+            _loot_db = LootDB(_data_dir, quiet=True)
+            if _loot_db.loaded:
+                loot_db = _loot_db
         self.loot_db = loot_db    # LootDB for item drops from CSV loot tables
         self.quest_db = quest_db  # QuestDB for quest definitions and NPCs
         self.class_id = class_id  # player class
@@ -184,10 +201,7 @@ class CombatSimulation:
         self.quests_completed: int = 0    # total quests completed this episode
         self._spawn_vendors()
         self._spawn_quest_npcs()
-        if self.creature_db:
-            self._update_chunks()
-        else:
-            self._spawn_mobs()
+        self._update_chunks()
         self._update_exploration()  # register spawn position
         self.recalculate_stats()    # apply WotLK stat formulas to initial player
 
@@ -195,38 +209,6 @@ class CombatSimulation:
         uid = self._next_uid
         self._next_uid += 1
         return uid
-
-    def _spawn_mobs(self):
-        """Spawn mobs from real DB positions. num_mobs=None uses all spawns."""
-        self.mobs.clear()
-        all_spawns = []
-        for entry, positions in SPAWN_POSITIONS.items():
-            template = MOB_TEMPLATES[entry]
-            for (x, y) in positions:
-                all_spawns.append((template, x, y))
-
-        # Pick a subset (or all if num_mobs is None)
-        if self.num_mobs is not None:
-            selected = self.rng.sample(all_spawns, min(self.num_mobs, len(all_spawns)))
-        else:
-            selected = all_spawns
-            self.rng.shuffle(selected)
-        for template, x, y in selected:
-            level = self.rng.randint(template.min_level, template.max_level)
-            # Scale HP by level
-            hp_by_level = {1: 42, 2: 55, 3: 71}
-            base_hp = hp_by_level.get(level, 42)
-            z = self.terrain.get_height(x, y) if self.terrain else 82.0
-            mob = Mob(
-                uid=self._new_uid(),
-                template=template,
-                hp=base_hp,
-                max_hp=base_hp,
-                level=level,
-                x=x, y=y, z=z,
-                spawn_x=x, spawn_y=y, spawn_z=z,
-            )
-            self.mobs.append(mob)
 
     def _spawn_vendors(self):
         """Spawn vendor NPCs. Uses creature_db chunks when available, else VENDOR_DATA fallback."""
@@ -454,10 +436,7 @@ class CombatSimulation:
         self.active_quests.clear()
         self.completed_quests.clear()
         self.quests_completed = 0
-        if self.creature_db:
-            self._update_chunks()
-        else:
-            self._spawn_mobs()
+        self._update_chunks()
         self._update_exploration()
         self.recalculate_stats()
 
@@ -1017,11 +996,9 @@ class CombatSimulation:
     def _update_chunks(self):
         """Activate/deactivate chunks based on player position.
 
-        Only runs when creature_db is set. Checks if the player moved to a
-        new chunk and updates the active chunk set accordingly.
+        Checks if the player moved to a new chunk and updates the active
+        chunk set accordingly. Requires creature_db to be loaded.
         """
-        if not self.creature_db:
-            return
 
         p = self.player
         cs = self.CHUNK_SIZE
@@ -2500,10 +2477,11 @@ class CombatSimulation:
 
     def _respawn_mob(self, mob: Mob):
         """Respawn a dead mob at its spawn point."""
+        from sim.creature_db import CreatureDB
         level = self.rng.randint(mob.template.min_level, mob.template.max_level)
-        hp_by_level = {1: 42, 2: 55, 3: 71}
-        mob.hp = hp_by_level.get(level, 42)
-        mob.max_hp = mob.hp
+        base_hp = CreatureDB.get_base_hp(level)
+        mob.hp = base_hp
+        mob.max_hp = base_hp
         mob.level = level
         mob.alive = True
         mob.in_combat = False
