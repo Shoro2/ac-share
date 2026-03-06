@@ -128,6 +128,8 @@ class CombatSimulation:
     MANA_REGEN_PCT_PER_TICK = 0.02  # 2% of max_mana per tick (not casting)
     RESPAWN_TICKS = 120       # 60 seconds = 120 ticks
     MOB_SPEED = 1.0           # units per tick when chasing
+    SLIDE_SLOPE_THRESHOLD = 40.0  # degrees — slopes above this cause sliding
+    SLIDE_SPEED = 2.0             # units per tick when sliding downhill
     LOOT_CHANCE = 0.7         # probability of getting loot
     ITEM_SCORE_RANGE = (5, 25)
     UPGRADE_CHANCE = 0.15     # chance that looted item is an upgrade
@@ -1148,6 +1150,61 @@ class CombatSimulation:
     def do_noop(self):
         pass
 
+    # ─── Terrain sliding ─────────────────────────────────────────
+
+    def _apply_terrain_sliding(self):
+        """Slide the player downhill when standing on a steep slope.
+
+        Called every tick.  Mimics the WoW client behaviour where players
+        on slopes steeper than ~40° slowly slide downward and cannot
+        maintain their position.
+        """
+        if not self.terrain:
+            return
+        p = self.player
+        slope_deg, down_dx, down_dy = self.terrain.get_slope_info(p.x, p.y)
+        if slope_deg < self.SLIDE_SLOPE_THRESHOLD:
+            return
+
+        # Slide strength proportional to how far above the threshold
+        # (40° → 0, 90° → full SLIDE_SPEED)
+        t = min((slope_deg - self.SLIDE_SLOPE_THRESHOLD) /
+                (90.0 - self.SLIDE_SLOPE_THRESHOLD), 1.0)
+        slide_dist = self.SLIDE_SPEED * t
+
+        new_x = p.x + down_dx * slide_dist
+        new_y = p.y + down_dy * slide_dist
+        self.terrain.ensure_loaded(new_x, new_y)
+        new_z = self.terrain.get_height(new_x, new_y)
+
+        # Only slide if the destination is actually lower (downhill)
+        if new_z < p.z:
+            p.x = new_x
+            p.y = new_y
+            p.z = new_z
+            # Interrupt eating/casting when sliding
+            if p.is_eating:
+                p.is_eating = False
+
+    def _apply_mob_terrain_sliding(self, mob):
+        """Slide a mob downhill when on a steep slope (same logic as player)."""
+        if not self.terrain:
+            return
+        slope_deg, down_dx, down_dy = self.terrain.get_slope_info(mob.x, mob.y)
+        if slope_deg < self.SLIDE_SLOPE_THRESHOLD:
+            return
+        t = min((slope_deg - self.SLIDE_SLOPE_THRESHOLD) /
+                (90.0 - self.SLIDE_SLOPE_THRESHOLD), 1.0)
+        slide_dist = self.SLIDE_SPEED * t
+        new_x = mob.x + down_dx * slide_dist
+        new_y = mob.y + down_dy * slide_dist
+        self.terrain.ensure_loaded(new_x, new_y)
+        new_z = self.terrain.get_height(new_x, new_y)
+        if new_z < mob.z:
+            mob.x = new_x
+            mob.y = new_y
+            mob.z = new_z
+
     def do_move_forward(self):
         """Move 3 units in current orientation direction."""
         if self.player.is_casting:
@@ -1162,7 +1219,14 @@ class CombatSimulation:
             self.terrain.ensure_loaded(new_x, new_y)
             new_z = self.terrain.get_height(new_x, new_y)
             if not self.terrain.check_walkable(p.x, p.y, p.z, new_x, new_y, new_z):
-                return  # blocked by terrain slope/step
+                # Blocked — slide downhill instead of standing still
+                self._apply_terrain_sliding()
+                return
+            # Check if destination is on a steep uphill slope — slide back
+            slope_deg, _, _ = self.terrain.get_slope_info(new_x, new_y)
+            if slope_deg >= self.SLIDE_SLOPE_THRESHOLD and new_z > p.z:
+                self._apply_terrain_sliding()
+                return
             p.z = new_z
 
         p.x = new_x
@@ -1212,6 +1276,12 @@ class CombatSimulation:
             self.terrain.ensure_loaded(new_x, new_y)
             new_z = self.terrain.get_height(new_x, new_y)
             if not self.terrain.check_walkable(p.x, p.y, p.z, new_x, new_y, new_z):
+                self._apply_terrain_sliding()
+                return False
+            # Steep uphill — slide back instead of climbing
+            slope_deg, _, _ = self.terrain.get_slope_info(new_x, new_y)
+            if slope_deg >= self.SLIDE_SLOPE_THRESHOLD and new_z > p.z:
+                self._apply_terrain_sliding()
                 return False
             p.z = new_z
 
@@ -2070,6 +2140,8 @@ class CombatSimulation:
         p = self.player
         self._update_chunks()
         self._update_exploration()
+        # Terrain sliding — push player downhill on steep slopes
+        self._apply_terrain_sliding()
         self._update_quest_exploration()
 
         # --- Mind Flay channel ticks ---
@@ -2142,6 +2214,9 @@ class CombatSimulation:
                     if mob.respawn_timer <= 0:
                         self._respawn_mob(mob)
                 continue
+
+            # Terrain sliding for mobs
+            self._apply_mob_terrain_sliding(mob)
 
             # Inline distance (saves 2 method calls per mob)
             _dx = mob.x - px
