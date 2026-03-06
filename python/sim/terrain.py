@@ -169,40 +169,6 @@ class SimTerrain:
     # high enough to clear small rocks and terrain bumps.
     _WALK_LOS_HEIGHT = 0.5
 
-    # Finite-difference step for gradient estimation (world units).
-    _GRAD_STEP = 0.5
-
-    def get_slope_info(self, x: float, y: float) -> tuple:
-        """Return (slope_degrees, down_dx, down_dy) at world position.
-
-        Uses central-difference on the heightmap to estimate the terrain
-        gradient.  ``down_dx/down_dy`` is the *downhill* unit-direction
-        (steepest descent).  Returns (0, 0, 0) when terrain is flat or
-        data is unavailable.
-        """
-        if not self._loaded:
-            return (0.0, 0.0, 0.0)
-
-        h = self._GRAD_STEP
-        # Central differences
-        zx1 = self.get_height(x - h, y)
-        zx2 = self.get_height(x + h, y)
-        zy1 = self.get_height(x, y - h)
-        zy2 = self.get_height(x, y + h)
-        dz_dx = (zx2 - zx1) / (2.0 * h)
-        dz_dy = (zy2 - zy1) / (2.0 * h)
-
-        import math as _m
-        grad_mag = _m.sqrt(dz_dx * dz_dx + dz_dy * dz_dy)
-        if grad_mag < 1e-4:
-            return (0.0, 0.0, 0.0)
-
-        slope_deg = _m.degrees(_m.atan(grad_mag))
-        # Downhill = negative gradient direction (unit vector)
-        down_dx = -dz_dx / grad_mag
-        down_dy = -dz_dy / grad_mag
-        return (slope_deg, down_dx, down_dy)
-
     def check_walkable(self, x1: float, y1: float, z1: float,
                        x2: float, y2: float, z2: float) -> bool:
         """Check if the terrain path between two points is walkable.

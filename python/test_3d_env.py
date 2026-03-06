@@ -828,13 +828,22 @@ class LOSChecker:
 
 class TerrainPathChecker:
     """
-    Prüft ob ein Pfad über das Terrain begehbar ist,
-    basierend auf Steigung und Höhenänderung.
+    Prüft ob ein Pfad über das Terrain begehbar ist.
+
+    Verwendet die AzerothCore-Formeln aus PathGenerator.cpp:
+      - walkableSlopeAngle = 60° (Config.h / mmaps-config.yaml)
+      - IsWalkableClimb: diffHeight <= collisionHeight * (1 - slopeDeg/100)
+      - getSlopeAngle:   atan(abs(dz) / horizontalDist)   (Geometry.h)
+      - DEFAULT_COLLISION_HEIGHT = 2.03128  (ObjectDefines.h)
     """
 
-    MAX_WALKABLE_SLOPE = 50.0  # Grad - maximale begehbare Steigung
-    MAX_STEP_HEIGHT = 2.5      # Units - maximale Stufe (wie walkableClimb in Recast)
-    SAMPLE_DISTANCE = 1.0      # Units - Abtastabstand auf dem Pfad
+    # From tools/mmaps_generator/Config.h — global default
+    MAX_WALKABLE_SLOPE = 60.0
+
+    # From server/game/Entities/Object/ObjectDefines.h
+    DEFAULT_COLLISION_HEIGHT = 2.03128
+
+    SAMPLE_DISTANCE = 1.0      # Units — Abtastabstand auf dem Pfad
 
     def __init__(self, tiles: dict):
         """
@@ -850,12 +859,42 @@ class TerrainPathChecker:
             return INVALID_HEIGHT
         return get_terrain_height(tile, world_x, world_y)
 
-    def check_path_walkable(self, start: Vec3, end: Vec3) -> tuple:
+    @staticmethod
+    def _get_slope_angle_abs(x1, y1, z1, x2, y2, z2):
+        """AzerothCore Geometry.h: getSlopeAngleAbs — returns radians."""
+        floor_dist = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        if floor_dist < 1e-6:
+            return 0.0
+        return abs(math.atan(abs(z2 - z1) / floor_dist))
+
+    @staticmethod
+    def _is_walkable_climb(x1, y1, z1, x2, y2, z2, collision_height):
+        """AzerothCore PathGenerator.cpp: IsWalkableClimb.
+
+        Check if height difference is climbable given the slope angle
+        and the unit's collision height.
+        """
+        diff_height = abs(z2 - z1)
+        slope_angle = TerrainPathChecker._get_slope_angle_abs(
+            x1, y1, z1, x2, y2, z2)
+        slope_deg = math.degrees(slope_angle)
+        climbable_height = collision_height - (collision_height * (slope_deg / 100.0))
+        return diff_height <= climbable_height
+
+    def check_path_walkable(self, start: Vec3, end: Vec3,
+                            collision_height: float = None) -> tuple:
         """
         Prüft ob ein Pfad auf dem Terrain begehbar ist.
 
+        Verwendet zwei AzerothCore-Checks pro Segment:
+        1. Slope > MAX_WALKABLE_SLOPE (60°) → unwalkable (Recast navmesh)
+        2. IsWalkableClimb — heightDiff vs. collisionHeight-basiertes Limit
+
         Returns: (walkable: bool, reason: str, blocked_at: Optional[Vec3])
         """
+        if collision_height is None:
+            collision_height = self.DEFAULT_COLLISION_HEIGHT
+
         dx = end.x - start.x
         dy = end.y - start.y
         dist_2d = math.sqrt(dx * dx + dy * dy)
@@ -864,6 +903,8 @@ class TerrainPathChecker:
             return (True, "same_position", None)
 
         num_samples = max(2, int(dist_2d / self.SAMPLE_DISTANCE))
+        prev_x = start.x
+        prev_y = start.y
         prev_z = start.z
 
         for i in range(1, num_samples + 1):
@@ -875,18 +916,27 @@ class TerrainPathChecker:
             if z <= INVALID_HEIGHT + 1:
                 return (False, "no_terrain_data", Vec3(x, y, 0))
 
-            # Steigung prüfen
             step_dist_2d = dist_2d / num_samples
             dz = abs(z - prev_z)
+
+            # 1) Navmesh slope filter (rcClearUnwalkableTriangles)
             if step_dist_2d > 0.01:
                 slope_deg = math.degrees(math.atan2(dz, step_dist_2d))
                 if slope_deg > self.MAX_WALKABLE_SLOPE:
-                    return (False, f"slope_too_steep ({slope_deg:.1f}°)", Vec3(x, y, z))
+                    return (False, f"slope_too_steep ({slope_deg:.1f}°)",
+                            Vec3(x, y, z))
 
-            # Stufe prüfen
-            if dz > self.MAX_STEP_HEIGHT:
-                return (False, f"step_too_high ({dz:.1f} units)", Vec3(x, y, z))
+            # 2) IsWalkableClimb (PathGenerator.cpp)
+            if not self._is_walkable_climb(
+                    prev_x, prev_y, prev_z, x, y, z, collision_height):
+                slope_deg = math.degrees(
+                    self._get_slope_angle_abs(prev_x, prev_y, prev_z, x, y, z))
+                return (False,
+                        f"climb_too_steep ({slope_deg:.1f}°, dh={dz:.2f})",
+                        Vec3(x, y, z))
 
+            prev_x = x
+            prev_y = y
             prev_z = z
 
         return (True, "path_clear", None)
@@ -1244,11 +1294,13 @@ class WoW3DEnvironment:
         self.terrain_checker = TerrainPathChecker(tiles)
         return self.terrain_checker
 
-    def check_path(self, start: Vec3, end: Vec3) -> tuple:
+    def check_path(self, start: Vec3, end: Vec3,
+                   collision_height: float = None) -> tuple:
         """Prüft ob ein Pfad begehbar ist (Terrain + Hindernisse)."""
         if self.terrain_checker is None:
             return (False, "no_terrain_loaded", None)
-        return self.terrain_checker.check_path_walkable(start, end)
+        return self.terrain_checker.check_path_walkable(
+            start, end, collision_height=collision_height)
 
     # ─── Area/Zone-Lookup ─────────────────────────────────────
 
